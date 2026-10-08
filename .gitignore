@@ -1,0 +1,42 @@
+# Go build artifacts
+/sandcast
+/sandcast-*
+/dist/
+*.test
+coverage.out
+
+# OS files
+.DS_Store
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Environment
+.env*
+
+# MCP server config (contains auth tokens)
+**/.mcp.json
+
+# Claude Code / Codex local settings (any level)
+**/.claude/
+**/.codex/
+
+# spex: generated/local files (only constitution is committed)
+**/.specify/**
+!**/.specify/memory/
+!**/.specify/memory/constitution.md
+
+# Tool-generated dev artifacts
+**/.agents/
+**/.beads/
+**/.style/
+.playwright-mcp/
+
+# sandcast build directories in fixture projects
+**/.sandcast/build/
