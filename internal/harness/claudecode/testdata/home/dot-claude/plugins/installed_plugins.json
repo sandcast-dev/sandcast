@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "plugins": {
+    "disabled-one@claude-plugins-official": [{"scope": "user", "version": "1.0.0"}],
+    "github@claude-plugins-official": [{"scope": "user", "installPath": "__HOME__/.claude/plugins/cache/claude-plugins-official/github/f713a7c", "version": "f713a7c"}],
+    "gopls-lsp@claude-plugins-official": [{"scope": "project", "projectPath": "__PROJECT__", "version": "1.0.0"}],
+    "legacy@team-tools": {"scope": "user", "version": "0.1.0"},
+    "local-tool@dev-marketplace": [{"scope": "local", "projectPath": "__PROJECT__", "version": "0.0.1"}],
+    "mystery@unknown-market": [{"scope": "user", "version": "1.0.0"}],
+    "other-project@claude-plugins-official": [{"scope": "project", "projectPath": "/elsewhere", "version": "1.0.0"}],
+    "proj-tool@proj-market": [{"scope": "local", "projectPath": "__PROJECT__", "version": "0.0.1"}],
+    "review-kit@team-tools": [{"scope": "user", "version": "2.0.0"}],
+    "secret-kit@private-tools": [{"scope": "user", "version": "1.0.0"}],
+    "token-kit@token-query": [{"scope": "user", "version": "1.0.0"}]
+  }
+}

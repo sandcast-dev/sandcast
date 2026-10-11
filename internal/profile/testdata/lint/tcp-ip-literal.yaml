@@ -1,0 +1,6 @@
+id: example
+display_name: Example
+endpoints:
+  - host: 203.0.113.10
+    port: 5432
+    protocol: tcp

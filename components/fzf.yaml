@@ -1,0 +1,15 @@
+key: fzf
+name: fzf
+description: Command-line fuzzy finder.
+match:
+  host_tools: [fzf]
+installer:
+  mise:
+    tool: fzf
+    version: latest
+    bins: [fzf]
+# Shell configurations load fzf through "fzf --zsh", which fzf 0.48 added.
+# Older distribution builds fail this check, so the mise build replaces them.
+check:
+  command: fzf --version && fzf --zsh >/dev/null
+provides: [fzf]

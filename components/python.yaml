@@ -1,0 +1,19 @@
+key: python
+name: Python
+description: CPython interpreter with pip.
+match:
+  files: [pyproject.toml, requirements*.txt, setup.py, Pipfile, uv.lock, .python-version]
+installer:
+  mise:
+    tool: python
+    version: latest
+    bins: [python3, python]
+# Requiring pip rejects distribution interpreters installed without it.
+check:
+  command: python3 --version && python3 -m pip --version >/dev/null
+image:
+  # Scripts such as pip are matched through their interpreter, so only the
+  # interpreters are listed.
+  runtime_globs: [/opt/mise/installs/python/*/bin/python*]
+provides: [python, python3, pip, pip3]
+profiles: [pypi]

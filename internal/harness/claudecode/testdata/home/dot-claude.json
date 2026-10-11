@@ -1,0 +1,44 @@
+{
+  "numStartups": 12,
+  "hasCompletedOnboarding": true,
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {}
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {"Authorization": "Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
+    },
+    "search": {
+      "type": "http",
+      "url": "https://search.example.com/mcp?apikey=abc123",
+      "headers": {"X-Client": "sandcast-test"}
+    },
+    "shared": {"command": "user-shared"},
+    "socket": {"type": "ws", "url": "wss://ws.example.com"}
+  },
+  "projects": {
+    "__PROJECT__": {
+      "allowedTools": [],
+      "mcpServers": {
+        "db": {
+          "command": "db-mcp",
+          "args": ["--api-key", "shortkey1"],
+          "env": {
+            "AWS_ACCESS_KEY_ID": "AKIAXXXXXXXXXXXXXXXX",
+            "DB_PASSWORD": "hunter2",
+            "LOG_LEVEL": "info"
+          }
+        },
+        "shared": {"command": "local-shared"}
+      }
+    },
+    "/elsewhere": {
+      "mcpServers": {"elsewhere-only": {"command": "nope"}}
+    }
+  }
+}

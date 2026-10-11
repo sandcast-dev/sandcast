@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.14.0
+          install-only: true
+      - run: make verify
+      - run: make build
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman version
+      # sandcast lock needs a host mise; the integration tests fail instead of
+      # skipping without it because CI is set. The release comes from the pin
+      # in internal/version.MisePin and is checked against SHASUMS256.txt.
+      - name: Install mise
+        run: |
+          version=$(sed -n 's/^[[:space:]]*MisePin = "\(v[0-9.]*\)"$/\1/p' internal/version/version.go)
+          test -n "$version"
+          asset="mise-${version}-linux-x64"
+          base="https://github.com/jdx/mise/releases/download/${version}"
+          dir="$RUNNER_TEMP/mise"
+          mkdir -p "$dir/bin"
+          curl -fsSL --retry 3 -o "$dir/$asset" "$base/$asset"
+          curl -fsSL --retry 3 -o "$dir/SHASUMS256.txt" "$base/SHASUMS256.txt"
+          want=$(grep -E "[ /*]${asset}\$" "$dir/SHASUMS256.txt" | awk '{print $1}')
+          got=$(sha256sum "$dir/$asset" | awk '{print $1}')
+          test -n "$want" && test "$want" = "$got"
+          install -m 0755 "$dir/$asset" "$dir/bin/mise"
+          echo "$dir/bin" >> "$GITHUB_PATH"
+          "$dir/bin/mise" --version
+      - run: make test-integration

@@ -1,0 +1,10 @@
+id: example
+display_name: Example
+endpoints:
+  - host: mcp.example.com
+    port: 443
+    protocol: mcp
+    mcp:
+      strict_tool_names: false
+    rules:
+      - allow: { method: tools/call, tool: "search*" }

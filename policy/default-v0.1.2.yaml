@@ -1,0 +1,32 @@
+# OpenShell restrictive default sandbox policy, pinned to OpenShell v0.1.2.
+#
+# Source: crates/openshell-policy/src/lib.rs, restrictive_default_policy(),
+# lines 985-1008 at tag v0.1.2 (commit 6648bd0c290efbc41ba131ee9831ee45cd431f94).
+# List order follows the upstream source; sandcast sorts when it renders.
+#
+# Upstream sets process to None and leaves process identity to the compute
+# runtime, so this file has no process section. sandcast sets process from the
+# image's final user when it renders build/openshell/policy.yaml.
+#
+# Upstream network_policies and network_middlewares are empty: the default
+# policy blocks all network access. Endpoints come from provider profiles at
+# runtime and never from the image policy (FR-033).
+#
+# Refresh this file only together with the OpenShell pin, with a changelog entry.
+version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+    - /var/log
+  read_write:
+    - /tmp
+    - /dev/null
+landlock:
+  compatibility: best_effort
+network_policies: {}

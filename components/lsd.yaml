@@ -1,0 +1,13 @@
+key: lsd
+name: lsd
+description: ls replacement with colors and icons.
+match:
+  host_tools: [lsd]
+installer:
+  mise:
+    tool: lsd
+    version: latest
+    bins: [lsd]
+check:
+  command: lsd --version
+provides: [lsd]

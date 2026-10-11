@@ -1,0 +1,8 @@
+schema_version: 1
+name: demo
+base_image: x
+components: []
+colour: blue
+targets:
+  openshell:
+    image: localhost/demo

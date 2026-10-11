@@ -1,0 +1,14 @@
+key: codex
+name: Codex CLI
+description: OpenAI Codex agent as the native executable.
+match:
+  harnesses: [codex]
+installer:
+  mise:
+    tool: codex
+    version: latest
+    bins: [codex]
+check:
+  command: codex --version
+provides: [codex]
+profiles: [codex]

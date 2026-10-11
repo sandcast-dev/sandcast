@@ -1,0 +1,24 @@
+# 30-mise: tools installed by mise v2026.10.4 in locked mode
+USER root
+ENV MISE_DATA_DIR=/opt/mise \
+    MISE_CONFIG_DIR=/etc/mise \
+    MISE_CACHE_DIR=/tmp/sandcast-mise/cache \
+    MISE_STATE_DIR=/tmp/sandcast-mise/state \
+    MISE_TRUSTED_CONFIG_PATHS=/etc/mise \
+    MISE_USE_VERSIONS_HOST=0 \
+    PATH=/opt/mise/shims:$PATH
+COPY mise/mise.toml mise/mise.lock /etc/mise/
+COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
+RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+ && for attempt in 1 2 3; do \
+      if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
+      if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
+      sleep 5; \
+    done \
+ && echo "7f92c8a883a489b31ef09862e9e198cc1b80ab32a67efebc9ae75146b7ea0e4c  /usr/local/bin/mise" | sha256sum -c - \
+ && chmod 0755 /usr/local/bin/mise \
+ && install -d -o sandbox -g sandbox /opt/mise
+USER sandbox
+RUN (mise install --locked --yes || mise install --locked --yes) \
+ && mise reshim \
+ && rm -rf /tmp/sandcast-mise

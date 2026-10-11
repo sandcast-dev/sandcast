@@ -1,0 +1,5 @@
+id: example
+display_name: Example
+endpoints:
+  - host: 169.254.169.254
+    port: 80

@@ -1,0 +1,5 @@
+id: example
+display_name: Example
+endpoints:
+  - host: api.example.com
+    ports: [443, 70000]

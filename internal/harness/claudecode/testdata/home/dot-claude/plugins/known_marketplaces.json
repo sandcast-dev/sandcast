@@ -1,0 +1,22 @@
+{
+  "dev-marketplace": {
+    "source": {"source": "directory", "path": "__HOME__/dev/dev-marketplace"},
+    "installLocation": "__HOME__/dev/dev-marketplace"
+  },
+  "private-tools": {
+    "source": {"source": "git", "url": "https://deploy:hunter3@git.example.com/org/private-tools.git"},
+    "installLocation": "__HOME__/.claude/plugins/marketplaces/private-tools"
+  },
+  "proj-market": {
+    "source": {"source": "directory", "path": "__PROJECT__/tools/proj-market"},
+    "installLocation": "__PROJECT__/tools/proj-market"
+  },
+  "team-tools": {
+    "source": {"source": "github", "repo": "example-org/team-tools"},
+    "installLocation": "__HOME__/.claude/plugins/marketplaces/team-tools"
+  },
+  "token-query": {
+    "source": {"source": "url", "url": "https://git.example.com/m/marketplace.json?private_token=qwerty9"},
+    "installLocation": "__HOME__/.claude/plugins/marketplaces/token-query"
+  }
+}

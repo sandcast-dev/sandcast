@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "anthropic-proxy": {"command": "proxy", "env": {"ANTHROPIC_API_KEY": "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx"}},
+    "basic": {
+      "type": "http",
+      "url": "https://basic.example.com/mcp",
+      "headers": {"Authorization": "Basic dXNlcjpwYXNz"}
+    },
+    "broken": {"command": "x", "env": {"PORT": 8080}},
+    "docs": {
+      "type": "sse",
+      "url": "https://docs.example.com/sse",
+      "headers": {"Authorization": "Bearer ${DOCS_TOKEN}"}
+    },
+    "shared": {"command": "project-shared"}
+  }
+}

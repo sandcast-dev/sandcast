@@ -1,0 +1,13 @@
+key: starship
+name: Starship
+description: Cross-shell prompt.
+match:
+  host_tools: [starship]
+installer:
+  mise:
+    tool: starship
+    version: latest
+    bins: [starship]
+check:
+  command: starship --version
+provides: [starship]

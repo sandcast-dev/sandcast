@@ -1,0 +1,8 @@
+# 40-recipes: mytool (.sandcast/recipes/mytool.yaml)
+USER root
+RUN <<'SANDCAST_EOF'
+set -eux
+curl -fsSL https://example.com/mytool.tar.gz -o /tmp/m.tgz
+echo 'abc  /tmp/m.tgz' | sha256sum -c
+tar -xzf /tmp/m.tgz -C /usr/local/bin mytool
+SANDCAST_EOF

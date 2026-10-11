@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Example provider profile. OpenShell does not load it; import it explicitly:
+#   openshell provider profile lint   -f providers/npm.yaml
+#   openshell provider profile import -f providers/npm.yaml --global
+#
+# Copy and edit this file rather than importing it unchanged. `binaries` is the
+# least-privilege control that decides which processes may reach the endpoints
+# below, so it has to name the paths in *your* image.
+#
+# Client binaries:   node (which also runs npm, npx, pnpm and yarn).
+# Reference layout:  Node.js at /usr/bin/node (Debian/Ubuntu `apt install nodejs
+#                    npm`, Alpine `apk add nodejs npm`) or /usr/local/bin/node
+#                    (the official node images). Version managers such as mise,
+#                    nvm or fnm install node elsewhere; list that path instead.
+#                    OpenShell identifies a process by its executable, not its
+#                    command line, so npm and the other package managers match
+#                    the node interpreter that runs them. List that interpreter,
+#                    never a script path such as /usr/bin/npm. Exact paths
+#                    resolve symlinks; globs must match the interpreter's real
+#                    path.
+# Credential scope:  none. Registry access here is anonymous.
+# Endpoint access:   registry.npmjs.org for package metadata and tarballs.
+#                    Packages that download prebuilt binaries from other hosts
+#                    in an install script need those hosts in a separate profile.
+# Smoke test:        openshell sandbox create --provider <name> -- \
+#                      npm view left-pad version
+
+id: npm
+display_name: npm
+description: Node.js package installation from the npm registry
+category: data
+endpoints:
+  - host: registry.npmjs.org
+    port: 443
+binaries:
+  - /usr/bin/node
+  - /usr/local/bin/node

@@ -1,0 +1,153 @@
+# Contract: build plan (build/<target>/plan.yaml). Deterministic: sorted lists, no timestamps.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: sandcast build plan
+type: object
+additionalProperties: false
+required: [schema_version, sandcast_version, target, platform, engine, base_image, image_facts, final_user, image, probe_delta, components, mise, profiles, shell, unresolved, conflicts, notices]
+properties:
+  schema_version: { type: integer, const: 1 }
+  sandcast_version: { type: string }
+  target: { type: string, enum: [openshell, container] }
+  platform:
+    type: object
+    required: [value, source]
+    properties:
+      value: { type: string, pattern: "^linux/(amd64|arm64)$" }
+      source: { type: string, enum: [flag, manifest, host] }
+  engine:
+    type: object
+    required: [name, source]
+    properties:
+      name: { type: string, enum: [podman, docker] }
+      source: { type: string, enum: [flag, manifest, detected, fallback] }
+  base_image:
+    type: object
+    required: [input, reference, digest]
+    properties:
+      input: { type: string }
+      registry_entry: { type: [string, "null"] }
+      reference: { type: string }
+      digest: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+      notes: { type: array, items: { type: string } }
+  image_facts:
+    type: object
+    required: [os, package_manager, user, shells]
+    properties:
+      os:
+        type: object
+        properties: { id: {type: string}, id_like: {type: string}, name: {type: string}, version: {type: string} }
+      package_manager: { type: string, enum: [apt-get, dnf, yum, apk, none] }
+      user:
+        type: object
+        properties: { name: {type: string}, uid: {type: integer}, gid: {type: integer}, group: {type: string}, home: {type: string}, shell: {type: string} }
+      shells: { type: array, items: { type: string } }
+  final_user:
+    type: object
+    required: [name, uid, gid, group, home, created]
+    properties:
+      name: { type: string }
+      uid: { type: integer }
+      gid: { type: integer }
+      group: { type: string, description: Primary group name, used for ownership and the policy's run_as_group. }
+      home: { type: string }
+      created: { type: boolean }
+  image:
+    type: object
+    description: Environment variables and directories the installed components (and harnesses) need, rendered into the 20-user section.
+    required: [env, dirs]
+    properties:
+      env:
+        type: array
+        items: { type: object, required: [name, value], properties: { name: {type: string}, value: {type: string} } }
+      dirs:
+        type: array
+        items: { type: object, required: [path, owner], properties: { path: {type: string}, owner: {type: string, enum: [root, user]} } }
+  probe_delta:
+    type: array
+    items:
+      type: object
+      required: [component_key, status, action]
+      properties:
+        component_key: { type: string }
+        status: { type: string, enum: [present, missing, incompatible] }
+        installed_version: { type: string }
+        required_version: { type: string }
+        action: { type: string, enum: [skip, install, shadow, unresolvable] }
+  components:
+    type: array
+    items:
+      type: object
+      required: [key, tier, source_file, installer_kind, action, fragment_name, fragment]
+      properties:
+        key: { type: string }
+        tier: { type: string, enum: [shipped, registry, project] }
+        source_file: { type: string }
+        installer_kind: { type: string, enum: [mise, package, script, fragment] }
+        action: { type: string, enum: [skip, install, shadow] }
+        implicit: { type: boolean, description: Added by sandcast (OpenShell packages, the shell program, mise prerequisites, harness agents). }
+        fragment_name: { type: string, description: "10-system-packages, 30-mise (aggregated layers, same text on every member), 40-recipes/<key> or 50-fragments/<key>." }
+        fragment: { type: string, description: Rendered Containerfile text; empty for skip. }
+        profiles: { type: array, items: { type: string } }
+        bins: { type: array, items: { type: string }, description: Binaries resolved in the built image for profile adaptation. }
+        runtime_globs: { type: array, items: { type: string } }
+        check:
+          type: object
+          description: The check verify runs in the built image.
+          properties:
+            command: { type: string }
+            expect_exit: { type: integer }
+            version: { type: string }
+            stdout_contains: { type: string }
+  mise:
+    type: object
+    required: [toml, lock_path, platform]
+    properties:
+      toml: { type: string }
+      lock_path: { type: string }
+      platform: { type: string, enum: [linux-x64, linux-arm64] }
+  profiles:
+    type: array
+    items:
+      type: object
+      required: [id, tier, source_file, adapted_id]
+      properties:
+        id: { type: string }
+        tier: { type: string, enum: [upstream, overlay, project] }
+        source_file: { type: string }
+        adapted_id: { type: string }
+  policy: { type: string, description: Image-embedded policy text; absent for the container target. }
+  shell:
+    type: object
+    properties:
+      program: { type: string, enum: [zsh, bash, none] }
+      rc_path: { type: string }
+      rc: { type: string, description: The curated configuration text copied to rc_path. }
+  harnesses:
+    type: array
+    description: One 70-harness section per manifest harness (phase 2).
+    items:
+      type: object
+      required: [name, fragment_name, fragment]
+      properties:
+        name: { type: string }
+        component: { type: string }
+        fragment_name: { type: string }
+        fragment: { type: string }
+  unresolved:
+    type: array
+    items:
+      type: object
+      required: [key, reason]
+      properties:
+        key: { type: string }
+        reason: { type: string }
+        optional: { type: boolean, description: Optional components are reported but do not block the build. }
+  conflicts:
+    type: array
+    items:
+      type: object
+      required: [binary, components]
+      properties:
+        binary: { type: string }
+        components: { type: array, items: { type: string } }
+  notices: { type: array, items: { type: string } }

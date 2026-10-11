@@ -1,0 +1,6 @@
+id: example
+display_name: Example
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: http

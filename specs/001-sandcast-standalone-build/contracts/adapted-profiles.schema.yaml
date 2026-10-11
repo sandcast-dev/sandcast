@@ -1,0 +1,48 @@
+# Contract: adapted profile set index (build/<target>/profiles/index.yaml).
+# Each profile file next to it is an unmodified upstream-schema provider profile
+# except for `id` (when suffixed) and `binaries` (rewritten to resolved paths).
+$schema: https://json-schema.org/draft/2020-12/schema
+title: sandcast adapted profile set
+type: object
+additionalProperties: false
+required: [schema_version, image, image_label, scope_hint, profiles]
+properties:
+  schema_version: { type: integer, const: 1 }
+  image:
+    type: object
+    required: [name, tag, digest, platform]
+    properties:
+      name: { type: string }
+      tag: { type: string }
+      digest: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+      platform: { type: string }
+  image_label: { type: string, pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" }
+  scope_hint: { type: string, enum: [workspace, platform] }
+  profiles:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [upstream_id, adapted_id, file, source_tier, source_file, binaries, flagged]
+      properties:
+        upstream_id: { type: string }
+        adapted_id: { type: string }
+        file: { type: string }
+        source_tier: { type: string, enum: [upstream, overlay, project] }
+        source_file: { type: string }
+        binaries: { type: array, items: { type: string } }
+        flagged: { type: boolean }
+        flag_reason: { type: string }
+# Image labels written in pass 2:
+#   io.sandcast.version          = sandcast binary version
+#   io.sandcast.manifest-name    = manifest name
+#   io.sandcast.profiles-path    = /usr/share/sandcast/profiles
+#   io.sandcast.profiles-index   = {"ids":[...],"flagged":[...]} (JSON)
+#
+# Endpoint host rule (lint, ValidHost in internal/profile/domains.go): a
+# non-empty endpoint host must either match the character set
+# ^[A-Za-z0-9_*.-]+$ (a DNS name or wildcard pattern) or parse as an IP
+# address without an IPv6 zone. ValidHost checks only the character shape;
+# wildcard shape (TLD wildcards, middle-label wildcards) and blocked
+# destinations (loopback, link-local, metadata hostnames, control-plane
+# ports) are checked separately by the host rules in lint, not by ValidHost.

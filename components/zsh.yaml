@@ -1,0 +1,16 @@
+key: zsh
+name: Zsh
+description: Z shell from the distribution packages.
+match:
+  host_tools: [zsh]
+installer:
+  package:
+    packages:
+      apt-get: [zsh]
+      dnf: [zsh]
+      yum: [zsh]
+      apk: [zsh]
+    bins: [zsh]
+check:
+  command: zsh --version
+provides: [zsh]

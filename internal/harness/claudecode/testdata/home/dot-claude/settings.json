@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "disabled-one@claude-plugins-official": false,
+    "github@claude-plugins-official": true
+  }
+}

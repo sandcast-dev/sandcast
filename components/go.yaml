@@ -1,0 +1,28 @@
+key: go
+name: Go
+description: Go toolchain with the module cache under /opt/go.
+match:
+  files: [go.mod, go.work]
+installer:
+  mise:
+    tool: go
+    version: latest
+    bins: [go, gofmt]
+check:
+  command: go version
+image:
+  # GOTOOLCHAIN=local keeps the go command from downloading toolchains into
+  # the writable module cache: a binary there would get the go-proxy egress.
+  # A go.mod that needs a newer Go than the installed one fails with a clear
+  # message; pin the version in the manifest instead.
+  env:
+    GOPATH: /opt/go
+    GOTOOLCHAIN: local
+  dirs:
+    - path: /opt/go
+      owner: user
+  read_write: [/opt/go]
+  runtime_globs:
+    - /opt/mise/installs/go/*/bin/*
+provides: [go, gofmt]
+profiles: [go-proxy]

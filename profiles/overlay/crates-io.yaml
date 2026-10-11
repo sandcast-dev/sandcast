@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Example provider profile. OpenShell does not load it; import it explicitly:
+#   openshell provider profile lint   -f providers/crates-io.yaml
+#   openshell provider profile import -f providers/crates-io.yaml --global
+#
+# Copy and edit this file rather than importing it unchanged. `binaries` is the
+# least-privilege control that decides which processes may reach the endpoints
+# below, so it has to name the paths in *your* image.
+#
+# Client binaries:   cargo.
+# Reference layout:  cargo at /usr/bin/cargo (Debian/Ubuntu `apt install cargo`,
+#                    Alpine `apk add cargo`) or /usr/local/bin/cargo, and the
+#                    rustup toolchains of the official rust images under
+#                    /usr/local/rustup/toolchains. A rustup install in a home
+#                    directory resolves elsewhere (~/.rustup/toolchains/*/bin);
+#                    add that path if your image installs Rust that way.
+#                    The cargo under ~/.cargo/bin or /usr/local/cargo/bin is a
+#                    rustup proxy that runs the toolchain cargo, so list the
+#                    toolchain path, not the proxy.
+# Credential scope:  none. crates.io downloads here are anonymous.
+# Endpoint access:   index.crates.io for the sparse registry index;
+#                    static.crates.io for crate downloads; crates.io for the
+#                    web API that cargo search and the download redirects use.
+# Smoke test:        openshell sandbox create --provider <name> -- \
+#                      cargo search --limit 1 serde
+
+id: crates-io
+display_name: crates.io
+description: Rust crate downloads from crates.io through cargo
+category: data
+endpoints:
+  - host: crates.io
+    port: 443
+  - host: index.crates.io
+    port: 443
+  - host: static.crates.io
+    port: 443
+binaries:
+  - /usr/bin/cargo
+  - /usr/local/bin/cargo
+  - /usr/local/rustup/toolchains/*/bin/cargo

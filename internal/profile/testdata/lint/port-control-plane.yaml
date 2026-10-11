@@ -1,0 +1,5 @@
+id: example
+display_name: Example
+endpoints:
+  - host: kubernetes.example.com
+    port: 6443

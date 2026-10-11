@@ -1,0 +1,49 @@
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags:
+    - integration
+    - gateway
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gocritic
+    - revive
+    - misspell
+    - gosec
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: var-naming
+          disabled: true
+    gosec:
+      excludes:
+        # sandcast drives podman, docker, mise and openshell by design.
+        - G204
+        # Project and build files are user-owned, not secrets.
+        - G301
+        - G304
+        - G306
+  exclusions:
+    rules:
+      - path: ^tests/
+        linters:
+          - gosec
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

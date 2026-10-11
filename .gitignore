@@ -40,3 +40,6 @@ coverage.out
 
 # sandcast build directories in fixture projects
 **/.sandcast/build/
+
+# spex walkthrough run workspaces (persist locally, never committed)
+**/.walkthrough/

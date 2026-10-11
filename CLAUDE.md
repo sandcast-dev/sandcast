@@ -35,19 +35,51 @@ When creating or editing documentation (Markdown, AsciiDoc, README):
 
 ## Build and Tool Rules
 
-- Use make targets (`make test`, `make lint`, `make verify`) once they exist. Do not run `go build` directly.
+- Use make targets. Do not run `go build` directly.
+  - `make build`: the binary at `./sandcast`
+  - `make test`, `make lint`, `make verify` (test plus lint), `make fmt`
+  - `make test-integration`: build-tagged tests against podman (`tests/integration/`, tag `integration`)
+  - `make test-gateway`: additionally starts a throwaway OpenShell v0.1.2 gateway (tag `gateway`, `tests/integration/gateway.sh`)
+  - `make cross`: linux and darwin binaries for amd64 and arm64 in `dist/`
+- Golden files regenerate with `UPDATE_GOLDEN=1 go test ./...` (see `tests/golden/README.md`).
 - Container runtime: podman by default. Never require docker-specific features.
 - Pin external tools: OpenShell release for vendored profiles, mise release for the installer.
 - Skill files under the skill bundle are executable code. Review them with the same rigor as Go source.
 
-## Project Structure (planned)
+## Project Structure
 
 ```text
-cmd/            # CLI entry point
-internal/       # Go packages: manifest, registry, probe, components, profiles, plan, build, verify
-skills/         # portable skill bundle (capture, build) installed into harnesses
-profiles/       # vendored upstream profiles (pinned) and the sandcast overlay
-specs/          # feature specifications
-brainstorm/     # design notes
-docs/           # README, command reference, configuration reference
+cmd/sandcast/       # CLI entry point (wiring only)
+embed.go            # package sandcast: embeds components/, profiles/, policy/, skills/, base-images.yaml
+internal/
+  cli/              # cobra commands, one file per command group, no business logic
+  pipeline/         # gathers plan inputs, runs plan, build, verify, profile import and export
+  manifest/         # .sandcast/manifest.yaml schema, load, validate, version gate
+  registry/         # base image registry (shipped plus ~/.config/sandcast/base-images.yaml)
+  engine/           # podman and docker through os/exec, plus a scripted fake
+  probe/            # probe script, digest and platform keyed cache, check runner
+  component/        # component schema, three tiers, remote registry refresh, conflicts, versions
+  mise/             # mise.toml rendering, mise.lock reading, mise lock wrapper, platforms
+  profile/          # OpenShell profile schema, tiers, lint, adaptation, index, MCP profiles, domains
+  policy/           # image-embedded OpenShell policy
+  plan/             # delta, final user, fragments, deterministic plan
+  build/            # Containerfile sections, two-pass build, resolution, fragments, learnings, promotion, redaction pass
+  verify/           # component checks in the built image
+  gateway/          # openshell CLI wrapper for profile import
+  harness/          # adapter interface and registry; claudecode/ adapter
+  skills/           # skill bundle, installer, version check
+  capture/          # component matching against a project and the host
+  redact/           # credential detection and placeholders
+  fsutil/           # .sandcast layout, cache and config dirs, atomic writes
+  version/          # binary version and pins
+  testutil/         # golden-file helper
+components/         # shipped component definitions
+profiles/           # upstream/v0.1.2 (vendored, unmodified) and overlay/
+policy/             # pinned default policy (default-v0.1.2.yaml)
+skills/             # portable skill bundle: VERSION, capture/, build/
+base-images.yaml    # shipped base image registry
+docs/               # cli.md, configuration.md, pins.md, guides/
+tests/              # fixtures/reference-project, golden/README.md, integration/
+specs/              # feature specifications
+brainstorm/         # design notes
 ```

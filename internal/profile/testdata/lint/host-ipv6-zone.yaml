@@ -1,0 +1,5 @@
+id: example
+display_name: Example
+endpoints:
+  - host: "2001:db8::1%eth0"
+    port: 443

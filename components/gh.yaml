@@ -1,0 +1,14 @@
+key: gh
+name: GitHub CLI
+description: GitHub command-line client.
+match:
+  host_tools: [gh]
+installer:
+  mise:
+    tool: gh
+    version: latest
+    bins: [gh]
+check:
+  command: gh --version
+provides: [gh]
+profiles: [github]

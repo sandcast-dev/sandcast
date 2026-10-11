@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Example provider profile. OpenShell does not load it; import it explicitly:
+#   openshell provider profile lint   -f providers/go-proxy.yaml
+#   openshell provider profile import -f providers/go-proxy.yaml --global
+#
+# Copy and edit this file rather than importing it unchanged. `binaries` is the
+# least-privilege control that decides which processes may reach the endpoints
+# below, so it has to name the paths in *your* image.
+#
+# Client binaries:   go (the go command downloads modules itself).
+# Reference layout:  go at /usr/local/go/bin/go (the official golang images and
+#                    the upstream tarball) or under /usr/lib/go-<version>/bin
+#                    (Debian/Ubuntu `apt install golang`, where /usr/bin/go is a
+#                    symlink). Version managers such as mise install go
+#                    elsewhere; list that path instead. Toolchains that
+#                    GOTOOLCHAIN downloads run from the module cache and need
+#                    their own path.
+# Credential scope:  none. Public module downloads here are anonymous.
+# Endpoint access:   proxy.golang.org for module metadata and downloads;
+#                    sum.golang.org for the checksum database;
+#                    storage.googleapis.com, which serves the module zips the
+#                    proxy redirects to. That host fronts every public Google
+#                    Cloud Storage bucket, not only the proxy's.
+# Smoke test:        openshell sandbox create --provider <name> -- \
+#                      go list -m golang.org/x/text@latest
+
+id: go-proxy
+display_name: Go module proxy
+description: Go module downloads through the public Go module proxy and checksum database
+category: data
+endpoints:
+  - host: proxy.golang.org
+    port: 443
+  - host: sum.golang.org
+    port: 443
+  - host: storage.googleapis.com
+    port: 443
+binaries:
+  - /usr/local/go/bin/go
+  - /usr/bin/go
+  - /usr/lib/go-*/bin/go

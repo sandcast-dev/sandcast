@@ -1,0 +1,16 @@
+key: yq
+name: yq
+description: YAML processor by Mike Farah.
+match:
+  host_tools: [yq]
+installer:
+  mise:
+    tool: yq
+    version: latest
+    bins: [yq]
+# Some distributions ship an unrelated Python yq with a different syntax.
+check:
+  command: yq --version
+  expect:
+    stdout_contains: mikefarah
+provides: [yq]

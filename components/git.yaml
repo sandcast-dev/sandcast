@@ -1,0 +1,17 @@
+key: git
+name: Git
+description: Git version control from the distribution packages.
+match:
+  always: true
+installer:
+  package:
+    packages:
+      apt-get: [git]
+      dnf: [git]
+      yum: [git]
+      apk: [git]
+    bins: [git]
+check:
+  command: git --version
+provides: [git]
+profiles: [github, gitlab]

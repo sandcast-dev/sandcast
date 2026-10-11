@@ -1,0 +1,16 @@
+key: curl
+name: curl
+description: curl from the distribution packages.
+match:
+  always: true
+installer:
+  package:
+    packages:
+      apt-get: [curl]
+      dnf: [curl]
+      yum: [curl]
+      apk: [curl]
+    bins: [curl]
+check:
+  command: curl --version
+provides: [curl]

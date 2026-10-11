@@ -1,0 +1,9 @@
+id: example
+display_name: Example
+endpoints:
+  - host: s3.amazonaws.com
+    port: 443
+    protocol: rest
+    access: read-write
+    credential_signing: sigv5
+    signing_service: s3

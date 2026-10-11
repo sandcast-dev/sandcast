@@ -1,0 +1,16 @@
+key: bash
+name: Bash
+description: GNU Bash from the distribution packages.
+match:
+  host_tools: [bash]
+installer:
+  package:
+    packages:
+      apt-get: [bash]
+      dnf: [bash]
+      yum: [bash]
+      apk: [bash]
+    bins: [bash]
+check:
+  command: bash --version
+provides: [bash]

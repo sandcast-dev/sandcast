@@ -1,0 +1,32 @@
+# Base image registry shipped with sandcast (FR-010).
+#
+# Entries are grouped by target type. Exactly one entry per target type is
+# the default. A user file at ~/.config/sandcast/base-images.yaml has the same
+# shape and merges over this one by entry name; a user entry marked as default
+# replaces the shipped default for its target type.
+schema_version: 1
+targets:
+  openshell:
+    - name: nvidia-community-base
+      ref: ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+      default: true
+      notes: >-
+        Ubuntu 24.04 with user sandbox and home /sandbox.
+        No zsh, starship or lsd.
+    - name: nvidia-ubuntu
+      ref: nvcr.io/nvidia/base/ubuntu:24.04
+      notes: >-
+        OpenShell's default workload image.
+        Runs as root; sandcast creates the sandbox user.
+  container:
+    - name: fedora-42
+      ref: registry.fedoraproject.org/fedora:42
+      default: true
+      notes: >-
+        Fedora 42 with dnf.
+        Runs as root; the container target keeps root as the user.
+    - name: ubuntu-24.04
+      ref: docker.io/library/ubuntu:24.04
+      notes: >-
+        Ubuntu 24.04 with apt-get.
+        Runs as root and ships a user named ubuntu with uid 1000.

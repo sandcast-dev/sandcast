@@ -1,0 +1,8 @@
+id: example
+display_name: Example
+endpoints:
+  - host: mcp.example.com
+    port: 443
+    protocol: mcp
+    rules:
+      - allow: { method: "resources/*" }

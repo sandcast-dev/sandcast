@@ -1,0 +1,10 @@
+[project]
+name = "reference-tools"
+version = "0.1.0"
+description = "Python half of the sandcast reference fixture"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

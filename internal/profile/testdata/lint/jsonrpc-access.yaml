@@ -1,0 +1,7 @@
+id: example
+display_name: Example
+endpoints:
+  - host: rpc.example.com
+    port: 443
+    protocol: json-rpc
+    access: full

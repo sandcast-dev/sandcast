@@ -1,0 +1,20 @@
+key: iproute2
+name: iproute2
+description: The ip utility that OpenShell uses to set up the sandbox network namespace.
+match:
+  always: true
+installer:
+  package:
+    packages:
+      apt-get: [iproute2]
+      dnf: [iproute]
+      yum: [iproute]
+      apk: [iproute2]
+    bins: [ip]
+# The sbin directories are appended because some images leave them off the
+# PATH of non-root users. "ip -V" fails for the busybox applet, so only the
+# real iproute2 passes. The expansion strips the prefix before the version.
+check:
+  command: 'PATH="$PATH:/usr/sbin:/sbin"; out=$(ip -V) && echo "${out#*iproute2-}"'
+provides: [ip, ss]
+targets: [openshell]

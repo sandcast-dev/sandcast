@@ -1,0 +1,12 @@
+schema_version: 1
+name: Demo_Project
+base_image: x
+engine: nerdctl
+platform: darwin/arm64
+components:
+  - key: go
+  - key: go
+  - key: Bad_Key
+harnesses:
+  - name: vscode
+targets: {}

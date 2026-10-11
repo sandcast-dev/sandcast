@@ -1,0 +1,14 @@
+key: pnpm
+name: pnpm
+description: pnpm package manager as a standalone executable.
+match:
+  files: [pnpm-lock.yaml, pnpm-workspace.yaml]
+installer:
+  mise:
+    tool: pnpm
+    version: latest
+    bins: [pnpm, pnpx]
+check:
+  command: pnpm --version
+provides: [pnpm, pnpx]
+profiles: [npm]

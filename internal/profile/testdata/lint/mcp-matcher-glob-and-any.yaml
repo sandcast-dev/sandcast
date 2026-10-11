@@ -1,0 +1,12 @@
+id: example
+display_name: Example
+endpoints:
+  - host: mcp.example.com
+    port: 443
+    protocol: mcp
+    rules:
+      - allow:
+          method: tools/call
+          tool:
+            glob: search
+            any: [lookup]

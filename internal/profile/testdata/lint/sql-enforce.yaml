@@ -1,0 +1,8 @@
+id: example
+display_name: Example
+endpoints:
+  - host: db.example.com
+    port: 5432
+    protocol: sql
+    access: read-only
+    enforcement: enforce

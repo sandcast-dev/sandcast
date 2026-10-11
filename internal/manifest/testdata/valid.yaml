@@ -1,0 +1,32 @@
+schema_version: 1
+name: demo
+base_image: nvidia-community-base
+platform: linux/arm64
+components:
+  - key: go
+  - key: starship
+    version: "1.20"
+  - key: fzf
+    optional: true
+harnesses:
+  - name: claude-code
+    mcp_servers:
+      - name: docs
+        url: https://mcp.example.com/sse
+        env:
+          API_KEY: ${SANDCAST_SECRET_1}
+    plugins:
+      - name: superpowers
+        source: anthropics/claude-plugins-official
+shell:
+  program: zsh
+  rc: |
+    autoload -Uz compinit && compinit -C
+    [[ "$TERM" != "dumb" ]] && eval "$(starship init zsh)"
+  components: [starship]
+targets:
+  openshell:
+    image: localhost/demo
+  container:
+    image: localhost/demo-plain
+    tag: v1

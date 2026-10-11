@@ -1,0 +1,9 @@
+id: example
+display_name: Example
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: rest
+    access: full
+    mcp:
+      versions: ["2025-11-25"]

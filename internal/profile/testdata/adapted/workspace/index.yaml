@@ -1,0 +1,44 @@
+schema_version: 1
+image:
+  name: quay.io/example/demo-sandbox
+  tag: latest
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  platform: linux/amd64
+image_label: demo-sandbox
+scope_hint: workspace
+profiles:
+  - upstream_id: github
+    adapted_id: github
+    file: github.yaml
+    source_tier: upstream
+    source_file: profiles/upstream/v0.1.2/github.yaml
+    binaries:
+      - /usr/bin/gh
+      - /usr/bin/git
+    flagged: false
+  - upstream_id: internal-api
+    adapted_id: internal-api
+    file: internal-api.yaml
+    source_tier: project
+    source_file: .sandcast/profiles/internal-api.yaml
+    binaries:
+      - /usr/bin/curl
+    flagged: false
+  - upstream_id: npm
+    adapted_id: npm
+    file: npm.yaml
+    source_tier: overlay
+    source_file: profiles/overlay/npm.yaml
+    binaries: []
+    flagged: true
+    flag_reason: no binary resolved in the built image; the profile matches no process
+  - upstream_id: pypi
+    adapted_id: pypi
+    file: pypi.yaml
+    source_tier: upstream
+    source_file: profiles/upstream/v0.1.2/pypi.yaml
+    binaries:
+      - /opt/mise/installs/python/*/bin/python3*
+      - /opt/mise/installs/python/3.12.7/bin/python3.12
+      - /opt/mise/installs/uv/0.5.0/uv
+    flagged: false

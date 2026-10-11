@@ -1,0 +1,342 @@
+schema_version: 1
+sandcast_version: dev
+target: openshell
+platform:
+  value: linux/arm64
+  source: manifest
+engine:
+  name: podman
+  source: detected
+base_image:
+  input: nvidia-community-base
+  registry_entry: nvidia-community-base
+  reference: ghcr.io/nvidia/openshell-community/sandboxes/base:latest
+  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  notes:
+    - Ubuntu 24.04
+image_facts:
+  os:
+    id: ubuntu
+    id_like: debian
+    name: Ubuntu
+    version: "24.04"
+  package_manager: apt-get
+  user:
+    name: sandbox
+    uid: 1000
+    gid: 1000
+    group: sandbox
+    home: /sandbox
+    shell: /bin/bash
+  shells:
+    - /bin/bash
+    - /bin/sh
+final_user:
+  name: sandbox
+  uid: 1000
+  gid: 1000
+  group: sandbox
+  home: /sandbox
+  created: false
+image:
+  env:
+    - name: GOPATH
+      value: /opt/go
+  dirs:
+    - path: /opt/go
+      owner: user
+probe_delta:
+  - component_key: ca-certificates
+    status: present
+    installed_version: 2.43.0
+    action: skip
+  - component_key: curl
+    status: present
+    installed_version: 2.43.0
+    action: skip
+  - component_key: git
+    status: present
+    installed_version: 2.43.0
+    action: skip
+  - component_key: go
+    status: missing
+    required_version: "1.25"
+    action: install
+  - component_key: iproute2
+    status: missing
+    action: install
+  - component_key: mytool
+    status: missing
+    action: install
+  - component_key: nftables
+    status: missing
+    action: install
+  - component_key: starship
+    status: missing
+    action: install
+  - component_key: zsh
+    status: missing
+    action: install
+components:
+  - key: ca-certificates
+    tier: shipped
+    source_file: components/ca-certificates.yaml
+    installer_kind: package
+    action: skip
+    implicit: true
+    fragment_name: ""
+    fragment: ""
+    bins:
+      - update-ca-certificates
+    check:
+      command: test -s /etc/ssl/certs/ca-certificates.crt
+  - key: curl
+    tier: shipped
+    source_file: components/curl.yaml
+    installer_kind: package
+    action: skip
+    implicit: true
+    fragment_name: ""
+    fragment: ""
+    bins:
+      - curl
+    check:
+      command: curl --version
+  - key: git
+    tier: shipped
+    source_file: components/git.yaml
+    installer_kind: package
+    action: skip
+    fragment_name: ""
+    fragment: ""
+    profiles:
+      - github
+    bins:
+      - git
+    check:
+      command: git --version
+  - key: go
+    tier: shipped
+    source_file: components/go.yaml
+    installer_kind: mise
+    action: install
+    fragment_name: 30-mise
+    fragment: |
+      # 30-mise: tools installed by mise v2026.10.4 in locked mode
+      USER root
+      ENV MISE_DATA_DIR=/opt/mise \
+          MISE_CONFIG_DIR=/etc/mise \
+          MISE_CACHE_DIR=/tmp/sandcast-mise/cache \
+          MISE_STATE_DIR=/tmp/sandcast-mise/state \
+          MISE_TRUSTED_CONFIG_PATHS=/etc/mise \
+          MISE_USE_VERSIONS_HOST=0 \
+          PATH=/opt/mise/shims:$PATH
+      COPY mise/mise.toml mise/mise.lock /etc/mise/
+      COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
+      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+       && for attempt in 1 2 3; do \
+            if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
+            if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
+            sleep 5; \
+          done \
+       && echo "7f92c8a883a489b31ef09862e9e198cc1b80ab32a67efebc9ae75146b7ea0e4c  /usr/local/bin/mise" | sha256sum -c - \
+       && chmod 0755 /usr/local/bin/mise \
+       && install -d -o sandbox -g sandbox /opt/mise
+      USER sandbox
+      RUN (mise install --locked --yes || mise install --locked --yes) \
+       && mise reshim \
+       && rm -rf /tmp/sandcast-mise
+    profiles:
+      - go-proxy
+    bins:
+      - go
+      - gofmt
+    runtime_globs:
+      - /opt/mise/installs/go/*/bin/*
+    check:
+      command: go version
+      version: "1.25"
+  - key: iproute2
+    tier: shipped
+    source_file: components/iproute2.yaml
+    installer_kind: package
+    action: install
+    implicit: true
+    fragment_name: 10-system-packages
+    fragment: |
+      # 10-system-packages: system packages via apt-get
+      USER root
+      RUN mkdir -p /var/lib/apt/lists/partial \
+       && apt-get update \
+       && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            iproute2 \
+            nftables \
+            zsh \
+       && rm -rf /var/lib/apt/lists/*
+    bins:
+      - ip
+    check:
+      command: ip -V
+  - key: mytool
+    tier: shipped
+    source_file: components/mytool.yaml
+    installer_kind: script
+    action: install
+    fragment_name: 40-recipes/mytool
+    fragment: |
+      # 40-recipes: mytool (components/mytool.yaml)
+      USER root
+      RUN <<'SANDCAST_EOF'
+      set -eux
+      curl -fsSL https://example.com/m -o /usr/local/bin/mytool
+      chmod +x /usr/local/bin/mytool
+      SANDCAST_EOF
+    bins:
+      - mytool
+    check:
+      command: mytool --version
+  - key: nftables
+    tier: shipped
+    source_file: components/nftables.yaml
+    installer_kind: package
+    action: install
+    implicit: true
+    fragment_name: 10-system-packages
+    fragment: |
+      # 10-system-packages: system packages via apt-get
+      USER root
+      RUN mkdir -p /var/lib/apt/lists/partial \
+       && apt-get update \
+       && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            iproute2 \
+            nftables \
+            zsh \
+       && rm -rf /var/lib/apt/lists/*
+    bins:
+      - nft
+    check:
+      command: nft --version
+  - key: starship
+    tier: shipped
+    source_file: components/starship.yaml
+    installer_kind: mise
+    action: install
+    fragment_name: 30-mise
+    fragment: |
+      # 30-mise: tools installed by mise v2026.10.4 in locked mode
+      USER root
+      ENV MISE_DATA_DIR=/opt/mise \
+          MISE_CONFIG_DIR=/etc/mise \
+          MISE_CACHE_DIR=/tmp/sandcast-mise/cache \
+          MISE_STATE_DIR=/tmp/sandcast-mise/state \
+          MISE_TRUSTED_CONFIG_PATHS=/etc/mise \
+          MISE_USE_VERSIONS_HOST=0 \
+          PATH=/opt/mise/shims:$PATH
+      COPY mise/mise.toml mise/mise.lock /etc/mise/
+      COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
+      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+       && for attempt in 1 2 3; do \
+            if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
+            if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
+            sleep 5; \
+          done \
+       && echo "7f92c8a883a489b31ef09862e9e198cc1b80ab32a67efebc9ae75146b7ea0e4c  /usr/local/bin/mise" | sha256sum -c - \
+       && chmod 0755 /usr/local/bin/mise \
+       && install -d -o sandbox -g sandbox /opt/mise
+      USER sandbox
+      RUN (mise install --locked --yes || mise install --locked --yes) \
+       && mise reshim \
+       && rm -rf /tmp/sandcast-mise
+    bins:
+      - starship
+    check:
+      command: starship --version
+  - key: zsh
+    tier: shipped
+    source_file: components/zsh.yaml
+    installer_kind: package
+    action: install
+    implicit: true
+    fragment_name: 10-system-packages
+    fragment: |
+      # 10-system-packages: system packages via apt-get
+      USER root
+      RUN mkdir -p /var/lib/apt/lists/partial \
+       && apt-get update \
+       && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            iproute2 \
+            nftables \
+            zsh \
+       && rm -rf /var/lib/apt/lists/*
+    bins:
+      - zsh
+    check:
+      command: zsh --version
+mise:
+  toml: |
+    # Generated by sandcast. Do not edit: change the manifest and run sandcast plan.
+    
+    [settings]
+    lockfile = true
+    locked = true
+    lockfile_platforms = ["linux-arm64"]
+    use_versions_host = false
+    trusted_config_paths = ["/etc/mise"]
+    
+    [tools]
+    go = "1.25"
+    starship = "latest"
+  lock_path: .sandcast/mise.lock
+  platform: linux-arm64
+profiles:
+  - id: github
+    tier: upstream
+    source_file: profiles/upstream/v0.1.2/github.yaml
+    adapted_id: github
+  - id: go-proxy
+    tier: overlay
+    source_file: profiles/overlay/go-proxy.yaml
+    adapted_id: go-proxy
+policy: |
+  # OpenShell sandbox policy generated by sandcast. Do not edit.
+  # Base: OpenShell v0.1.2 restrictive_default_policy() plus component image needs.
+  # Network rules come from provider profiles at runtime, never from this file.
+  version: 1
+  filesystem_policy:
+    include_workdir: true
+    read_only:
+      - /bin
+      - /dev/urandom
+      - /etc
+      - /lib
+      - /opt/mise
+      - /proc
+      - /usr
+      - /var/log
+    read_write:
+      - /dev/null
+      - /opt/go
+      - /tmp
+  landlock:
+    compatibility: best_effort
+  process:
+    run_as_user: sandbox
+    run_as_group: sandbox
+  network_policies: {}
+shell:
+  program: zsh
+  rc_path: /etc/zsh/zshrc.d/sandcast.zsh
+  rc: |
+    autoload -Uz compinit && compinit -C
+    [[ "$TERM" != "dumb" ]] && eval "$(starship init zsh)"
+unresolved:
+  - key: unknown-tool
+    reason: no component definition in any tier and no stored fragment
+    optional: true
+conflicts: []
+notices:
+  - "added zsh implicitly: shell program"
+  - "added iproute2 implicitly: required by OpenShell sandbox images"
+  - "added nftables implicitly: required by OpenShell sandbox images"
+  - "added curl implicitly: needed by the mise installer"
+  - "added ca-certificates implicitly: needed by the mise installer"

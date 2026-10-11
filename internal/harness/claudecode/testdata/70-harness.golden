@@ -1,0 +1,84 @@
+# 70-harness: Claude Code with its configuration in /opt/sandcast/claude-code
+# (CLAUDE_CONFIG_DIR), outside the home directory, which the OpenShell
+# Kubernetes driver masks with the workspace volume.
+USER root
+ENV CLAUDE_CONFIG_DIR=/opt/sandcast/claude-code
+RUN install -d -o sandbox -g sandbox /opt/sandcast/claude-code /opt/sandcast/claude-code/skills
+COPY harness/claude-code/skills/ /opt/sandcast/claude-code/skills/
+RUN chown -R sandbox:sandbox /opt/sandcast/claude-code/skills
+COPY harness/claude-code/marketplaces/ /opt/sandcast/claude-code-marketplaces/
+RUN chmod -R a+rX /opt/sandcast/claude-code-marketplaces
+USER sandbox
+RUN <<'SANDCAST_EOF'
+set -eu
+# Write a configuration file, or merge into an existing one with the
+# array-preserving jq expression of brainstorm 072.
+merge_json() {
+  if [ -s "$1" ]; then
+    command -v jq >/dev/null 2>&1 || { echo "sandcast: jq is needed to merge $1" >&2; exit 1; }
+    jq -s '.[0] as $orig | $orig * .[1] | .hooks = $orig.hooks | if .hooks == null then del(.hooks) else . end' "$1" "$2" > "$1.sandcast-tmp"
+    mv "$1.sandcast-tmp" "$1"
+  else
+    cp "$2" "$1"
+  fi
+  rm -f "$2"
+}
+cat > /tmp/sandcast-settings.json <<'SANDCAST_JSON'
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_TELEMETRY": "1"
+  }
+}
+SANDCAST_JSON
+merge_json /opt/sandcast/claude-code/settings.json /tmp/sandcast-settings.json
+cat > /tmp/sandcast-claude.json <<'SANDCAST_JSON'
+{
+  "hasCompletedOnboarding": true,
+  "mcpServers": {
+    "db": {
+      "type": "stdio",
+      "command": "db-mcp",
+      "args": [
+        "--api-key",
+        "${SANDCAST_SECRET_3}"
+      ],
+      "env": {
+        "DB_PASSWORD": "${DB_PASSWORD}",
+        "LOG_LEVEL": "info"
+      }
+    },
+    "docs": {
+      "type": "sse",
+      "url": "https://docs.example.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${DOCS_TOKEN}"
+      }
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${MCP_GITHUB_TOKEN}"
+      }
+    },
+    "search": {
+      "type": "http",
+      "url": "https://search.example.com/mcp?apikey=${SANDCAST_SECRET_7}&mode=ro"
+    }
+  }
+}
+SANDCAST_JSON
+merge_json /opt/sandcast/claude-code/.claude.json /tmp/sandcast-claude.json
+SANDCAST_EOF
+RUN claude plugin marketplace add anthropics/claude-plugins-official
+RUN claude plugin marketplace add example-org/team-tools
+RUN claude plugin marketplace add /opt/sandcast/claude-code-marketplaces/dev-marketplace
+RUN claude plugin marketplace add 'example-org/ref-market#v1'
+RUN claude plugin install github@claude-plugins-official --scope user
+RUN claude plugin install review-kit@team-tools --scope user
+RUN claude plugin install legacy@team-tools --scope user
+RUN claude plugin install local-tool@dev-marketplace --scope user
+RUN claude plugin install pinned@ref-market --scope user
+USER root

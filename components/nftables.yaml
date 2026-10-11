@@ -1,0 +1,19 @@
+key: nftables
+name: nftables
+description: The nft utility that OpenShell uses for sandbox firewall rules.
+match:
+  always: true
+installer:
+  package:
+    packages:
+      apt-get: [nftables]
+      dnf: [nftables]
+      yum: [nftables]
+      apk: [nftables]
+    bins: [nft]
+# The sbin directories are appended because some images leave them off the
+# PATH of non-root users.
+check:
+  command: 'PATH="$PATH:/usr/sbin:/sbin"; nft --version'
+provides: [nft]
+targets: [openshell]

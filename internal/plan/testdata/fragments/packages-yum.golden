@@ -1,0 +1,7 @@
+# 10-system-packages: system packages via yum
+USER root
+RUN yum install -y \
+      ca-certificates \
+      git \
+      zsh \
+ && yum clean all

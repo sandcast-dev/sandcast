@@ -1,0 +1,18 @@
+key: node
+name: Node.js
+description: Node.js runtime with npm and npx.
+match:
+  files: [package.json, .nvmrc, .node-version]
+installer:
+  mise:
+    tool: node
+    version: latest
+    bins: [node, npm, npx]
+# Requiring npm rejects distribution packages that ship node without it.
+check:
+  command: node --version && npm --version
+image:
+  # npm and npx are scripts run by node, so only the interpreter is listed.
+  runtime_globs: [/opt/mise/installs/node/*/bin/node]
+provides: [node, npm, npx]
+profiles: [npm]

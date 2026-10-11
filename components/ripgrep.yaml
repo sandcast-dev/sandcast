@@ -1,0 +1,13 @@
+key: ripgrep
+name: ripgrep
+description: Recursive search tool, installed as rg.
+match:
+  host_tools: [rg]
+installer:
+  mise:
+    tool: ripgrep
+    version: latest
+    bins: [rg]
+check:
+  command: rg --version
+provides: [rg]

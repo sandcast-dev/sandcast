@@ -1,0 +1,17 @@
+key: uv
+name: uv
+description: Python package and project manager from Astral.
+match:
+  files: [uv.lock]
+installer:
+  mise:
+    tool: uv
+    version: latest
+    bins: [uv, uvx]
+check:
+  command: uv --version
+image:
+  # mise links uv from a platform-specific directory.
+  runtime_globs: [/opt/mise/installs/uv/*/uv-*/uv]
+provides: [uv, uvx]
+profiles: [pypi]

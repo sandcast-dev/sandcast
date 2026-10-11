@@ -1,0 +1,13 @@
+key: jq
+name: jq
+description: Command-line JSON processor.
+match:
+  host_tools: [jq]
+installer:
+  mise:
+    tool: jq
+    version: latest
+    bins: [jq]
+check:
+  command: jq --version
+provides: [jq]

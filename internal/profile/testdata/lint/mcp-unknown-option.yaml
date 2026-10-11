@@ -1,0 +1,9 @@
+id: example
+display_name: Example
+endpoints:
+  - host: mcp.example.com
+    port: 443
+    protocol: mcp
+    mcp:
+      allow_all_known_mcp_methods: true
+      future_option: true

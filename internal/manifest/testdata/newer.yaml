@@ -1,0 +1,8 @@
+schema_version: 2
+name: demo
+base_image: x
+components: []
+future_field: yes
+targets:
+  openshell:
+    image: localhost/demo

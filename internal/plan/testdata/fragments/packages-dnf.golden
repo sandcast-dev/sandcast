@@ -1,0 +1,7 @@
+# 10-system-packages: system packages via dnf
+USER root
+RUN dnf install -y --setopt=install_weak_deps=False \
+      ca-certificates \
+      git \
+      zsh \
+ && dnf clean all

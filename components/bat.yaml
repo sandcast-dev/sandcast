@@ -1,0 +1,13 @@
+key: bat
+name: bat
+description: cat replacement with syntax highlighting.
+match:
+  host_tools: [bat]
+installer:
+  mise:
+    tool: bat
+    version: latest
+    bins: [bat]
+check:
+  command: bat --version
+provides: [bat]

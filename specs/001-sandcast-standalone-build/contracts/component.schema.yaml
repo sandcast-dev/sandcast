@@ -1,0 +1,96 @@
+# Contract: component definition schema, one file per component.
+# Applies to shipped, remote registry and project-local (including promoted) components.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: sandcast component
+type: object
+additionalProperties: false
+required: [key, name, installer, check]
+properties:
+  key: { type: string, pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" }
+  name: { type: string }
+  description: { type: string }
+  match:
+    type: object
+    additionalProperties: false
+    properties:
+      files: { type: array, items: { type: string }, description: Glob patterns relative to the project root. }
+      host_tools: { type: array, items: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._+-]*$" }, description: Each entry must be a bare command name, not a path; capture runs it by name on the host. }
+      harnesses: { type: array, items: { type: string } }
+      always: { type: boolean }
+  installer:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    maxProperties: 1
+    properties:
+      mise:
+        type: object
+        additionalProperties: false
+        required: [tool]
+        properties:
+          tool: { type: string, description: Registry short name or backend:name. }
+          version: { type: string, default: latest }
+          bins: { type: array, items: { type: string } }
+      package:
+        type: object
+        additionalProperties: false
+        required: [packages]
+        properties:
+          packages:
+            type: object
+            description: Package manager name to package list.
+            propertyNames: { enum: [apt-get, dnf, yum, apk] }
+            additionalProperties:
+              type: array
+              items: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._+:~=@-]*$" }
+              description: >-
+                Each package name may carry a version or architecture pin (curl=8.5.0-1,
+                libc6:amd64, curl~8.5, ripgrep@edge) but no option, glob, redirect or separator.
+          bins: { type: array, items: { type: string } }
+      script:
+        type: object
+        additionalProperties: false
+        required: [run]
+        properties:
+          run: { type: string, description: Shell script; no line may equal the heredoc delimiter SANDCAST_EOF that wraps it in the rendered Containerfile. }
+          as_root: { type: boolean, default: false }
+          bins: { type: array, items: { type: string } }
+  check:
+    type: object
+    additionalProperties: false
+    required: [command]
+    properties:
+      command: { type: string, description: POSIX sh command run inside the image as the final user. }
+      expect:
+        type: object
+        additionalProperties: false
+        properties:
+          exit: { type: integer, default: 0 }
+          version: { type: string, description: Version selector compared with the parsed version. }
+          stdout_contains: { type: string }
+  image:
+    type: object
+    additionalProperties: false
+    properties:
+      read_only: { type: array, items: { type: string, pattern: "^/" }, description: Absolute paths; a path with a control character is rejected. }
+      read_write: { type: array, items: { type: string, pattern: "^/" }, description: Absolute paths; a path with a control character is rejected. }
+      env:
+        type: object
+        description: Rendered into Containerfile ENV instructions, so each value must be free of control characters.
+        propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }
+        additionalProperties: { type: string }
+      dirs:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [path]
+          properties:
+            path: { type: string, pattern: "^/[A-Za-z0-9._@+/-]*$", description: Absolute path limited to letters, digits and . _ @ + / - so it needs no shell quoting. }
+            owner: { type: string, enum: [root, user], default: user }
+      runtime_globs: { type: array, items: { type: string, pattern: "^/" }, description: Absolute glob patterns; a pattern with a control character is rejected. }
+  provides: { type: array, items: { type: string } }
+  profiles: { type: array, items: { type: string } }
+  targets: { type: array, items: { type: string, enum: [openshell, container] } }
+  promoted_from: { type: string, description: Set by the promote step. }
+# The key `endpoints` is forbidden (FR-013); the loader reports it by name.

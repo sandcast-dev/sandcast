@@ -1,0 +1,112 @@
+# Contract: manifest schema (.sandcast/manifest.yaml), schema_version 1
+# JSON Schema expressed in YAML. Unknown properties are rejected everywhere.
+$schema: https://json-schema.org/draft/2020-12/schema
+title: sandcast manifest
+type: object
+additionalProperties: false
+required: [schema_version, name, base_image, components, targets]
+properties:
+  schema_version:
+    type: integer
+    const: 1
+  name:
+    type: string
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  base_image:
+    type: string
+    description: Registry entry name or an image reference.
+  engine:
+    type: string
+    enum: [podman, docker]
+  platform:
+    type: string
+    pattern: "^linux/(amd64|arm64)$"
+  components:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [key]
+      properties:
+        key: { type: string, pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", description: Must be unique across the components list; a repeated key is rejected. }
+        version: { type: string }
+        optional: { type: boolean, default: false }
+  harnesses:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: { type: string, enum: [claude-code, codex, opencode, pi] }
+        mcp_servers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name]
+            properties:
+              name: { type: string }
+              command: { type: array, items: { type: string } }
+              url: { type: string, format: uri }
+              env:
+                type: object
+                description: Values must be literals or ${SANDCAST_SECRET_N} placeholders; the redaction scan rejects credential shapes.
+                additionalProperties: { type: string }
+        plugins:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, source]
+            properties:
+              name: { type: string }
+              source: { type: string }
+        skills:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, source]
+            properties:
+              name: { type: string }
+              source: { type: string }
+  shell:
+    type: object
+    additionalProperties: false
+    required: [program]
+    properties:
+      program: { type: string, enum: [zsh, bash] }
+      rc: { type: string, description: Curated configuration installed under /etc. }
+      components:
+        type: array
+        items: { type: string }
+  targets:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      openshell: { $ref: "#/$defs/target" }
+      container:
+        allOf:
+          - { $ref: "#/$defs/target" }
+          - properties:
+              allowed_domains_file:
+                type: string
+                default: allowed-domains.txt
+                description: >-
+                  Container target only; the openshell target rejects this field. The build
+                  renames this file into the build directory while it runs, so the value must
+                  be a plain file name (no path separator, not "." or "..", no control
+                  characters), must not start with a dot, and must not match, case-insensitively,
+                  a name sandcast writes in the build directory itself (.lock, build.log,
+                  plan.yaml, policy.yaml, verify.yaml, Containerfile, Containerfile.final,
+                  profiles, mise, shell, harness).
+$defs:
+  target:
+    type: object
+    required: [image]
+    properties:
+      image: { type: string, description: Image name without tag. }
+      tag: { type: string, default: latest }
+      push: { type: boolean, default: false }

@@ -1,0 +1,5 @@
+id: example
+display_name: Example
+binaries:
+  - path: /usr/bin/curl
+    harness: claude

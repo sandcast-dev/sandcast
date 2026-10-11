@@ -1,0 +1,13 @@
+key: opencode
+name: OpenCode
+description: OpenCode agent as the native executable.
+match:
+  harnesses: [opencode]
+installer:
+  mise:
+    tool: opencode
+    version: latest
+    bins: [opencode]
+check:
+  command: opencode --version
+provides: [opencode]

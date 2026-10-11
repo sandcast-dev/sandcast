@@ -1,0 +1,13 @@
+key: zoxide
+name: zoxide
+description: Directory jumper for the shell.
+match:
+  host_tools: [zoxide]
+installer:
+  mise:
+    tool: zoxide
+    version: latest
+    bins: [zoxide]
+check:
+  command: zoxide --version
+provides: [zoxide]

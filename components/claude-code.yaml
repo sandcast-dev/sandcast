@@ -1,0 +1,14 @@
+key: claude-code
+name: Claude Code
+description: Anthropic Claude Code agent as the native executable.
+match:
+  harnesses: [claude-code]
+installer:
+  mise:
+    tool: claude
+    version: latest
+    bins: [claude]
+check:
+  command: claude --version
+provides: [claude]
+profiles: [claude-code]

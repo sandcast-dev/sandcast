@@ -1,0 +1,15 @@
+key: ca-certificates
+name: CA certificates
+description: Trusted CA bundle for TLS connections.
+match:
+  always: true
+installer:
+  package:
+    packages:
+      apt-get: [ca-certificates]
+      dnf: [ca-certificates]
+      yum: [ca-certificates]
+      apk: [ca-certificates]
+# Debian, Ubuntu and Alpine write the first bundle, Fedora and RHEL the second.
+check:
+  command: test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt

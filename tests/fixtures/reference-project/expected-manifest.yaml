@@ -1,0 +1,47 @@
+schema_version: 1
+name: reference-project
+base_image: nvidia-community-base
+components:
+  - key: go
+  - key: python
+  - key: uv
+  - key: starship
+  - key: fzf
+  - key: lsd
+harnesses:
+  - name: claude-code
+shell:
+  program: zsh
+  components:
+    - fzf
+    - lsd
+    - starship
+  rc: |
+    # Curated by sandcast capture from the fixture .zshrc: antidote and the
+    # Homebrew PATH entry were removed.
+    export PATH="$HOME/.local/bin:$PATH"
+    
+    autoload -Uz compinit && compinit -i -D
+    zstyle ':completion:*' menu select
+    zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'
+    
+    if [[ "$TERM" != "dumb" ]]; then
+      eval "$(starship init zsh)"
+    fi
+    
+    if fzf --zsh &>/dev/null; then
+      source <(fzf --zsh)
+    elif [ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]; then
+      source /usr/share/doc/fzf/examples/key-bindings.zsh
+      [ -f /usr/share/doc/fzf/examples/completion.zsh ] && source /usr/share/doc/fzf/examples/completion.zsh
+    fi
+    
+    alias ls=lsd
+    alias ll='lsd -l'
+    
+    setopt HIST_IGNORE_DUPS SHARE_HISTORY
+    HISTSIZE=10000
+    SAVEHIST=10000
+targets:
+  openshell:
+    image: localhost/reference-project

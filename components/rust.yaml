@@ -1,0 +1,30 @@
+key: rust
+name: Rust
+description: Rust toolchain through rustup, with CARGO_HOME and RUSTUP_HOME under /opt.
+match:
+  files: [Cargo.toml, rust-toolchain.toml, rust-toolchain]
+installer:
+  mise:
+    tool: rust
+    version: latest
+    bins: [cargo, rustc, rustup]
+check:
+  command: rustc --version && cargo --version
+image:
+  # rustup installs into the home directory unless both variables are set
+  # when mise installs the tool.
+  env:
+    CARGO_HOME: /opt/cargo
+    RUSTUP_HOME: /opt/rustup
+  dirs:
+    - path: /opt/cargo
+      owner: user
+    - path: /opt/rustup
+      owner: user
+  read_only: [/opt/rustup]
+  read_write: [/opt/cargo]
+  # cargo and rustc under CARGO_HOME are rustup proxies; the toolchain
+  # binaries are the processes that open connections.
+  runtime_globs: [/opt/rustup/toolchains/*/bin/*]
+provides: [cargo, rustc, rustup, rustfmt, rustdoc]
+profiles: [crates-io]

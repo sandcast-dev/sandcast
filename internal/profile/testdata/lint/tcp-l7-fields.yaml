@@ -1,0 +1,7 @@
+id: example
+display_name: Example
+endpoints:
+  - host: db.example.com
+    port: 5432
+    protocol: tcp
+    enforcement: enforce

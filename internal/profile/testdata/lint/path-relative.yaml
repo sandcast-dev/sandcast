@@ -1,0 +1,8 @@
+id: example
+display_name: Example
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: rest
+    access: read-only
+    path: api/v1

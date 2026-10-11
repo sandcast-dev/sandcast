@@ -1,0 +1,7 @@
+id: example
+display_name: Example
+credentials:
+  - name: api_key
+    env_vars: [EXAMPLE_TOKEN]
+    auth_style: path
+    path_template: /v1/{key}/resources

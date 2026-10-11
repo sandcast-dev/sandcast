@@ -1,0 +1,6 @@
+# 10-system-packages: system packages via apk
+USER root
+RUN apk add --no-cache \
+      ca-certificates \
+      git \
+      zsh
