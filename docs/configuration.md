@@ -70,9 +70,9 @@ You do not need to list components that sandcast adds by itself: the shell progr
 
 | Field | Type | Rules |
 |-------|------|-------|
-| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. |
+| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. OpenShell starts sessions with bash whatever the login shell is; with `zsh` and the OpenShell target, interactive sessions switch from bash to zsh (see [shell sessions](guides/build.md#shell-sessions)). |
 | `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. Write it with `sandcast manifest set-shell`. |
-| `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. |
+| `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. For the OpenShell target, verify also checks each one in a session environment. |
 
 ### targets
 
@@ -81,7 +81,7 @@ You do not need to list components that sandcast adds by itself: the shell progr
 | `targets.<target>.image` | string | | Required. Image name without tag. |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
 | `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. |
-| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
+| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `session`, `harness`), compared without regard to case. Only the container target accepts this field. |
 
 `<target>` is `openshell` or `container`. Commands without `--target` use `openshell` when it is declared, otherwise `container`.
 
@@ -360,16 +360,16 @@ All sandcast files in a project live under `.sandcast/`. The top level holds com
 | `plan.yaml` | `plan`, `build` | The build plan. |
 | `mise/mise.toml` | `plan`, `build` | The generated mise configuration, when mise tools are planned. |
 | `mise/mise.lock` | `plan`, `build` | A copy of `.sandcast/mise.lock` for the build context. |
-| `mise/sandcast-mise.sh` | `plan`, `build` | Profile script that keeps the mise shims on the `PATH` of login shells. |
 | `policy.yaml` | `plan`, `build` | The image-embedded OpenShell policy (OpenShell target only). |
 | `Containerfile` | `build` | The pass-1 image definition. |
 | `Containerfile.final` | `build` | The pass-2 image definition that adds the adapted profiles. |
 | `shell/sandcast.zsh` or `shell/sandcast.sh` | `build` | The curated shell configuration for the build context. |
+| `session/sandcast-session.sh` | `build` | The environment script for shell sessions, installed as `/etc/profile.d/sandcast-session.sh`: the variables the image sets with `ENV` and the mise shims on the `PATH`. See [shell sessions](guides/build.md#shell-sessions). |
 | `harness/` | `build` | Harness files staged for the build context. |
 | `build.log` | `build` | The engine output of both passes. |
 | `profiles/<id>.yaml` | `build`, `profiles export` | The adapted provider profiles. |
 | `profiles/index.yaml` | `build`, `profiles export` | The adapted profile set index. |
-| `verify.yaml` | `verify`, `build --verify` | The verify report: `image`, `results` (per component `component_key`, `ok`, `status`, `version`, `output`), `passed`, `failed`. |
+| `verify.yaml` | `verify`, `build --verify` | The verify report: `image`, `results` (per check `component_key`, `mode`, `ok`, `status`, `version`, `output`), `passed`, `failed`. `mode` is absent for the check with the image environment and `session` for the same check in an OpenShell session environment (OpenShell target, shell components and the shell program). |
 | `allowed-domains.txt` | `build` | Sorted, unique endpoint hosts of the referenced profiles (container target only; the name follows `allowed_domains_file`). |
 
 After a successful build, sandcast scans every file in the build directory for credential-shaped values and fails the build with the file and location of each finding.

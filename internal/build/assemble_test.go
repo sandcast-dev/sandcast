@@ -59,7 +59,7 @@ func TestAssembleGolden(t *testing.T) {
 	require.NoError(t, err)
 	testutil.Golden(t, "testdata/Containerfile.golden", []byte(got))
 
-	order := []string{"# 00-header", "# 10-system-packages", "# 20-user", "# 30-mise", "# 40-recipes: mytool", "# 50-fragments: other-tool", "# 60-shell", "# 80-policy", "# 90-footer"}
+	order := []string{"# 00-header", "# 10-system-packages", "# 20-user", "# 30-mise", "# 40-recipes: mytool", "# 50-fragments: other-tool", "# 60-shell", "# 65-session", "# 80-policy", "# 90-footer"}
 	last := -1
 	for _, marker := range order {
 		i := strings.Index(got, marker)

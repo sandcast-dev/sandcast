@@ -34,7 +34,7 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - OpenShell v0.1.3 (commit e1f3c82c): vendored example profiles, profile lint rules, default sandbox policy, `openshell` CLI for the import step, gateway image `ghcr.io/nvidia/openshell/gateway:0.1.3` for `make test-gateway`.
 - mise v2026.10.4 inside images; host `mise` 2026.9.16 or newer for `sandcast lock`.
 - Remote component registry v0.1.0.
-- Manifest schema version 1, plan schema version 1, skill bundle 0.1.0.
+- Manifest schema version 1, plan schema version 1, skill bundle 0.1.1.
 
 ### OpenShell pin refresh v0.1.2 to v0.1.3
 
@@ -43,3 +43,10 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - Ported the v0.1.3 stable profile validation into `internal/profile`: credential names and token_grant endpoint and audience-override selectors must be free of control characters; a token_grant endpoint may not use protocol `sql` or `tls: skip`; `2026-07-28` joins the supported MCP protocol revisions (the default revision stays `2025-11-25`); and a null value at a schema-declared object path is rejected before typed decoding.
 - Relaxed the `sandcast profiles import` version check: it now accepts any `openshell` CLI release on the pinned minor line (any `0.1.x` for the v0.1.3 pin, pre-release suffixes included) instead of an exact match, so a future patch release needs no code change.
 - Deferred to a follow-up: the experimental `ProviderFileProfile` (`files`) feature and the token_grant audience-override to endpoint binding-conflict checks, both of which upstream marks as subject to change.
+
+### OpenShell session environment (#11)
+
+- OpenShell starts interactive sessions with a cleared environment and with bash, so images lost their `ENV` (the mise shims and `MISE_*`, component and harness variables) and the zsh configuration in sessions. A new `65-session` section installs `/etc/profile.d/sandcast-session.sh`, which exports that environment again and puts the mise shims first on `PATH`; every zsh sources it from the system `zshenv`, where `zsh-newuser-install` is also turned off. It replaces `/etc/profile.d/sandcast-mise.sh`.
+- With `shell.program: zsh` and the OpenShell target, a hook in the system bashrc switches interactive terminal sessions from bash to `zsh -l`; `bash -lc` commands stay in bash, and `SANDCAST_NO_ZSH=1` turns the switch off.
+- `verify` also checks the shell components and the shell program in an OpenShell session environment. These results carry `mode: session` in `verify.yaml` and the build report and show as `<key> (session)` in the table. The plan records the shell components in `shell.components`.
+- The capture skill adds the completion a stripped plugin provided (for example `source <(kubectl completion zsh)`) before a `compdef` line that reuses it. Skill bundle 0.1.1.

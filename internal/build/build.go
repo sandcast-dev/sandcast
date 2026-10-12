@@ -415,8 +415,9 @@ func withMCPProfiles(p *plan.Plan, all profile.Set, res []Resolution) (profile.S
 	return out, binaries, nil
 }
 
-// writeContext writes the Containerfile, the curated shell configuration
-// and the harness files into the build context.
+// writeContext writes the Containerfile, the curated shell configuration,
+// the session environment script and the harness files into the build
+// context.
 func writeContext(dir string, p *plan.Plan, containerfile string) error {
 	if err := fsutil.AtomicWriteFile(filepath.Join(dir, ContainerfileName), []byte(containerfile), 0o644); err != nil {
 		return err
@@ -428,6 +429,15 @@ func writeContext(dir string, p *plan.Plan, containerfile string) error {
 	if p.Shell.RCPath != "" {
 		file := filepath.Join(dir, filepath.FromSlash(ShellContextFile(p.Shell.Program)))
 		if err := fsutil.AtomicWriteFile(file, []byte(p.Shell.RC), 0o644); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(dir, SessionContextDir)); err != nil {
+		return err
+	}
+	if needsSession(p) {
+		file := filepath.Join(dir, filepath.FromSlash(SessionContextFile))
+		if err := fsutil.AtomicWriteFile(file, []byte(SessionScript(p)), 0o644); err != nil {
 			return err
 		}
 	}

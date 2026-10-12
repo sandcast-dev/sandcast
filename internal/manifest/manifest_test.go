@@ -122,7 +122,7 @@ func TestAllowedDomainsFileMustBePlainName(t *testing.T) {
 func TestAllowedDomainsFileRefusesBuildDirectoryNames(t *testing.T) {
 	for _, name := range []string{
 		".lock", "build.log", "plan.yaml", "policy.yaml", "verify.yaml", "Containerfile",
-		"Containerfile.final", "profiles", "mise", "shell", "harness",
+		"Containerfile.final", "profiles", "mise", "shell", "session", "harness",
 		"BUILD.LOG", "containerfile",
 	} {
 		m := Skeleton("demo", "x", TargetContainer)

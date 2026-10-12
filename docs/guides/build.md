@@ -121,7 +121,7 @@ The plan is written to `.sandcast/build/<target>/plan.yaml`, next to `mise/` and
 | `mise` | The generated `mise.toml`, the lockfile path and the mise platform. |
 | `profiles` | The referenced profile ids with their winning tier and source file. |
 | `policy` | The image-embedded OpenShell policy (OpenShell target only). |
-| `shell` | The shell program, the path of the curated configuration in the image and its text. |
+| `shell` | The shell program, the path of the curated configuration in the image, its text and the shell components (`shell.components` of the manifest, sorted), which verify also checks in a session environment. |
 | `unresolved`, `conflicts`, `notices` | What blocks the build and what sandcast decided on its own. |
 
 The plan contains no timestamps, every list is sorted, and the encoder settings are fixed. The same manifest, lockfile, component and profile definitions, base image digest and platform always give a byte-identical file. The build and verify steps read only the plan.
@@ -147,15 +147,30 @@ sandcast build --verify
 | `40-recipes` | One layer per `script` component in key order, as a `RUN` heredoc with `set -eux`, as the final user or as root when the recipe sets `as_root`. |
 | `50-fragments` | One block per stored fragment in key order, each preceded by a comment with its key and file and by `USER root`. |
 | `60-shell` | The curated shell configuration under `/etc` (see below). |
+| `65-session` | The environment for shell sessions, which OpenShell starts with a cleared environment (see [shell sessions](#shell-sessions)). |
 | `70-harness` | One block per harness in the manifest: for Claude Code, the configuration in `/opt/sandcast/claude-code` (`CLAUDE_CONFIG_DIR`), the MCP servers, the skills and the plugins. See [baking harness extensions](capture.md#baking-harness-extensions). |
 | `80-policy` | `COPY policy.yaml /etc/openshell/policy.yaml` (OpenShell target only). |
 | `90-footer` | `WORKDIR /sandbox` (OpenShell target) or the final user's home (container target), `USER <final user>`, `ENTRYPOINT []` and `CMD ["<login shell>", "-l"]`. Clearing the entrypoint matters because the community base image sets `/bin/bash` as its entrypoint; without that, a manual `podman run` would not start the login shell. OpenShell replaces both anyway. |
 
-Sections without content (no packages, no mise tools, no recipes) are left out.
+Sections without content (no packages, no mise tools, no recipes, no session environment) are left out.
 
 **The final user.** When the base image runs as a non-root user, that user stays the final user and keeps its home. When it runs as root and the target is `openshell`, sandcast creates the user `sandbox` with uid and gid 1000 and home `/home/sandbox`, and first removes any existing user or group with id 1000 (such as the `ubuntu` user of `ubuntu:24.04`). The container target never creates a user and keeps root as the final user. System packages are installed as root either way.
 
 **The shell.** A zsh configuration is copied to `/etc/zsh/zshrc.d/sandcast.zsh` and sourced from `/etc/zsh/zshrc` (or `/etc/zshrc` when the image uses that path). A bash configuration is copied to `/etc/profile.d/sandcast.sh` and sourced from `/etc/bash.bashrc` or `/etc/bashrc` when they exist. The login shell in `CMD` (and of a created user) is the manifest's shell program, otherwise zsh when the plan includes the `zsh` component, otherwise bash when the probe found it in the base image, otherwise `/bin/sh`.
+
+### Shell sessions
+
+OpenShell does not start an interactive session (`openshell sandbox connect`) with the image configuration. It clears the environment, keeps only `HOME`, `USER`, `TERM`, `SHELL` and the `PATH` `/usr/local/bin:/usr/bin:/bin`, and starts bash, or `/bin/sh` when the image has no bash. It ignores both `CMD` and the login shell of the final user. Without help, a session has none of the variables the image sets with `ENV`, no mise shims on the `PATH`, and no zsh configuration.
+
+The `65-session` section restores what the image needs:
+
+| Path | Purpose |
+|------|---------|
+| `/etc/profile.d/sandcast-session.sh` | Exports the variables the image sets with `ENV` (component and harness variables, and the `MISE_*` settings when mise installs tools) and puts `/opt/mise/shims` first on the `PATH`. Login shells read it through `/etc/profile`. The script depends only on the plan; sourcing it twice keeps one shims entry. |
+| `/etc/zsh/zshenv` (or `/etc/zshenv`) | When the image has zsh: sources the script for every zsh and turns off `zsh-newuser-install`, because the home directory is the workspace and has no `.zshrc`. |
+| `/etc/bash.bashrc` (or `/etc/bashrc`) | OpenShell target with `shell.program: zsh` only: a hook that replaces an interactive bash on a terminal with `zsh -l`. Commands that OpenShell runs with `bash -lc` stay in bash. A bash started from that zsh stays in bash (the hook sets `SANDCAST_IN_ZSH`), and `SANDCAST_NO_ZSH=1` turns the switch off. |
+
+The base image's own `ENV` (for example `VIRTUAL_ENV` of the community base image) is not part of the script, because the probe does not record it. A home directory `.bashrc` that sets `PATH` to a fixed value still removes the shims in a bash session; the community base image ships such a file under `/sandbox`. With `shell.program: zsh` an interactive session switches to zsh before bash reads that file.
 
 **Nothing under `/sandbox`.** OpenShell's Kubernetes driver mounts the workspace volume over `/sandbox`, which hides anything an image put there. sandcast installs tools under `/opt/mise`, shell configuration under `/etc` and harness configuration under `/opt/sandcast`, and in OpenShell images `/sandbox` stays an empty working directory.
 
@@ -170,12 +185,11 @@ The `30-mise` section installs mise v2026.10.4 to `/usr/local/bin/mise` and sets
 | `MISE_TRUSTED_CONFIG_PATHS` | `/etc/mise` | The only configuration mise trusts in the image. |
 | `MISE_CACHE_DIR`, `MISE_STATE_DIR` | `/tmp/sandcast-mise/cache`, `/tmp/sandcast-mise/state` | Used during the install and removed afterwards. |
 | `MISE_USE_VERSIONS_HOST` | `0` | No lookups on the mise versions host. |
-| `PATH` | `/opt/mise/shims:$PATH` | Shims on the `PATH` through `ENV`. |
-| `/etc/profile.d/sandcast-mise.sh` | | Puts the shims back on the `PATH` for login shells whose system profile resets it, as Debian's `/etc/profile` does. |
+| `PATH` | `/opt/mise/shims:$PATH` | Shims on the `PATH` through `ENV`. The `65-session` section puts them back for login shells and every zsh, see [shell sessions](#shell-sessions). |
 
 The mise binary itself comes from the `mise.run` installer at the pinned version; the layer downloads the installer to a file and tries up to three times, so a transient network error does not fail the build. The install runs as the final user with `mise install --locked --yes` (tried a second time on failure, for the same reason), followed by `mise reshim`. These retries stay inside one layer: a failed build is never retried. mise's cache and state stay out of `/opt/mise`, because the OpenShell policy makes that directory read-only at runtime; they live under `/tmp/sandcast-mise` during the install and are removed afterwards.
 
-Because the shims are on the `PATH` through `ENV`, every process in the image finds the tools without shell activation, including the child processes of an agent. One exception applies to images built on the community base image: an interactive bash that is not a login shell resets `PATH` through the base user's `~/.bashrc` and loses the shims. Login shells and processes that are not shells keep them.
+Because the shims are on the `PATH` through `ENV`, every process started with the image environment finds the tools without shell activation, including the child processes of an agent. OpenShell sessions do not get that environment; the `65-session` section restores it. One exception applies to images built on the community base image: a bash that reads the base user's `~/.bashrc` resets `PATH` and loses the shims.
 
 ### The image policy
 
@@ -245,6 +259,8 @@ sandcast verify
 ```
 
 `verify` runs every component check of the plan inside the built image, as the final user, in one container under the container engine. No gateway is involved. It reports every result before it exits, writes `verify.yaml` next to the plan, and exits 1 when any check failed. `sandcast build --verify` runs the build and then verify. For the example, verify passed 9 of 9 checks.
+
+For the OpenShell target, verify also runs the checks of the shell components and of the shell program the way an interactive OpenShell session would: `env -i HOME=<home> USER=<user> TERM=dumb PATH=/usr/local/bin:/usr/bin:/bin <shell> -lc '<check>'`, where `<shell>` is zsh for `shell.program: zsh` (the session switches to it) and otherwise bash, or `/bin/sh` without bash. For zsh, the check of the program also requires the switch hook in the system bashrc. These results carry `mode: session` in `verify.yaml` and show as `<key> (session)` in the table. A session check that fails while the plain check of the same component passes means that the tool is installed but a session cannot find it; see [shell sessions](#shell-sessions).
 
 A check that does not finish within the check timeout is reported as `FAIL (timeout)` rather than as missing, so a stalled check is told apart from an absent tool; its output starts with `timeout: the check did not finish within <duration>`. When the container itself is stopped before it reaches every check, the check that was running is a timeout too, and each check after it is reported with an output that starts with `not run:`, so nothing treats a component that was never checked as missing.
 

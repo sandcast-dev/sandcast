@@ -122,6 +122,10 @@ properties:
       program: { type: string, enum: [zsh, bash, none] }
       rc_path: { type: string }
       rc: { type: string, description: The curated configuration text copied to rc_path. }
+      components:
+        type: array
+        description: The manifest shell.components, sorted; verify also checks them in an OpenShell session environment.
+        items: { type: string }
   harnesses:
     type: array
     description: One 70-harness section per manifest harness (phase 2).

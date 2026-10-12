@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.0
+sandcast_version: 0.1.1
 ---
 
 # sandcast capture
@@ -187,6 +187,15 @@ Apply each rule whenever its trigger is present after stripping:
      . /usr/share/doc/fzf/examples/key-bindings.bash
    fi
    ```
+
+4. **Completions a stripped plugin provided (zsh)**: a `compdef` line that reuses another command's completion, such as `compdef kubecolor=kubectl` or `compdef _kubectl kubecolor`, needs that completion function. Plugin managers often loaded it (the oh-my-zsh `kubectl` plugin defines `_kubectl`); after stripping, the line prints `compdef: unknown command or service: kubectl` at every shell start. When the completion came from a stripped plugin and the tool can print its own completion script, insert the guarded source line before the `compdef` line, after the `compinit` line from rule 1:
+
+   ```zsh
+   command -v kubectl >/dev/null && source <(kubectl completion zsh)
+   compdef kubecolor=kubectl
+   ```
+
+   The tool (`kubectl` here) is a referenced command for Step 4c. When the tool has no completion command, drop the `compdef` line and tell the user.
 
 ### 4c: List the referenced commands
 

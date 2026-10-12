@@ -485,10 +485,12 @@ func TestWriteOutputs(t *testing.T) {
 	lock, err := os.ReadFile("testdata/mise.lock")
 	require.NoError(t, err)
 	require.NoError(t, WriteOutputs(dir, p, lock))
-	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "mise/sandcast-mise.sh", "policy.yaml"} {
+	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "policy.yaml"} {
 		_, err := os.Stat(dir + "/" + f)
 		assert.NoError(t, err, f)
 	}
+	_, err = os.Stat(dir + "/mise/sandcast-mise.sh")
+	assert.ErrorIs(t, err, os.ErrNotExist, "the session environment replaces the mise profile script")
 	loaded, err := Load(dir + "/plan.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, p.Target, loaded.Target)
@@ -547,4 +549,14 @@ func TestSelectAddsGitForHarnessPlugins(t *testing.T) {
 	for _, w := range wanted {
 		assert.NotEqual(t, "git", w.Key, "no plugins, no implicit git")
 	}
+}
+
+// verify needs the shell components to check them in a session
+// environment, so the plan records them, sorted.
+func TestShellOfRecordsShellComponents(t *testing.T) {
+	s := shellOf(&manifest.Manifest{Shell: &manifest.Shell{Program: "zsh", RC: "alias ls=lsd\n", Components: []string{"starship", "lsd"}}})
+	assert.Equal(t, []string{"lsd", "starship"}, s.Components)
+	s = shellOf(&manifest.Manifest{Shell: &manifest.Shell{Program: "bash"}})
+	assert.Empty(t, s.Components)
+	assert.Equal(t, "none", shellOf(&manifest.Manifest{}).Program)
 }

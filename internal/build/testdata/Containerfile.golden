@@ -47,8 +47,7 @@ ENV MISE_DATA_DIR=/opt/mise \
     MISE_USE_VERSIONS_HOST=0 \
     PATH=/opt/mise/shims:$PATH
 COPY mise/mise.toml mise/mise.lock /etc/mise/
-COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
  && for attempt in 1 2 3; do \
       if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
       if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
@@ -81,6 +80,28 @@ COPY shell/sandcast.zsh /etc/zsh/zshrc.d/sandcast.zsh
 RUN chmod 0644 /etc/zsh/zshrc.d/sandcast.zsh \
  && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
  && (grep -qs '/etc/zsh/zshrc.d/sandcast.zsh' "$rc" || printf '\n[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh\n' >> "$rc")
+
+# 65-session: environment for shell sessions, which OpenShell starts with a cleared environment
+USER root
+COPY session/sandcast-session.sh /etc/profile.d/sandcast-session.sh
+RUN chmod 0644 /etc/profile.d/sandcast-session.sh \
+ && if command -v zsh >/dev/null 2>&1; then \
+      rc=/etc/zsh/zshenv && if [ -f /etc/zshenv ]; then rc=/etc/zshenv; fi \
+      && install -d "${rc%/*}" \
+      && (grep -qs '/etc/profile.d/sandcast-session.sh' "$rc" || printf '%s\n' '' \
+        '# sandcast-session: the image environment for every zsh' \
+        '[ -r /etc/profile.d/sandcast-session.sh ] && . /etc/profile.d/sandcast-session.sh' \
+        '# The home directory is the workspace and has no .zshrc: no new-user wizard.' \
+        'zsh-newuser-install() { :; }' >> "$rc"); \
+    fi \
+ && for rc in /etc/bash.bashrc /etc/bashrc; do \
+      if [ -f "$rc" ] && ! grep -qs 'SANDCAST_NO_ZSH' "$rc"; then \
+        printf '%s\n' '' \
+          '# sandcast-session: OpenShell starts bash; interactive terminal sessions switch to zsh.' \
+          '# Set SANDCAST_NO_ZSH=1 to stay in bash.' \
+          'case $- in *i*) if [ -t 0 ] && [ -z "${SANDCAST_NO_ZSH-}" ] && [ -z "${SANDCAST_IN_ZSH-}" ] && [ -x /bin/zsh ]; then SANDCAST_IN_ZSH=1 SHELL=/bin/zsh; export SANDCAST_IN_ZSH SHELL; exec /bin/zsh -l; fi ;; esac' >> "$rc"; \
+      fi; \
+    done
 
 # 80-policy: OpenShell sandbox policy (filesystem, landlock, process; no network entries)
 USER root

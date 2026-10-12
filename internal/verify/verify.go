@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,9 +16,11 @@ import (
 
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/redact"
+	"github.com/rhuss/sandcast/internal/shell"
 )
 
 // FileName is the verify report in build/<target>/.
@@ -41,16 +44,34 @@ type ImageRef struct {
 	Digest    string `yaml:"digest" json:"digest"`
 }
 
-// Result is the outcome of one component check.
+// Result is the outcome of one component check. Mode is empty for the
+// check in the image environment and ModeSession for the same check in an
+// OpenShell session environment.
 type Result struct {
 	ComponentKey string `yaml:"component_key" json:"component_key"`
+	Mode         string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	OK           bool   `yaml:"ok" json:"ok"`
 	Status       string `yaml:"status" json:"status"`
 	Version      string `yaml:"version,omitempty" json:"version,omitempty"`
 	Output       string `yaml:"output" json:"output"`
 }
 
-// Requests turns the plan's components into check requests, sorted by key.
+// Session checks (issue #11). OpenShell starts interactive sessions with a
+// cleared environment and bash; a component that works with the image ENV
+// can still be missing there.
+const (
+	// ModeSession marks a result checked in a session environment.
+	ModeSession = "session"
+	// SessionSuffix turns a component key into the probe key of its session
+	// check. Component keys cannot contain a dot.
+	SessionSuffix = "." + ModeSession
+	// SessionPath is the PATH OpenShell gives a session.
+	SessionPath = "/usr/local/bin:/usr/bin:/bin"
+)
+
+// Requests turns the plan's components into check requests, sorted by key:
+// one per component with a check, plus, for the OpenShell target, a session
+// check for every shell component and the shell program.
 func Requests(p *plan.Plan) []probe.Request {
 	reqs := make([]probe.Request, 0, len(p.Components))
 	for _, c := range p.Components {
@@ -61,18 +82,74 @@ func Requests(p *plan.Plan) []probe.Request {
 		if len(c.Bins) > 0 {
 			bin = c.Bins[0]
 		}
-		reqs = append(reqs, probe.Request{
-			Key:            c.Key,
-			Command:        c.Check.Command,
-			Bin:            bin,
-			Selector:       c.Check.Version,
-			ExpectExit:     c.Check.ExpectExit,
-			StdoutContains: c.Check.StdoutContains,
-			Hash:           checkHash(c.Check),
-		})
+		reqs = append(reqs, request(c.Key, bin, c.Check))
 	}
+	reqs = append(reqs, sessionRequests(p)...)
 	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Key < reqs[j].Key })
 	return reqs
+}
+
+func request(key, bin string, c plan.Check) probe.Request {
+	return probe.Request{
+		Key:            key,
+		Command:        c.Command,
+		Bin:            bin,
+		Selector:       c.Version,
+		ExpectExit:     c.ExpectExit,
+		StdoutContains: c.StdoutContains,
+		Hash:           checkHash(c),
+	}
+}
+
+// sessionRequests runs the checks of the shell components and the shell
+// program the way an interactive OpenShell session would: with only HOME,
+// USER, TERM and the default PATH, in a login shell. With shell.program zsh
+// that is zsh, which the session switches to from bash; the program's own
+// check also requires the switch hook in the system bashrc.
+func sessionRequests(p *plan.Plan) []probe.Request {
+	if p.Target != manifest.TargetOpenShell {
+		return nil
+	}
+	keys := slices.Clone(p.Shell.Components)
+	if p.Shell.Program == "zsh" || p.Shell.Program == "bash" {
+		keys = append(keys, p.Shell.Program)
+	}
+	slices.Sort(keys)
+	keys = slices.Compact(keys)
+	login := sessionShell(p)
+	var reqs []probe.Request
+	for _, k := range keys {
+		c := p.Component(k)
+		if c == nil || c.Check.Command == "" {
+			continue
+		}
+		check := c.Check
+		check.Command = fmt.Sprintf("env -i HOME=%s USER=%s TERM=dumb PATH=%s %s -lc %s",
+			shell.QuoteIfNeeded(p.FinalUser.Home), shell.QuoteIfNeeded(p.FinalUser.Name), SessionPath, login, shell.Quote(c.Check.Command))
+		if k == "zsh" && p.Shell.Program == "zsh" {
+			check.Command = "grep -qs SANDCAST_NO_ZSH /etc/bash.bashrc /etc/bashrc && " + check.Command
+		}
+		reqs = append(reqs, request(k+SessionSuffix, "", check))
+	}
+	return reqs
+}
+
+// sessionShell is the shell an interactive OpenShell session ends up in:
+// zsh after the switch for shell.program zsh, else the first of bash and sh
+// that OpenShell finds.
+func sessionShell(p *plan.Plan) string {
+	if p.Shell.Program == "zsh" {
+		return "/bin/zsh"
+	}
+	if p.Component("bash") != nil {
+		return "/bin/bash"
+	}
+	for _, s := range p.ImageFacts.Shells {
+		if strings.HasSuffix(s, "/bash") {
+			return "/bin/bash"
+		}
+	}
+	return "/bin/sh"
 }
 
 // checkHash identifies a check the same way the probe cache does: the
@@ -112,6 +189,11 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 			Version:      c.Version,
 			Output:       c.Output,
 		}
+		label := req.Key
+		if key, ok := strings.CutSuffix(req.Key, SessionSuffix); ok {
+			r.ComponentKey, r.Mode = key, ModeSession
+			label = key + " (" + ModeSession + ")"
+		}
 		if r.Status == "" {
 			r.Status = string(probe.StatusMissing)
 		}
@@ -120,7 +202,7 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 			report.Passed++
 		} else {
 			report.Failed++
-			failed = append(failed, req.Key)
+			failed = append(failed, label)
 		}
 	}
 	if len(failed) > 0 {

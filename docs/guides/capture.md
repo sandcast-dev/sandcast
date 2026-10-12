@@ -19,7 +19,7 @@ sandcast skills install
 | user (default) | `sandcast skills install --scope user` | `~/.claude/skills/sandcast-capture/` and `~/.claude/skills/sandcast-build/` |
 | project | `sandcast skills install --scope project` | `.claude/skills/sandcast-capture/` and `.claude/skills/sandcast-build/` in the project |
 
-The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.1.0) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
+The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.1.1) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
 
 The binary and the installed skills must match, because the skills rely on the binary's commands and JSON output. Check them with:
 
@@ -105,10 +105,11 @@ Aliases, functions, shell options, history settings, key bindings, `zstyle` line
 - **Completion (zsh)**: when `compdef` or `zstyle ':completion:*'` remain but nothing calls `compinit`, the skill inserts `autoload -Uz compinit && compinit -i -D` before the first of them. Plugin managers load `compinit` as a side effect; without it, tab completion falls back to file names.
 - **Starship**: `eval "$(starship init zsh)"` is guarded with `if [[ "$TERM" != "dumb" ]]`, so non-interactive sessions do not print starship errors.
 - **fzf**: `source <(fzf --zsh)` is replaced with a block that falls back to the key bindings shipped in `/usr/share/doc/fzf/examples/` when the installed fzf is older than 0.48. The bash variant does the same for `fzf --bash`.
+- **Completions of stripped plugins (zsh)**: a `compdef` line that reuses another command's completion, such as `compdef kubecolor=kubectl`, gets `command -v kubectl >/dev/null && source <(kubectl completion zsh)` in front of it when a stripped plugin used to provide that completion. Without it, every shell start prints `compdef: unknown command or service: kubectl`.
 
 ### Referenced commands become components
 
-The skill lists every external command the curated configuration uses (alias targets, `eval "$(<cmd> ...)"`, commands called in functions, and `EDITOR`, `VISUAL`, `PAGER` and `MANPAGER`) and looks up the component for each one. Matching components go into `shell.components`, so the image contains the prompt and the listing tool the configuration calls. A missing prompt or listing tool is a runtime failure that no build check detects. A command without a component is either dropped from the configuration or added as an optional component, as you decide.
+The skill lists every external command the curated configuration uses (alias targets, `eval "$(<cmd> ...)"`, commands called in functions, and `EDITOR`, `VISUAL`, `PAGER` and `MANPAGER`) and looks up the component for each one. Matching components go into `shell.components`, so the image contains the prompt and the listing tool the configuration calls. A missing prompt or listing tool is a runtime failure that the build cannot detect without the component; with it, verify checks the tool in the image and, for the OpenShell target, in a session environment. A command without a component is either dropped from the configuration or added as an optional component, as you decide.
 
 A host `.zshrc` like this:
 

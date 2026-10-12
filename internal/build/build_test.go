@@ -97,7 +97,7 @@ func TestRunSuccess(t *testing.T) {
 	assert.Equal(t, 1, eng.CountOp("rmi"), "stage tag removed")
 	assert.NotContains(t, eng.ImageNames(), stage)
 	assert.NotContains(t, eng.ImageNames(), "localhost/demo:sandcast-stage")
-	for _, f := range []string{ContainerfileName, BuildLogName, "shell/sandcast.zsh"} {
+	for _, f := range []string{ContainerfileName, BuildLogName, "shell/sandcast.zsh", SessionContextFile} {
 		_, err := os.Stat(filepath.Join(o.Dir, f))
 		assert.NoError(t, err, f)
 	}

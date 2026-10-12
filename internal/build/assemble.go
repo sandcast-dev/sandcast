@@ -61,6 +61,9 @@ func Assemble(p *plan.Plan) (string, error) {
 			return "", err
 		}
 	}
+	if err := add(sessionSection(p)); err != nil {
+		return "", err
+	}
 	for _, h := range p.Harnesses {
 		sections = append(sections, h.Fragment)
 	}

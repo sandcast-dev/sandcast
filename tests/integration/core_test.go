@@ -45,12 +45,15 @@ targets:
 type verifyFile struct {
 	Results []struct {
 		ComponentKey string `yaml:"component_key"`
+		Mode         string `yaml:"mode"`
 		OK           bool   `yaml:"ok"`
 	} `yaml:"results"`
 	Passed int `yaml:"passed"`
 	Failed int `yaml:"failed"`
 }
 
+// readVerify maps each result to its outcome, keyed by the component key,
+// or by "<key> (session)" for a check in an OpenShell session environment.
 func readVerify(t *testing.T, path string) map[string]bool {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -59,7 +62,11 @@ func readVerify(t *testing.T, path string) map[string]bool {
 	require.NoError(t, yaml.Unmarshal(data, &v))
 	out := map[string]bool{}
 	for _, r := range v.Results {
-		out[r.ComponentKey] = r.OK
+		key := r.ComponentKey
+		if r.Mode != "" {
+			key += " (" + r.Mode + ")"
+		}
+		out[key] = r.OK
 	}
 	return out
 }
@@ -105,6 +112,11 @@ func TestCoreFlow(t *testing.T) {
 	for _, k := range []string{"go", "python", "uv", "starship", "fzf", "lsd", "zsh"} {
 		assert.True(t, openshell[k], "%s verified in the openshell image", k)
 	}
+	// OpenShell sessions start with a cleared environment and bash; the
+	// shell components and zsh must still work there (issue #11).
+	for _, k := range []string{"starship", "lsd", "zsh"} {
+		assert.True(t, openshell[k+" (session)"], "%s verified in an OpenShell session environment", k)
+	}
 	idx, err := os.ReadFile(filepath.Join(dir, ".sandcast", "build", "openshell", "profiles", "index.yaml"))
 	require.NoError(t, err)
 	assert.Contains(t, string(idx), "upstream_id: go-proxy")
@@ -131,6 +143,9 @@ func TestCoreFlow(t *testing.T) {
 	container := readVerify(t, filepath.Join(dir, ".sandcast", "build", "container", "verify.yaml"))
 	for _, k := range []string{"go", "python", "uv", "starship", "fzf", "lsd", "zsh"} {
 		assert.True(t, container[k], "%s verified in the container image", k)
+	}
+	for k := range container {
+		assert.NotContains(t, k, "(session)", "the container target keeps the image environment")
 	}
 	domains, err := os.ReadFile(filepath.Join(dir, ".sandcast", "build", "container", "allowed-domains.txt"))
 	require.NoError(t, err)

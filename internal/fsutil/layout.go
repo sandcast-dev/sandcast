@@ -28,7 +28,7 @@ const (
 // constants of internal/build, internal/plan and internal/verify.
 var buildEntries = []string{
 	".lock", "build.log", "plan.yaml", "policy.yaml", "verify.yaml",
-	"Containerfile", "Containerfile.final", "profiles", "mise", "shell", "harness",
+	"Containerfile", "Containerfile.final", "profiles", "mise", "shell", "session", "harness",
 }
 
 // BuildEntries returns a copy of the names sandcast writes directly inside

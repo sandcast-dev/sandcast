@@ -63,8 +63,7 @@ ENV MISE_DATA_DIR={{.DataDir}} \
     MISE_USE_VERSIONS_HOST=0 \
     PATH={{.DataDir}}/shims:$PATH
 COPY mise/mise.toml mise/mise.lock {{.ConfigDir}}/
-COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-RUN chmod 0644 {{.ConfigFile}} {{.LockFile}} /etc/profile.d/sandcast-mise.sh \
+RUN chmod 0644 {{.ConfigFile}} {{.LockFile}} \
  && for attempt in 1 2 3; do \
       if curl -fsSL --connect-timeout 20 --max-time 300 -o {{.Binary}} {{.URL}}; then break; fi; \
       if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise {{.Pin}} after 3 attempts: {{.URL}}" >&2; exit 1; fi; \
@@ -113,6 +112,23 @@ func PackageFragment(packageManager string, packages []string) (string, error) {
 	}
 	return render(tmpl, map[string]any{"Section": SectionPackages, "Lines": strings.Join(lines, " \\\n")})
 }
+
+// MiseEnv is the environment the 30-mise layer sets with ENV, apart from
+// PATH (the shims directory goes first). The build exports it again for
+// shell sessions, which OpenShell starts with a cleared environment.
+func MiseEnv() []EnvVar {
+	return []EnvVar{
+		{Name: "MISE_DATA_DIR", Value: MiseDataDir},
+		{Name: "MISE_CONFIG_DIR", Value: MiseConfigDir},
+		{Name: "MISE_CACHE_DIR", Value: MiseRuntimeDir + "/cache"},
+		{Name: "MISE_STATE_DIR", Value: MiseRuntimeDir + "/state"},
+		{Name: "MISE_TRUSTED_CONFIG_PATHS", Value: MiseConfigDir},
+		{Name: "MISE_USE_VERSIONS_HOST", Value: "0"},
+	}
+}
+
+// MiseShims is the directory of the mise shims, first on PATH.
+const MiseShims = MiseDataDir + "/shims"
 
 // MiseFragment renders the aggregated 30-mise layer (R-04) for a mise
 // platform. The pinned static mise binary is downloaded and verified against

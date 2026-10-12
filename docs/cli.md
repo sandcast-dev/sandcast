@@ -302,7 +302,7 @@ sandcast verify [flags]
 
 `verify` reads the checks from `.sandcast/build/<target>/plan.yaml`; without a plan it exits 2. It reports every result, writes `verify.yaml` next to the plan, and exits 1 when any check failed.
 
-The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output), followed by a summary line:
+The table has one row per check with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output), followed by a summary line. For the OpenShell target, the shell components and the shell program get a second row, `<key> (session)`, for the same check in an OpenShell session environment (see [shell sessions](guides/build.md#shell-sessions)):
 
 ```text
 verify localhost/demo:latest: 9 passed, 0 failed
@@ -387,7 +387,7 @@ sandcast:            1f31df9-dirty
 openshell:           v0.1.3 (e1f3c82c)
 mise:                v2026.10.4
 component registry:  v0.1.0
-skill bundle:        0.1.0
+skill bundle:        0.1.1
 manifest schema:     1
 plan schema:         1
 ```

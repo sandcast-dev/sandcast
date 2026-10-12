@@ -38,6 +38,20 @@ func TestMiseFragment(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// The session script of the build exports MiseEnv again, so it must match
+// what the mise layer sets with ENV. PATH is left to the 65-session section.
+func TestMiseFragmentSetsMiseEnv(t *testing.T) {
+	got, err := MiseFragment(testUser, "v2026.10.4", "linux-arm64")
+	require.NoError(t, err)
+	env := MiseEnv()
+	require.NotEmpty(t, env)
+	for _, e := range env {
+		assert.Contains(t, got, e.Name+"="+e.Value)
+		assert.NotEqual(t, "PATH", e.Name)
+	}
+	assert.NotContains(t, got, "/etc/profile.d", "the session environment is written by the 65-session section")
+}
+
 func TestScriptFragment(t *testing.T) {
 	c := &component.Component{
 		Key: "mytool", SourceFile: ".sandcast/recipes/mytool.yaml",

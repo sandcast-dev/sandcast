@@ -174,11 +174,14 @@ type Profile struct {
 }
 
 // Shell is the shell program, the path of the curated configuration in the
-// image and its text.
+// image, its text and the components it references (manifest
+// shell.components, sorted), which verify also checks in a session
+// environment.
 type Shell struct {
-	Program string `yaml:"program" json:"program"`
-	RCPath  string `yaml:"rc_path,omitempty" json:"rc_path,omitempty"`
-	RC      string `yaml:"rc,omitempty" json:"rc,omitempty"`
+	Program    string   `yaml:"program" json:"program"`
+	RCPath     string   `yaml:"rc_path,omitempty" json:"rc_path,omitempty"`
+	RC         string   `yaml:"rc,omitempty" json:"rc,omitempty"`
+	Components []string `yaml:"components,omitempty" json:"components,omitempty"`
 }
 
 // Harness is one baked harness: its 70-harness section, the build context

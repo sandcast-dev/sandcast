@@ -96,7 +96,11 @@ func printVerify(a *App, r *verify.Report) {
 		if !res.OK {
 			result = "FAIL (" + res.Status + ")"
 		}
-		tb.row(res.ComponentKey, result, orDash(res.Version), firstLine(res.Output))
+		name := res.ComponentKey
+		if res.Mode != "" {
+			name += " (" + res.Mode + ")"
+		}
+		tb.row(name, result, orDash(res.Version), firstLine(res.Output))
 	}
 	_ = tb.flush()
 	_, _ = fmt.Fprintf(a.Stdout, "verify %s: %d passed, %d failed\n", r.Image.Reference, r.Passed, r.Failed)

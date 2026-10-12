@@ -493,6 +493,11 @@ func shellOf(m *manifest.Manifest) Shell {
 		return Shell{Program: "none"}
 	}
 	s := Shell{Program: m.Shell.Program}
+	if len(m.Shell.Components) > 0 {
+		s.Components = slices.Clone(m.Shell.Components)
+		slices.Sort(s.Components)
+		s.Components = slices.Compact(s.Components)
+	}
 	if strings.TrimSpace(m.Shell.RC) != "" {
 		s.RC = strings.TrimRight(m.Shell.RC, "\n") + "\n"
 		if m.Shell.Program == "zsh" {
