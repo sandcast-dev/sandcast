@@ -190,3 +190,12 @@ Ideas captured from code reviews for future brainstorming.
 - **Summary**: Add an optional mode that reads provider profiles from a reachable gateway instead of only the vendored set, and a drift check that compares the vendored profiles against what a live gateway reports. The vendored set stays the default so offline, deterministic, no-gateway builds keep working; the live source is opt-in for when a gateway is available.
 
 > Today refreshing the pin means a manual re-vendor on every OpenShell release. A live source would let a build pick up the running gateway's profiles directly, and a drift check would flag when the vendored set has fallen behind the gateway, turning the re-vendor into a signalled action rather than a periodic manual chore.
+
+### openshell-0.1.3-deferred-validation
+
+- **Source**: discussion
+- **Date**: 2026-10-12
+- **Reference**: OpenShell v0.1.3 pin refresh
+- **Summary**: The v0.1.3 refresh ported the stable profile validation but deferred two pieces. (1) The experimental `ProviderFileProfile` (`files`) feature: a `files` list on a provider profile with `path`/`content`/`env_var` and a `{{config.KEY}}` template, which upstream marks "may change or be removed". Porting means a new struct in `internal/profile/types.go`, lint rules (at most 16 files, path/content/env_var checks, the `files.env_var`-vs-credential conflict, the `{{config.KEY}}` validator and render, `valid_file_config_key`), and `files.*` in the null-object path list. (2) The token_grant audience-override to endpoint binding-conflict checks (the rest of `validate_token_grant_audience_overrides`): detect two overrides that bind to the same endpoint host and port with the same match score. Porting means typing the `token_grant` pass-through block and reimplementing the scoring and binding logic.
+
+> Neither feature is used by any vendored or overlay profile, token_grant is a pass-through block that the gateway re-validates on import (R-07), and `files` is upstream-unstable, so both were left out of the stable-parity refresh. Pick this up when a profile actually uses `files` or `token_grant`, or when upstream marks `files` stable.
