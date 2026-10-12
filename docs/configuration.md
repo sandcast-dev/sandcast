@@ -233,6 +233,8 @@ A component never carries network endpoints. A top-level `endpoints` key is reje
 | `harnesses` | Harness names chosen during capture, such as `claude-code`. |
 | `always` | `true` proposes the component for every project. Only base system components use it. |
 
+Host detection is a closed set: a tool is proposed from the host only when some component names it in `host_tools`. The capture guide covers [how to extend and manage that list](guides/capture.md#managing-the-detected-host-tool-list).
+
 ### installer
 
 | Kind | Fields | Meaning |
