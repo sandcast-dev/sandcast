@@ -1,7 +1,7 @@
 ---
 name: sandcast-build
 description: Build and verify the sandbox image from .sandcast/manifest.yaml, writing and repairing install fragments for components sandcast cannot resolve, then offer promotion to recipes and the OpenShell profile import.
-sandcast_version: 0.1.0
+sandcast_version: 0.1.1
 ---
 
 # sandcast build

@@ -387,7 +387,7 @@ sandcast:            1f31df9-dirty
 openshell:           v0.1.3 (e1f3c82c)
 mise:                v2026.10.4
 component registry:  v0.1.0
-skill bundle:        0.1.0
+skill bundle:        0.1.1
 manifest schema:     1
 plan schema:         1
 ```

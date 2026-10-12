@@ -34,7 +34,7 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - OpenShell v0.1.3 (commit e1f3c82c): vendored example profiles, profile lint rules, default sandbox policy, `openshell` CLI for the import step, gateway image `ghcr.io/nvidia/openshell/gateway:0.1.3` for `make test-gateway`.
 - mise v2026.10.4 inside images; host `mise` 2026.9.16 or newer for `sandcast lock`.
 - Remote component registry v0.1.0.
-- Manifest schema version 1, plan schema version 1, skill bundle 0.1.0.
+- Manifest schema version 1, plan schema version 1, skill bundle 0.1.1.
 
 ### OpenShell pin refresh v0.1.2 to v0.1.3
 

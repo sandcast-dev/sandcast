@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.0
+sandcast_version: 0.1.1
 ---
 
 # sandcast capture
@@ -55,8 +55,8 @@ Run it once per selected harness and handle each result with the steps below. If
 
 The JSON has `harness`, `mcp_servers` (each with `name`, `command` or `url`, `env`, `origin`), `plugins` and `skills` (each with `name`, `source`, `origin`), `redacted` (each with `path`, `kind`, `placeholder`, `env_var`) and `notes`.
 
-1. Present the MCP servers, plugins and skills as three short lists with their origin file. For MCP servers show the environment variable names, not their values.
-2. Let the user choose which ones to bake into the image. Nothing is baked by default; the user opts in item by item or with "all".
+1. Present the MCP servers, plugins and skills as three short groups, each item with its origin file. For MCP servers show the environment variable names, not their values.
+2. For each non-empty group, ask which items to bake into the image with a multi-select prompt: a checkbox list the user ticks, not a request to type item numbers. Use the harness's multi-select control when it has one (for example, in Claude Code, `AskUserQuestion` with `multiSelect: true`), and fall back to a numbered list only when the harness has no such control. Offer MCP servers, plugins and skills as three separate multi-select prompts so each is chosen independently. Nothing is baked by default: an empty selection bakes none.
 3. Check the `source` of every chosen skill and of every chosen plugin whose marketplace source is a path (`./`, `~/` or `/`). The binary copies such sources into the image only from inside the project, `~/.claude/skills` or `~/.claude/plugins`, and reads them on the machine that runs the plan. A source outside the project, such as `~/.claude/skills/review`, makes the manifest host-specific: `sandcast plan` and `sandcast build` fail in CI and on every other machine that lacks the path. For each such skill, explain this and offer to copy it into the project:
    - Ask first. If the user declines, keep the discovered source and say that only this host can build the image.
    - Copy only the skill directory, to `.claude/skills/<name>` in the project, and never overwrite an existing directory. List its files first and leave out every file that holds a credential (`.env` files, private keys such as `*.pem` or `*.key`, files named like token, secret or credentials); if the skill needs such a file, stop and ask. Show symbolic links and ask before copying them.
