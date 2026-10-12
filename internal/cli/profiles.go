@@ -45,7 +45,7 @@ func (a *App) profilesLintCommand() *cobra.Command {
 	var target string
 	cmd := &cobra.Command{
 		Use:   "lint [<file|dir>]",
-		Short: "Lint profiles with the built-in OpenShell v0.1.2 rules (default: the adapted set)",
+		Short: "Lint profiles with the built-in OpenShell v0.1.3 rules (default: the adapted set)",
 		Args:  args(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, argv []string) error {
 			path := ""

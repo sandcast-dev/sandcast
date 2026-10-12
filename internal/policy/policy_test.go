@@ -31,7 +31,7 @@ func parseDoc(t *testing.T, data []byte) document {
 
 func TestLoadDefaultsRealFile(t *testing.T) {
 	d := upstreamDefaults(t)
-	// restrictive_default_policy() at v0.1.2, crates/openshell-policy/src/lib.rs:985-1008.
+	// restrictive_default_policy() at v0.1.3, crates/openshell-policy/src/lib.rs:972-995.
 	assert.Equal(t, &Defaults{
 		IncludeWorkdir:        true,
 		ReadOnly:              []string{"/bin", "/usr", "/lib", "/proc", "/dev/urandom", "/etc", "/var/log"},

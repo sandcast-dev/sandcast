@@ -33,18 +33,27 @@ func (f *fakeRunner) Run(_ context.Context, bin string, args []string) ([]byte, 
 
 func TestCheckVersion(t *testing.T) {
 	ctx := context.Background()
-	ok := &Client{Runner: &fakeRunner{answers: map[string]string{"--version": "openshell 0.1.2\n"}}}
-	require.NoError(t, ok.CheckVersion(ctx))
 
-	old := &Client{Runner: &fakeRunner{answers: map[string]string{"--version": "openshell 0.1.3-dev.102\n"}}}
-	err := old.CheckVersion(ctx)
-	require.ErrorIs(t, err, ErrVersion)
-	assert.Contains(t, err.Error(), "requires openshell v0.1.2")
+	// Every release on the pinned minor line is accepted: the exact pin, an
+	// older patch, a newer patch, and a pre-release or build suffix.
+	for _, v := range []string{"0.1.3", "0.1.2", "0.1.9", "0.1.3-dev.102", "v0.1.3"} {
+		c := &Client{Runner: &fakeRunner{answers: map[string]string{"--version": "openshell " + v + "\n"}}}
+		require.NoErrorf(t, c.CheckVersion(ctx), "version %s should be accepted", v)
+	}
+
+	// A different minor or major line is rejected.
+	for _, v := range []string{"0.2.0", "0.0.9", "1.0.0"} {
+		c := &Client{Runner: &fakeRunner{answers: map[string]string{"--version": "openshell " + v + "\n"}}}
+		err := c.CheckVersion(ctx)
+		require.ErrorIsf(t, err, ErrVersion, "version %s should be rejected", v)
+		assert.Contains(t, err.Error(), "requires an openshell 0.1.x release")
+		assert.Contains(t, err.Error(), "pinned to v0.1.3")
+	}
 
 	missing := &Client{Runner: &fakeRunner{err: &exec.Error{Name: "openshell", Err: exec.ErrNotFound}}}
-	err = missing.CheckVersion(ctx)
+	err := missing.CheckVersion(ctx)
 	require.ErrorIs(t, err, ErrMissing)
-	assert.Contains(t, err.Error(), "v0.1.2")
+	assert.Contains(t, err.Error(), "v0.1.3")
 }
 
 func TestListProfiles(t *testing.T) {

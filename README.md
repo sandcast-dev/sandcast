@@ -21,7 +21,7 @@ Because the binary runs plan, build, verify and profile export from committed fi
 | Go | 1.25 or newer | building sandcast |
 | podman (or docker) | podman 5 or newer | `probe`, `plan`, `build`, `verify`, `profiles export` |
 | mise | 2026.9.16 or newer on the host | `sandcast lock` |
-| openshell CLI | 0.1.2 | `sandcast profiles import` only |
+| openshell CLI | 0.1.x (pinned to v0.1.3) | `sandcast profiles import` only |
 | Claude Code | | the `/sandcast-capture` and `/sandcast-build` skills |
 
 Build the binary from a checkout of this repository:
@@ -124,7 +124,7 @@ A checkout with only the committed files is enough for `sandcast plan`, `sandcas
 
 | Pin | Value | Used for |
 |-----|-------|----------|
-| OpenShell | v0.1.2 (commit 6648bd0c) | vendored example profiles, the built-in profile lint, the default sandbox policy, the `openshell` CLI for the import step |
+| OpenShell | v0.1.3 (commit e1f3c82c) | vendored example profiles, the built-in profile lint, the default sandbox policy, the `openshell` CLI for the import step |
 | mise | v2026.10.4 inside images | installing tools in the image; the host needs mise 2026.9.16 or newer for `sandcast lock` |
 | Component registry | v0.1.0 | default tag of the remote component registry |
 | Manifest schema | 1 | `.sandcast/manifest.yaml` |

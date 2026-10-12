@@ -9,9 +9,9 @@ var Version = "dev"
 const (
 	// OpenShellPin is the OpenShell release the vendored profiles, the lint
 	// rules and the default policy come from.
-	OpenShellPin = "v0.1.2"
+	OpenShellPin = "v0.1.3"
 	// OpenShellCommit is the commit of OpenShellPin.
-	OpenShellCommit = "6648bd0c290efbc41ba131ee9831ee45cd431f94"
+	OpenShellCommit = "e1f3c82caa3ed3b65de22889ae7ef32a774878ef"
 	// MisePin is the mise release installed inside images.
 	MisePin = "v2026.10.4"
 	// MiseReleaseURL is the download location of the pinned mise binaries.

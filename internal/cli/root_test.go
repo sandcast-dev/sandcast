@@ -11,13 +11,13 @@ import (
 func TestVersion(t *testing.T) {
 	ta := newTestApp(t)
 	require.Equal(t, 0, ta.run("version"))
-	assert.Contains(t, ta.stdout.String(), "v0.1.2")
+	assert.Contains(t, ta.stdout.String(), "v0.1.3")
 	assert.Contains(t, ta.stdout.String(), "v2026.10.4")
 
 	require.Equal(t, 0, ta.run("version", "--json"))
 	var v map[string]any
 	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &v))
-	assert.Equal(t, "v0.1.2", v["openshell"])
+	assert.Equal(t, "v0.1.3", v["openshell"])
 	assert.Equal(t, float64(1), v["manifest_schema_version"])
 }
 

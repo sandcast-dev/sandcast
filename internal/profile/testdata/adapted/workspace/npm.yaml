@@ -4,7 +4,7 @@
 # Upstream id:  npm
 # Source tier:  overlay
 # Source file:  profiles/overlay/npm.yaml
-# Schema pin:   OpenShell v0.1.2 (6648bd0c290efbc41ba131ee9831ee45cd431f94)
+# Schema pin:   OpenShell v0.1.3 (e1f3c82caa3ed3b65de22889ae7ef32a774878ef)
 # Changed:      binaries (resolved in the built image)
 # Flagged:      no binary resolved in the built image; the profile matches no process
 

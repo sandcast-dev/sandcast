@@ -202,7 +202,7 @@ func newTestApp(t *testing.T) *testApp {
 	t.Helper()
 	t.Setenv("SANDCAST_CACHE_DIR", t.TempDir())
 	t.Setenv("SANDCAST_CONFIG_DIR", t.TempDir())
-	ta := &testApp{eng: newScriptedEngine(), gw: &fakeGateway{version: "0.1.2"}, dir: t.TempDir(), home: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+	ta := &testApp{eng: newScriptedEngine(), gw: &fakeGateway{version: "0.1.3"}, dir: t.TempDir(), home: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
 	app := NewApp(ta.stdout, ta.stderr, strings.NewReader(""))
 	app.NewEngine = func(string) engine.Engine { return ta.eng }
 	app.LookPath = func(file string) (string, error) {

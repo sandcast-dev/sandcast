@@ -6,7 +6,7 @@ OpenShell controls network access per process. A provider profile names the endp
 - The image policy that sandcast bakes into OpenShell images has an empty network section.
 - After each build, sandcast writes an adapted copy of every referenced profile whose `binaries` match the paths inside that image. You import those copies into a gateway, create providers from them, and attach the providers to the sandbox.
 
-Every profile uses the upstream OpenShell provider profile schema of v0.1.2, unchanged.
+Every profile uses the upstream OpenShell provider profile schema of v0.1.3, unchanged.
 
 ## Profile tiers
 
@@ -14,7 +14,7 @@ Profiles come from three tiers. A later tier overrides an earlier one with the s
 
 | Order | Tier | Location | Profiles |
 |-------|------|----------|----------|
-| 1 | `upstream` | `profiles/upstream/v0.1.2/`, embedded in the binary | The 16 example profiles of OpenShell v0.1.2, byte for byte: `anthropic`, `aws`, `aws-bedrock`, `aws-s3`, `claude-code`, `codex`, `copilot`, `cursor`, `deepinfra`, `github`, `google-cloud`, `google-vertex-ai`, `nvidia`, `openai`, `openrouter`, `pypi` |
+| 1 | `upstream` | `profiles/upstream/v0.1.3/`, embedded in the binary | The 17 example profiles of OpenShell v0.1.3, byte for byte: `anthropic`, `aws`, `aws-bedrock`, `aws-s3`, `claude-code`, `codex`, `copilot`, `cursor`, `deepinfra`, `github`, `google-cloud`, `google-vertex-ai`, `nvidia`, `oci-genai`, `openai`, `openrouter`, `pypi` |
 | 2 | `overlay` | `profiles/overlay/`, embedded in the binary | `npm`, `crates-io`, `go-proxy`, `gitlab` |
 | 3 | `project` | `.sandcast/profiles/` in the project | Your own profiles |
 
@@ -58,7 +58,7 @@ $ sandcast profiles lint .sandcast/profiles
 
 ## Lint
 
-sandcast lints profiles with rules built into the binary, so plan, build and export need no OpenShell tooling. The rules mirror `validate_profile_set` of OpenShell v0.1.2 and keep the upstream messages. They are tested against every vendored upstream profile, which must lint clean, and against a corpus of negative cases.
+sandcast lints profiles with rules built into the binary, so plan, build and export need no OpenShell tooling. The rules mirror `validate_profile_set` of OpenShell v0.1.3 and keep the upstream messages. They are tested against every vendored upstream profile, which must lint clean, and against a corpus of negative cases.
 
 In summary, the lint checks:
 
@@ -111,7 +111,7 @@ profiles:
     adapted_id: claude-code
     file: claude-code.yaml
     source_tier: upstream
-    source_file: profiles/upstream/v0.1.2/claude-code.yaml
+    source_file: profiles/upstream/v0.1.3/claude-code.yaml
     binaries:
       - /usr/local/bin/claude
     flagged: false
@@ -163,7 +163,7 @@ sandcast profiles export --suffix
 
 ## Importing into a gateway
 
-The import step is the only part of sandcast that needs OpenShell tooling: the `openshell` CLI at release 0.1.2 and a reachable gateway.
+The import step is the only part of sandcast that needs OpenShell tooling: the `openshell` CLI on the 0.1.x line (pinned to v0.1.3) and a reachable gateway.
 
 ```sh
 sandcast profiles import --scope workspace
@@ -171,7 +171,7 @@ sandcast profiles import --scope workspace
 
 The command works in this order:
 
-1. It runs `openshell --version` and stops with exit 3 unless the CLI reports 0.1.2. Nothing contacts the gateway before this check passes.
+1. It runs `openshell --version` and stops with exit 3 unless the CLI reports a release on the pinned minor line (any 0.1.x for the v0.1.3 pin; a pre-release suffix such as `0.1.3-dev.1` counts as its base version). Nothing contacts the gateway before this check passes.
 2. It applies the id strategy: upstream ids for workspace scope, suffixed ids for platform scope or `--suffix`.
 3. It lists the profiles that exist at the scope with `openshell profile list -o json`.
 4. It imports every adapted profile whose id does not exist yet, one file at a time with `openshell profile import --file`. Platform scope adds `--global` to each call. At workspace scope, sandcast passes `--workspace <name>` when you give that flag, and otherwise lets the CLI use its current workspace.
@@ -194,7 +194,7 @@ sandcast profiles import --scope workspace --gateway staging
 OPENSHELL_GATEWAY_ENDPOINT=http://127.0.0.1:18180 sandcast profiles import --scope workspace
 ```
 
-Running the same import twice is safe: the second run reports every id as existing and leaves the gateway unchanged. `make test-gateway` checks this against a v0.1.2 gateway started by `tests/integration/gateway.sh`.
+Running the same import twice is safe: the second run reports every id as existing and leaves the gateway unchanged. `make test-gateway` checks this against a v0.1.3 gateway started by `tests/integration/gateway.sh`.
 
 ## Harness MCP servers
 

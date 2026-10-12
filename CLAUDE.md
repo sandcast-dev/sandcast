@@ -20,7 +20,7 @@ Key documents:
 - OpenShell sandbox images first, plain container images second. No SSH target.
 - Go CLI plus a portable skill bundle. The binary runs plan, build, verify and profile export without any agent. The binary installs its skills into Claude Code first; Codex, OpenCode and pi follow.
 - Base image registry plus a live probe per image digest, cached.
-- Components reference OpenShell provider profiles. No sandcast endpoint schema. Upstream example profiles are vendored at a pinned OpenShell release (v0.1.2), with a same-schema overlay for npm, crates.io, the Go module proxy and GitLab.
+- Components reference OpenShell provider profiles. No sandcast endpoint schema. Upstream example profiles are vendored at a pinned OpenShell release (v0.1.3), with a same-schema overlay for npm, crates.io, the Go module proxy and GitLab.
 - mise is the primary installer with a lockfile. Recipes are the escape hatch.
 - Podman by default, docker through the same command surface.
 - Capture is LLM-driven and writes the manifest. The Go core produces a build plan. The skill assembles the image definition, repairs failures, and promotes working layers into recipes.
@@ -39,7 +39,7 @@ When creating or editing documentation (Markdown, AsciiDoc, README):
   - `make build`: the binary at `./sandcast`
   - `make test`, `make lint`, `make verify` (test plus lint), `make fmt`
   - `make test-integration`: build-tagged tests against podman (`tests/integration/`, tag `integration`)
-  - `make test-gateway`: additionally starts a throwaway OpenShell v0.1.2 gateway (tag `gateway`, `tests/integration/gateway.sh`)
+  - `make test-gateway`: additionally starts a throwaway OpenShell v0.1.3 gateway (tag `gateway`, `tests/integration/gateway.sh`)
   - `make cross`: linux and darwin binaries for amd64 and arm64 in `dist/`
 - Golden files regenerate with `UPDATE_GOLDEN=1 go test ./...` (see `tests/golden/README.md`).
 - Container runtime: podman by default. Never require docker-specific features.
@@ -74,8 +74,8 @@ internal/
   version/          # binary version and pins
   testutil/         # golden-file helper
 components/         # shipped component definitions
-profiles/           # upstream/v0.1.2 (vendored, unmodified) and overlay/
-policy/             # pinned default policy (default-v0.1.2.yaml)
+profiles/           # upstream/v0.1.3 (vendored, unmodified) and overlay/
+policy/             # pinned default policy (default-v0.1.3.yaml)
 skills/             # portable skill bundle: VERSION, capture/, build/
 base-images.yaml    # shipped base image registry
 docs/               # cli.md, configuration.md, pins.md, guides/

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Host, address and port rules that OpenShell v0.1.2 enforces when a sandbox
+// Host, address and port rules that OpenShell v0.1.3 enforces when a sandbox
 // policy is loaded or a connection is made, not in profile lint. A profile
 // that breaks one of them imports cleanly but fails at sandbox start or never
 // carries traffic, so sandcast reports them at lint time.

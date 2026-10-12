@@ -300,7 +300,7 @@ OpenShell provider profiles come from three tiers. A later tier overrides an ear
 
 | Order | Tier | Location | Content |
 |-------|------|----------|---------|
-| 1 | `upstream` | `profiles/upstream/v0.1.2/`, embedded | The 16 example profiles of OpenShell v0.1.2, unmodified |
+| 1 | `upstream` | `profiles/upstream/v0.1.3/`, embedded | The 17 example profiles of OpenShell v0.1.3, unmodified |
 | 2 | `overlay` | `profiles/overlay/`, embedded | `npm`, `crates-io`, `go-proxy`, `gitlab` |
 | 3 | `project` | `.sandcast/profiles/` in the project | Your own profiles in the same schema |
 

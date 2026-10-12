@@ -4,7 +4,7 @@
 # Upstream id:  internal-api
 # Source tier:  project
 # Source file:  .sandcast/profiles/internal-api.yaml
-# Schema pin:   OpenShell v0.1.2 (6648bd0c290efbc41ba131ee9831ee45cd431f94)
+# Schema pin:   OpenShell v0.1.3 (e1f3c82caa3ed3b65de22889ae7ef32a774878ef)
 # Changed:      id (suffixed with the image label), binaries (resolved in the built image)
 
 id: internal-api-demo-sandbox

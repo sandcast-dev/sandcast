@@ -4,7 +4,7 @@ sandcast depends on fixed releases of OpenShell, mise and its remote component r
 
 | Pin | Value | Defined in |
 |-----|-------|------------|
-| OpenShell | v0.1.2, commit `6648bd0c290efbc41ba131ee9831ee45cd431f94` | `OpenShellPin`, `OpenShellCommit` in `internal/version/version.go`; `Pin` in `internal/policy/policy.go` |
+| OpenShell | v0.1.3, commit `e1f3c82caa3ed3b65de22889ae7ef32a774878ef` | `OpenShellPin`, `OpenShellCommit` in `internal/version/version.go`; `Pin` in `internal/policy/policy.go` |
 | mise in images | v2026.10.4 | `MisePin` in `internal/version/version.go` |
 | mise on the host | 2026.9.16 or newer | `MiseMinHost` in `internal/version/version.go` |
 | Component registry | v0.1.0 | `ComponentRegistryPin` and `ComponentRegistryURL` in `internal/version/version.go` |
@@ -17,7 +17,7 @@ The OpenShell pin covers four things that must stay consistent with each other: 
 
 1. **Prepare the source.** Check out the new release tag in an OpenShell clone and note the full commit hash with `git rev-parse HEAD`. Read the release notes for changes to provider profiles, policy validation and the sandbox image contract.
 
-2. **Re-vendor the profiles.** Create `profiles/upstream/<new tag>/` and copy `providers/*.yaml` into it byte for byte; do not copy `providers/README.md`. Write a `SOURCE.md` there with the tag, the commit, the date and the file count, following the existing [SOURCE.md](../profiles/upstream/v0.1.2/SOURCE.md). Remove the old directory.
+2. **Re-vendor the profiles.** Create `profiles/upstream/<new tag>/` and copy `providers/*.yaml` into it byte for byte; do not copy `providers/README.md`. Write a `SOURCE.md` there with the tag, the commit, the date and the file count, following the existing [SOURCE.md](../profiles/upstream/v0.1.3/SOURCE.md). Remove the old directory.
 
 3. **Update the version constants.** Set `OpenShellPin` and `OpenShellCommit` in `internal/version/version.go`. `embed.go` and the profile tier prefix in `internal/profile/tiers.go` derive the vendored directory from `OpenShellPin`, so they follow without an edit; `embed_test.go` confirms the new directory is embedded.
 
@@ -33,11 +33,11 @@ The OpenShell pin covers four things that must stay consistent with each other: 
 
    Every vendored upstream profile and every overlay profile must lint clean, and every negative case must still fail with its expected message. An overlay profile that fails the new rules must be fixed, since the overlay is meant to be contributed upstream unchanged.
 
-7. **Refresh the default policy.** Compare `restrictive_default_policy()` in `crates/openshell-policy/src/lib.rs` with `policy/default-v0.1.2.yaml`. Write `policy/default-<new tag>.yaml` with the new filesystem and landlock defaults, keep the header comment with the source line numbers and the commit, and delete the old file. Set `Pin` in `internal/policy/policy.go` (the defaults file name derives from it) and check the limits next to it (`MaxFilesystemPaths`, `MaxPathLength`, `MaxDocumentBytes`) against `crates/openshell-policy/src/lib.rs` and `crates/openshell-policy-schema/src/lib.rs`. The network section must stay empty unless the new default policy defines network entries.
+7. **Refresh the default policy.** Compare `restrictive_default_policy()` in `crates/openshell-policy/src/lib.rs` with `policy/default-v0.1.3.yaml`. Write `policy/default-<new tag>.yaml` with the new filesystem and landlock defaults, keep the header comment with the source line numbers and the commit, and delete the old file. Set `Pin` in `internal/policy/policy.go` (the defaults file name derives from it) and check the limits next to it (`MaxFilesystemPaths`, `MaxPathLength`, `MaxDocumentBytes`) against `crates/openshell-policy/src/lib.rs` and `crates/openshell-policy-schema/src/lib.rs`. The network section must stay empty unless the new default policy defines network entries.
 
 8. **Check the image contract.** Compare the reserved paths and the policy location in the upstream sources (`container_paths.rs`, `driver_mounts.rs`) with the image paths in `internal/build/sections.go` (`PolicyPath`, `WorkDir`) and with the reserved paths the build skill avoids in `skills/build/SKILL.md`.
 
-9. **Update the remaining mentions.** `rg -n 'v0\.1\.2'` finds them: the help text of `sandcast profiles lint` in `internal/cli/profiles.go`, test fixtures, the default gateway image `ghcr.io/nvidia/openshell/gateway:0.1.2` in `tests/integration/gateway.sh` (overridable with `OPENSHELL_GATEWAY_IMAGE`), the README and the pages under `docs/`.
+9. **Update the remaining mentions.** `rg -n 'v0\.1\.3'` finds them: the help text of `sandcast profiles lint` in `internal/cli/profiles.go`, the gateway version check in `internal/gateway/openshell.go`, test fixtures, the default gateway image `ghcr.io/nvidia/openshell/gateway:0.1.3` in `tests/integration/gateway.sh` (overridable with `OPENSHELL_GATEWAY_IMAGE`), the README and the pages under `docs/`. The import version check accepts any release on the pinned minor line, so a new patch release on the same line needs no code change; a new minor or major does.
 
 10. **Regenerate the golden files** with `UPDATE_GOLDEN=1 go test ./...` and review the diff. The adapted profile headers and the policy header carry the pin (see [tests/golden/README.md](../tests/golden/README.md)).
 

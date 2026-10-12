@@ -6,11 +6,11 @@ They are not modified, including their header comments and SPDX lines.
 | Item | Value |
 |------|-------|
 | Repository | https://github.com/NVIDIA/OpenShell |
-| Tag | `v0.1.2` |
-| Commit | `6648bd0c290efbc41ba131ee9831ee45cd431f94` |
+| Tag | `v0.1.3` |
+| Commit | `e1f3c82caa3ed3b65de22889ae7ef32a774878ef` |
 | Path | `providers/*.yaml` (the `README.md` there is not copied) |
-| Files | 16 |
-| Vendored | 2026-10-08 |
+| Files | 17 |
+| Vendored | 2026-10-12 |
 | License | Apache-2.0 (see the SPDX header of each file) |
 
 sandcast uses these files as the upstream profile tier and as the regression oracle for its built-in lint (`internal/profile`).

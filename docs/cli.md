@@ -33,7 +33,7 @@ Every command accepts these flags.
 | 0 | Success | |
 | 1 | The operation failed | The image build failed; a verify check failed; `lock` could not lock every tool; `components refresh` rejected a file; `profiles import` found existing profile ids; a promotion was declined; the base image could not be pulled or probed; another sandcast run holds the build lock for the target (`another sandcast build is running for target <target> in <dir>; wait for it to finish`). |
 | 2 | Usage or validation error | Unknown flags or a wrong number of arguments; an `--engine` value other than `podman` or `docker`; no manifest; an invalid manifest or an unsupported `schema_version`; an unsupported platform; a target the manifest does not declare; a lockfile without an entry for the selected platform; a component that references an unknown profile id; a binary conflict between components; blocking unresolved components at build time; profile lint diagnostics; an invalid fragment or learnings entry; a fragment that cannot be promoted; `verify` without a plan; `profiles import` without an adapted profile set; an unknown harness name. |
-| 3 | External tool missing or at the wrong version | No container engine (or the selected one is not on the `PATH`); host mise missing or older than 2026.9.16; the `openshell` CLI missing or not at 0.1.2; installed skills that do not match the binary. |
+| 3 | External tool missing or at the wrong version | No container engine (or the selected one is not on the `PATH`); host mise missing or older than 2026.9.16; the `openshell` CLI missing or not on the 0.1.x line (pinned to v0.1.3); installed skills that do not match the binary. |
 | 130 | Interrupted | SIGINT or SIGTERM. sandcast stops the running engine or `openshell` command with SIGTERM, waits up to 15 seconds, and keeps the pass-1 image as `<image>:sandcast-debug` when a build was interrupted after pass 1; image cleanup is limited to 30 seconds. A second Ctrl-C ends sandcast at once. |
 
 ## Output conventions
@@ -242,7 +242,7 @@ starship         missing  -          -         install
 zsh              missing  -          -         install
 
 PROFILE      TIER      SOURCE
-claude-code  upstream  profiles/upstream/v0.1.2/claude-code.yaml
+claude-code  upstream  profiles/upstream/v0.1.3/claude-code.yaml
 go-proxy     overlay   profiles/overlay/go-proxy.yaml
 notice: added zsh implicitly: shell program
 ...
@@ -312,7 +312,7 @@ A `FAIL (timeout)` row is a check that did not finish within the check timeout; 
 
 ### sandcast profiles lint
 
-Lint provider profiles with the built-in rules of OpenShell v0.1.2. No OpenShell tooling is needed.
+Lint provider profiles with the built-in rules of OpenShell v0.1.3. No OpenShell tooling is needed.
 
 ```text
 sandcast profiles lint [<file|dir>] [--target <openshell|container>]
@@ -363,7 +363,7 @@ sandcast profiles import [flags]
 | `--dry-run` | off | List what would be imported or updated without changing the gateway. |
 | `--target <openshell\|container>` | the default target | Target whose adapted set is imported. |
 
-The command checks `openshell --version` first and exits 3 unless it reports 0.1.2, before any gateway call. It then lists the profiles at the chosen scope, imports every adapted profile whose id does not exist yet, one file at a time, and reports existing ids as `exists: <id> (left unchanged)`. Existing ids make the command exit 1 with the choices `--update`, `--suffix` or the other scope. `--dry-run` still checks the CLI version and lists the gateway's profiles, so it needs a reachable gateway.
+The command checks `openshell --version` first and exits 3 unless it reports a release on the pinned minor line (any 0.1.x for the v0.1.3 pin), before any gateway call. It then lists the profiles at the chosen scope, imports every adapted profile whose id does not exist yet, one file at a time, and reports existing ids as `exists: <id> (left unchanged)`. Existing ids make the command exit 1 with the choices `--update`, `--suffix` or the other scope. `--dry-run` still checks the CLI version and lists the gateway's profiles, so it needs a reachable gateway.
 
 After an import that placed the whole set at the gateway, sandcast rewrites `index.yaml` in `.sandcast/build/<target>/profiles/` so that it records each profile under the id it was imported with and the scope. A dry run, a run stopped by existing ids, or a failed `openshell` call leaves `index.yaml` unchanged.
 
@@ -384,7 +384,7 @@ Print the binary version and the pinned upstream releases.
 ```console
 $ sandcast version
 sandcast:            1f31df9-dirty
-openshell:           v0.1.2 (6648bd0c)
+openshell:           v0.1.3 (e1f3c82c)
 mise:                v2026.10.4
 component registry:  v0.1.0
 skill bundle:        0.1.0

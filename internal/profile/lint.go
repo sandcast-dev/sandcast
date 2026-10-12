@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/goccy/go-yaml"
 )
 
 // The rules below mirror validate_profile_set in
-// crates/openshell-providers/src/profiles.rs at OpenShell v0.1.2, including
+// crates/openshell-providers/src/profiles.rs at OpenShell v0.1.3, including
 // the checks upstream performs while deserializing (category, refresh
 // strategy and token grant type enums, MCP version lists). Messages keep the
 // upstream wording. Policy rules that upstream applies only at sandbox start
@@ -20,11 +21,14 @@ const (
 	mcpVersionRemediation   = "omit mcp.versions to use the pinned default revision; use an exact supported revision; or omit protocol and mcp for deliberate uninspected L4 passthrough only when that weaker boundary is acceptable"
 )
 
-// supportedMCPVersions are the MCP protocol revisions OpenShell v0.1.2 knows.
+// supportedMCPVersions are the MCP protocol revisions OpenShell v0.1.3 knows
+// (McpProtocolVersion::ALL). The pinned default revision stays 2025-11-25;
+// 2026-07-28 is accepted when a profile names it explicitly.
 var supportedMCPVersions = map[string]bool{
 	"2025-03-26": true,
 	"2025-06-18": true,
 	"2025-11-25": true,
+	"2026-07-28": true,
 }
 
 // Diagnostic is one lint finding. Every diagnostic is an error.
@@ -113,6 +117,10 @@ func lintProfile(p *Profile, source string, ids map[string]bool) []Diagnostic {
 
 	credentialNames := map[string]bool{}
 	for _, c := range p.Credentials {
+		if strings.ContainsFunc(c.Name, unicode.IsControl) {
+			l.add("credentials.name", "credential name must not contain control characters")
+			continue
+		}
 		name := strings.TrimSpace(c.Name)
 		switch {
 		case name == "":
@@ -147,8 +155,9 @@ func lintProfile(p *Profile, source string, ids map[string]bool) []Diagnostic {
 	}
 
 	credentialed := hasCredentialedEndpoints(p)
+	tokenGrant := profileHasTokenGrant(p)
 	for i := range p.Endpoints {
-		l.endpoint(i, &p.Endpoints[i], credentialed)
+		l.endpoint(i, &p.Endpoints[i], credentialed, tokenGrant)
 	}
 
 	for i, b := range p.Binaries {
@@ -219,6 +228,35 @@ func (l *linter) credential(c *Credential, envVars map[string]bool) {
 		case normalized != "" && normalized != "client_credentials" && normalized != "token_exchange":
 			l.add("credentials.token_grant.grant_type", "unsupported provider token grant type: "+grantType)
 		}
+		l.tokenGrantAudienceOverrides(c.TokenGrant)
+	}
+}
+
+// tokenGrantAudienceOverrides reports control characters in the host and path
+// selectors of a credential's token_grant.audience_overrides entries. token_grant
+// is a pass-through block in sandcast (R-07), so only this self-contained check
+// is mirrored; the override-to-endpoint binding checks upstream added in v0.1.3
+// are left to the gateway, which re-validates on import.
+func (l *linter) tokenGrantAudienceOverrides(tg yaml.MapSlice) {
+	overrides, ok := lookupField(tg, "audience_overrides")
+	if !ok {
+		return
+	}
+	list, ok := overrides.([]any)
+	if !ok {
+		return
+	}
+	for i, item := range list {
+		for _, sel := range []string{"host", "path"} {
+			raw, ok := lookupField(item, sel)
+			if !ok {
+				continue
+			}
+			if s, ok := raw.(string); ok && strings.ContainsFunc(s, unicode.IsControl) {
+				l.add(fmt.Sprintf("credentials.token_grant.audience_overrides[%d].%s", i, sel),
+					"token_grant audience override selectors must not contain control characters")
+			}
+		}
 	}
 }
 
@@ -232,8 +270,9 @@ var refreshStrategies = map[string]bool{
 	"aws_sts_assume_role":        true,
 }
 
-// endpoint checks one endpoint.
-func (l *linter) endpoint(index int, ep *Endpoint, credentialed bool) {
+// endpoint checks one endpoint. tokenGrant reports whether any credential of
+// the profile carries a token_grant block, which tightens a few endpoint rules.
+func (l *linter) endpoint(index int, ep *Endpoint, credentialed, tokenGrant bool) {
 	field := fmt.Sprintf("endpoints[%d]", index)
 
 	if !endpointIsValid(ep) {
@@ -292,6 +331,10 @@ func (l *linter) endpoint(index int, ep *Endpoint, credentialed bool) {
 				l.add(loc+".params", "params matching is only valid for protocol mcp")
 			}
 		}
+	}
+
+	if tokenGrant {
+		l.tokenGrantEndpoint(index, ep)
 	}
 
 	if credentialed && !ep.AllowUninspectedCredentials {
@@ -609,6 +652,54 @@ func hasCredentialedEndpoints(p *Profile) bool {
 		}
 	}
 	return false
+}
+
+// profileHasTokenGrant reports whether any credential carries a token_grant
+// block (has_token_grant upstream).
+func profileHasTokenGrant(p *Profile) bool {
+	for i := range p.Credentials {
+		if p.Credentials[i].TokenGrant != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenGrantEndpoint applies the endpoint rules upstream adds when any
+// credential carries a token_grant block: selectors free of control
+// characters, and a transport that HTTP header injection can use (not protocol
+// sql, not tls: skip).
+func (l *linter) tokenGrantEndpoint(index int, ep *Endpoint) {
+	field := fmt.Sprintf("endpoints[%d]", index)
+	for _, sel := range []struct{ name, value string }{{"host", ep.Host}, {"path", ep.Path}} {
+		if strings.ContainsFunc(sel.value, unicode.IsControl) {
+			l.add(field+"."+sel.name, "token_grant endpoint selectors must not contain control characters")
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(ep.Protocol), "sql") {
+		l.add(field+".protocol", "token_grant credentials require HTTP header injection, which protocol sql does not support")
+	}
+	if strings.EqualFold(strings.TrimSpace(ep.TLS), "skip") {
+		l.add(field+".tls", "token_grant credentials require HTTP header injection, which tls: skip bypasses; remove tls: skip")
+	}
+}
+
+// lookupField returns the value of key in a decoded YAML mapping, handling both
+// the ordered (yaml.MapSlice) and plain (map[string]any) forms, and whether the
+// key is present.
+func lookupField(v any, key string) (any, bool) {
+	switch m := v.(type) {
+	case yaml.MapSlice:
+		for _, item := range m {
+			if fmt.Sprint(item.Key) == key {
+				return item.Value, true
+			}
+		}
+	case map[string]any:
+		val, ok := m[key]
+		return val, ok
+	}
+	return nil, false
 }
 
 // rulesWouldDenyAll reports a non-empty rule list in which no rule has an

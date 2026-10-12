@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	upstreamDir = "../../profiles/upstream/v0.1.2"
+	upstreamDir = "../../profiles/upstream/v0.1.3"
 	overlayDir  = "../../profiles/overlay"
 	lintCorpus  = "testdata/lint"
 )
@@ -28,7 +28,7 @@ func loadShipped(t *testing.T) (upstream, overlay []Entry) {
 
 func TestShippedProfilesLintClean(t *testing.T) {
 	upstream, overlay := loadShipped(t)
-	require.Len(t, upstream, 16, "vendored upstream profiles")
+	require.Len(t, upstream, 17, "vendored upstream profiles")
 	require.Len(t, overlay, 4, "overlay profiles")
 
 	for _, e := range append(append([]Entry{}, upstream...), overlay...) {
@@ -65,97 +65,104 @@ func TestOverlayProfilesFollowUpstreamHeader(t *testing.T) {
 // lintCases maps each file of the negative corpus to a substring of the
 // expected parse error or lint diagnostic.
 var lintCases = map[string]string{
-	"access-unknown.yaml":                 "unknown access value 'read' (expected read-only, read-write, or full)",
-	"allowed-ips-blocked.yaml":            "always-blocked allowed_ips entry '169.254.0.0/16'",
-	"allowed-ips-invalid.yaml":            "allowed_ips entry 'not-an-ip' is not a valid IP address or CIDR",
-	"auth-bearer-no-header.yaml":          "header_name is required for bearer auth",
-	"auth-path-no-template.yaml":          "path_template is required for path auth",
-	"auth-path-template-count.yaml":       "path_template should contain {credential} exactly once, /v1/{key}/resources contains {credential} 0 times",
-	"auth-query-no-param.yaml":            "query_param is required for query auth",
-	"auth-style-unknown.yaml":             "unsupported auth_style: digest",
-	"binary-empty.yaml":                   "binary path must not be empty",
-	"binary-extra-field.yaml":             "unsupported provider profile binary fields: harness",
-	"category-unknown.yaml":               "unsupported provider profile category: storage",
-	"credential-name-duplicate.yaml":      "duplicate credential name: api_key",
-	"credential-name-empty.yaml":          "credential name is required",
-	"credential-name-missing.yaml":        `credentials[0]: missing field "name"`,
-	"credentialed-l4.yaml":                "credentialed endpoint 'api.example.com:443' uses L4-only; configure L7 inspection or explicitly set allow_uninspected_credentials: true",
-	"credentialed-tls-skip.yaml":          "credentialed endpoint 'api.example.com:443' uses tls: skip",
-	"deny-rules-empty.yaml":               "deny_rules list cannot be empty (would have no effect)",
-	"deny-rules-no-base.yaml":             "deny_rules require rules or access to define the base allow set",
-	"deny-rules-no-protocol.yaml":         "deny_rules require protocol (L7 inspection must be enabled)",
-	"discovery-duplicate.yaml":            "duplicate discovery credential: api_key",
-	"discovery-unknown.yaml":              "unknown discovery credential: missing_key",
-	"display-name-missing.yaml":           `missing field "display_name"`,
-	"endpoint-host-empty.yaml":            "invalid endpoint ':443'",
-	"endpoint-host-missing.yaml":          `endpoints[0]: missing field "host"`,
-	"endpoint-port-zero.yaml":             "invalid endpoint 'api.example.com:0'",
-	"endpoint-ports-range.yaml":           "invalid endpoint 'api.example.com:0'",
-	"enforcement-unknown.yaml":            "unknown enforcement value 'block' (expected enforce or audit)",
-	"env-var-duplicate.yaml":              "duplicate credential env var 'EXAMPLE_TOKEN'",
-	"env-var-empty.yaml":                  "credential env var must not be empty",
-	"env-var-reserved.yaml":               "credential env var 'v10_GITHUB_TOKEN' uses reserved OpenShell placeholder revision namespace",
-	"graphql-operation-type.yaml":         "rules[0].allow.operation_type must be query, mutation, or subscription",
-	"host-ipv6-loopback.yaml":             "endpoint host '::1' is an always-blocked address",
-	"host-ipv6-zone.yaml":                 `endpoint host "2001:db8::1%eth0" is not a valid DNS name, wildcard pattern or IP address`,
-	"host-newline.yaml":                   `endpoint host "evil.com\n[core]\n\tfsmonitor = touch /tmp/pwned" is not a valid DNS name`,
-	"host-space.yaml":                     `endpoint host "api.example.com other.example.com" is not a valid DNS name`,
-	"host-link-local.yaml":                "endpoint host '169.254.169.254' is an always-blocked address",
-	"host-localhost.yaml":                 "endpoint host 'localhost' is always blocked",
-	"host-loopback.yaml":                  "endpoint host '127.0.0.1' is an always-blocked address",
-	"host-metadata.yaml":                  "endpoint host 'metadata.google.internal' is a known cloud metadata hostname",
-	"id-empty.yaml":                       "provider profile id is required",
-	"id-missing.yaml":                     `missing field "id"`,
-	"id-underscore.yaml":                  "provider profile id must be lowercase kebab-case",
-	"id-uppercase.yaml":                   "provider profile id must be lowercase kebab-case",
-	"jsonrpc-access.yaml":                 "protocol json-rpc does not support access presets",
-	"jsonrpc-no-rules.yaml":               "protocol json-rpc requires explicit rules with allow.method",
-	"mcp-broad-method-conflict.yaml":      "method matcher allows every tool call and conflicts with MCP tool allow rules",
-	"mcp-deny-broad-method-conflict.yaml": "method matcher denies every tool call and conflicts with MCP tool allow rules",
-	"mcp-matcher-empty.yaml":              "matcher must specify glob or any",
-	"mcp-matcher-glob-and-any.yaml":       "matcher cannot specify both glob and any",
-	"mcp-method-glob.yaml":                "MCP method globs are only valid for the tools/ method family",
-	"mcp-method-not-tools-call.yaml":      "method must be tools/call when an MCP rule uses tool or params.name",
-	"mcp-method-required.yaml":            "method is required when mcp.allow_all_known_mcp_methods is false",
-	"mcp-no-rules.yaml":                   "protocol mcp requires rules when mcp.allow_all_known_mcp_methods is false",
-	"mcp-on-non-mcp.yaml":                 "mcp options are only valid for protocol mcp",
-	"mcp-params-argument.yaml":            "MCP tool argument matching is not supported yet",
-	"mcp-path-rule.yaml":                  "mcp L7 rules must use method/tool, not path/query",
-	"mcp-tool-and-params.yaml":            "MCP rules must use either tool or params.name, not both",
-	"mcp-unknown-option.yaml":             `unknown field "future_option"`,
-	"mcp-version-unsupported.yaml":        "unsupported MCP protocol version '2024-01-01'",
-	"mcp-versions-empty.yaml":             "mcp.versions must contain at least one supported protocol version",
-	"mcp-wildcard-not-strict.yaml":        "wildcard tool-name matchers require mcp.strict_tool_names to remain enabled",
-	"params-on-rest.yaml":                 "params matching is only valid for protocol mcp",
-	"path-relative.yaml":                  "path must start with '/' or be '**'",
-	"persisted-queries-unknown.yaml":      "persisted_queries must be 'deny' or 'allow_registered', got 'maybe'",
-	"port-control-plane.yaml":             "port 6443 (Kubernetes API server) is a blocked control-plane port",
-	"ports-control-plane.yaml":            "port 10250 (kubelet API) is a blocked control-plane port",
-	"protocol-no-rules.yaml":              "protocol requires rules or access to define allowed traffic",
-	"protocol-unknown.yaml":               "unknown protocol 'http' (expected tcp, rest, websocket, graphql, sql, json-rpc, or mcp)",
-	"refresh-strategy-missing.yaml":       "refresh strategy is required",
-	"refresh-strategy-unknown.yaml":       "unsupported provider refresh strategy: magic",
-	"rules-and-access.yaml":               "rules and access are mutually exclusive",
-	"rules-deny-all.yaml":                 "rules would deny all traffic (no allow clause found)",
-	"rules-empty.yaml":                    "rules list cannot be empty (would deny all traffic)",
-	"signing-body-rewrite.yaml":           "has both credential_signing and request_body_credential_rewrite set",
-	"signing-no-service.yaml":             "has credential_signing set but signing_service is empty",
-	"signing-unknown.yaml":                "unrecognized credential_signing value 'sigv5'",
-	"sql-enforce.yaml":                    "SQL enforcement requires full SQL parsing; use enforcement: audit",
-	"tcp-access.yaml":                     "protocol tcp does not support access, rules, or deny_rules",
-	"tcp-empty-label.yaml":                "invalid DNS host selector 'db..example.com': empty DNS labels",
-	"tcp-ip-literal.yaml":                 "protocol tcp endpoint '203.0.113.10' must use a DNS hostname, not an IP literal",
-	"tcp-l7-fields.yaml":                  "protocol tcp does not support L7-only fields: enforcement; remove those fields",
-	"tls-unknown.yaml":                    "unknown tls value 'terminate'",
-	"token-grant-type-unknown.yaml":       "unsupported provider token grant type: password",
-	"tool-on-rest.yaml":                   "MCP tool matching is only valid for protocol mcp",
-	"unknown-endpoint-field.yaml":         `unknown field "future_option"`,
-	"unknown-field.yaml":                  `unknown field "homepage"`,
-	"wildcard-bare.yaml":                  "invalid host wildcard '*'",
-	"wildcard-partial-middle.yaml":        "invalid host wildcard 'api.*foo.example.com'",
-	"wildcard-recursive-middle.yaml":      "invalid host wildcard 'api.**.example.com'",
-	"wildcard-recursive-tld.yaml":         "TLD wildcard '**.io' is not allowed",
-	"wildcard-tld.yaml":                   "TLD wildcard '*.com' is not allowed; use subdomain wildcards like '*.example.com' instead",
+	"access-unknown.yaml":                             "unknown access value 'read' (expected read-only, read-write, or full)",
+	"allowed-ips-blocked.yaml":                        "always-blocked allowed_ips entry '169.254.0.0/16'",
+	"allowed-ips-invalid.yaml":                        "allowed_ips entry 'not-an-ip' is not a valid IP address or CIDR",
+	"auth-bearer-no-header.yaml":                      "header_name is required for bearer auth",
+	"auth-path-no-template.yaml":                      "path_template is required for path auth",
+	"auth-path-template-count.yaml":                   "path_template should contain {credential} exactly once, /v1/{key}/resources contains {credential} 0 times",
+	"auth-query-no-param.yaml":                        "query_param is required for query auth",
+	"auth-style-unknown.yaml":                         "unsupported auth_style: digest",
+	"binary-empty.yaml":                               "binary path must not be empty",
+	"binary-extra-field.yaml":                         "unsupported provider profile binary fields: harness",
+	"category-unknown.yaml":                           "unsupported provider profile category: storage",
+	"credential-name-control-char.yaml":               "credential name must not contain control characters",
+	"credential-name-duplicate.yaml":                  "duplicate credential name: api_key",
+	"credential-name-empty.yaml":                      "credential name is required",
+	"credential-name-missing.yaml":                    `credentials[0]: missing field "name"`,
+	"credentialed-l4.yaml":                            "credentialed endpoint 'api.example.com:443' uses L4-only; configure L7 inspection or explicitly set allow_uninspected_credentials: true",
+	"credentialed-tls-skip.yaml":                      "credentialed endpoint 'api.example.com:443' uses tls: skip",
+	"deny-rules-empty.yaml":                           "deny_rules list cannot be empty (would have no effect)",
+	"deny-rules-no-base.yaml":                         "deny_rules require rules or access to define the base allow set",
+	"deny-rules-no-protocol.yaml":                     "deny_rules require protocol (L7 inspection must be enabled)",
+	"discovery-duplicate.yaml":                        "duplicate discovery credential: api_key",
+	"discovery-unknown.yaml":                          "unknown discovery credential: missing_key",
+	"display-name-missing.yaml":                       `missing field "display_name"`,
+	"endpoint-host-empty.yaml":                        "invalid endpoint ':443'",
+	"endpoint-host-missing.yaml":                      `endpoints[0]: missing field "host"`,
+	"endpoint-port-zero.yaml":                         "invalid endpoint 'api.example.com:0'",
+	"endpoint-ports-range.yaml":                       "invalid endpoint 'api.example.com:0'",
+	"enforcement-unknown.yaml":                        "unknown enforcement value 'block' (expected enforce or audit)",
+	"env-var-duplicate.yaml":                          "duplicate credential env var 'EXAMPLE_TOKEN'",
+	"env-var-empty.yaml":                              "credential env var must not be empty",
+	"env-var-reserved.yaml":                           "credential env var 'v10_GITHUB_TOKEN' uses reserved OpenShell placeholder revision namespace",
+	"graphql-operation-type.yaml":                     "rules[0].allow.operation_type must be query, mutation, or subscription",
+	"host-ipv6-loopback.yaml":                         "endpoint host '::1' is an always-blocked address",
+	"host-ipv6-zone.yaml":                             `endpoint host "2001:db8::1%eth0" is not a valid DNS name, wildcard pattern or IP address`,
+	"host-newline.yaml":                               `endpoint host "evil.com\n[core]\n\tfsmonitor = touch /tmp/pwned" is not a valid DNS name`,
+	"host-space.yaml":                                 `endpoint host "api.example.com other.example.com" is not a valid DNS name`,
+	"host-link-local.yaml":                            "endpoint host '169.254.169.254' is an always-blocked address",
+	"host-localhost.yaml":                             "endpoint host 'localhost' is always blocked",
+	"host-loopback.yaml":                              "endpoint host '127.0.0.1' is an always-blocked address",
+	"host-metadata.yaml":                              "endpoint host 'metadata.google.internal' is a known cloud metadata hostname",
+	"id-empty.yaml":                                   "provider profile id is required",
+	"id-missing.yaml":                                 `missing field "id"`,
+	"id-underscore.yaml":                              "provider profile id must be lowercase kebab-case",
+	"id-uppercase.yaml":                               "provider profile id must be lowercase kebab-case",
+	"jsonrpc-access.yaml":                             "protocol json-rpc does not support access presets",
+	"jsonrpc-no-rules.yaml":                           "protocol json-rpc requires explicit rules with allow.method",
+	"mcp-broad-method-conflict.yaml":                  "method matcher allows every tool call and conflicts with MCP tool allow rules",
+	"mcp-deny-broad-method-conflict.yaml":             "method matcher denies every tool call and conflicts with MCP tool allow rules",
+	"mcp-matcher-empty.yaml":                          "matcher must specify glob or any",
+	"mcp-matcher-glob-and-any.yaml":                   "matcher cannot specify both glob and any",
+	"mcp-method-glob.yaml":                            "MCP method globs are only valid for the tools/ method family",
+	"mcp-method-not-tools-call.yaml":                  "method must be tools/call when an MCP rule uses tool or params.name",
+	"mcp-method-required.yaml":                        "method is required when mcp.allow_all_known_mcp_methods is false",
+	"mcp-no-rules.yaml":                               "protocol mcp requires rules when mcp.allow_all_known_mcp_methods is false",
+	"mcp-on-non-mcp.yaml":                             "mcp options are only valid for protocol mcp",
+	"mcp-params-argument.yaml":                        "MCP tool argument matching is not supported yet",
+	"mcp-path-rule.yaml":                              "mcp L7 rules must use method/tool, not path/query",
+	"mcp-tool-and-params.yaml":                        "MCP rules must use either tool or params.name, not both",
+	"mcp-unknown-option.yaml":                         `unknown field "future_option"`,
+	"mcp-version-unsupported.yaml":                    "unsupported MCP protocol version '2024-01-01'",
+	"mcp-versions-empty.yaml":                         "mcp.versions must contain at least one supported protocol version",
+	"mcp-wildcard-not-strict.yaml":                    "wildcard tool-name matchers require mcp.strict_tool_names to remain enabled",
+	"null-discovery.yaml":                             "discovery: null is not an object",
+	"null-mcp.yaml":                                   "endpoints[0].mcp: null is not an object",
+	"params-on-rest.yaml":                             "params matching is only valid for protocol mcp",
+	"path-relative.yaml":                              "path must start with '/' or be '**'",
+	"persisted-queries-unknown.yaml":                  "persisted_queries must be 'deny' or 'allow_registered', got 'maybe'",
+	"port-control-plane.yaml":                         "port 6443 (Kubernetes API server) is a blocked control-plane port",
+	"ports-control-plane.yaml":                        "port 10250 (kubelet API) is a blocked control-plane port",
+	"protocol-no-rules.yaml":                          "protocol requires rules or access to define allowed traffic",
+	"protocol-unknown.yaml":                           "unknown protocol 'http' (expected tcp, rest, websocket, graphql, sql, json-rpc, or mcp)",
+	"refresh-strategy-missing.yaml":                   "refresh strategy is required",
+	"refresh-strategy-unknown.yaml":                   "unsupported provider refresh strategy: magic",
+	"rules-and-access.yaml":                           "rules and access are mutually exclusive",
+	"rules-deny-all.yaml":                             "rules would deny all traffic (no allow clause found)",
+	"rules-empty.yaml":                                "rules list cannot be empty (would deny all traffic)",
+	"signing-body-rewrite.yaml":                       "has both credential_signing and request_body_credential_rewrite set",
+	"signing-no-service.yaml":                         "has credential_signing set but signing_service is empty",
+	"signing-unknown.yaml":                            "unrecognized credential_signing value 'sigv5'",
+	"sql-enforce.yaml":                                "SQL enforcement requires full SQL parsing; use enforcement: audit",
+	"tcp-access.yaml":                                 "protocol tcp does not support access, rules, or deny_rules",
+	"tcp-empty-label.yaml":                            "invalid DNS host selector 'db..example.com': empty DNS labels",
+	"tcp-ip-literal.yaml":                             "protocol tcp endpoint '203.0.113.10' must use a DNS hostname, not an IP literal",
+	"tcp-l7-fields.yaml":                              "protocol tcp does not support L7-only fields: enforcement; remove those fields",
+	"tls-unknown.yaml":                                "unknown tls value 'terminate'",
+	"token-grant-audience-override-control-char.yaml": "token_grant audience override selectors must not contain control characters",
+	"token-grant-endpoint-control-char.yaml":          "token_grant endpoint selectors must not contain control characters",
+	"token-grant-sql.yaml":                            "token_grant credentials require HTTP header injection, which protocol sql does not support",
+	"token-grant-tls-skip.yaml":                       "token_grant credentials require HTTP header injection, which tls: skip bypasses",
+	"token-grant-type-unknown.yaml":                   "unsupported provider token grant type: password",
+	"tool-on-rest.yaml":                               "MCP tool matching is only valid for protocol mcp",
+	"unknown-endpoint-field.yaml":                     `unknown field "future_option"`,
+	"unknown-field.yaml":                              `unknown field "homepage"`,
+	"wildcard-bare.yaml":                              "invalid host wildcard '*'",
+	"wildcard-partial-middle.yaml":                    "invalid host wildcard 'api.*foo.example.com'",
+	"wildcard-recursive-middle.yaml":                  "invalid host wildcard 'api.**.example.com'",
+	"wildcard-recursive-tld.yaml":                     "TLD wildcard '**.io' is not allowed",
+	"wildcard-tld.yaml":                               "TLD wildcard '*.com' is not allowed; use subdomain wildcards like '*.example.com' instead",
 }
 
 func TestLintNegativeCorpus(t *testing.T) {
@@ -188,6 +195,21 @@ func TestLintNegativeCorpus(t *testing.T) {
 			assert.Contains(t, strings.Join(messages, "\n"), lintCases[name])
 		})
 	}
+}
+
+func TestMCPVersion2026Accepted(t *testing.T) {
+	p, err := Parse([]byte(`id: example
+display_name: Example
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: mcp
+    mcp:
+      versions: ["2026-07-28"]
+      allow_all_known_mcp_methods: true
+`), "mcp-2026.yaml")
+	require.NoError(t, err)
+	assert.Empty(t, Lint(p, "mcp-2026.yaml"), "2026-07-28 is a supported MCP revision in v0.1.3")
 }
 
 func TestValidHost(t *testing.T) {

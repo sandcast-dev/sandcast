@@ -9,7 +9,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// Profile mirrors the OpenShell v0.1.2 provider profile schema
+// Profile mirrors the OpenShell v0.1.3 provider profile schema
 // (ProviderTypeProfile in crates/openshell-providers/src/profiles.rs).
 //
 // Top-level fields follow the order of the upstream example files rather

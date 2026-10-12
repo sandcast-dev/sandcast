@@ -26,9 +26,36 @@ func encodeOptions() []yaml.EncodeOption {
 	}
 }
 
+// profileObjectPaths are the schema-declared object positions where OpenShell
+// v0.1.3 rejects a null value ("null is not an object") before typed decoding.
+// A '*' selects each sequence element or mapping value. Only positions sandcast
+// models with a typed schema are listed; the pass-through blocks (refresh,
+// token_grant, and the experimental files feature) are left to the gateway,
+// which re-validates on import.
+var profileObjectPaths = []string{
+	"annotations",
+	"discovery",
+	"credentials.*",
+	"endpoints.*",
+	"binaries.*",
+	"endpoints.*.mcp",
+	"endpoints.*.graphql_persisted_queries",
+	"endpoints.*.graphql_persisted_queries.*",
+	"endpoints.*.rules.*",
+	"endpoints.*.rules.*.allow.query",
+	"endpoints.*.rules.*.allow.params",
+	"endpoints.*.deny_rules.*",
+	"endpoints.*.deny_rules.*.query",
+	"endpoints.*.deny_rules.*.params",
+}
+
 // Parse decodes one provider profile document. source names the document in
-// error messages. Unknown fields and missing required fields are errors.
+// error messages. Unknown fields, duplicate keys (both via yaml.Strict), null
+// at a schema-declared object path, and missing required fields are errors.
 func Parse(data []byte, source string) (*Profile, error) {
+	if err := rejectNullObjects(data); err != nil {
+		return nil, fmt.Errorf("parse provider profile %s: %w", source, err)
+	}
 	var p Profile
 	if err := yaml.UnmarshalWithOptions(data, &p, decodeOptions()...); err != nil {
 		return nil, fmt.Errorf("parse provider profile %s: %s", source, decodeError(err))
@@ -100,4 +127,86 @@ func Marshal(p *Profile) ([]byte, error) {
 // isYAML reports whether name has a YAML file extension.
 func isYAML(name string) bool {
 	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
+}
+
+// rejectNullObjects mirrors reject_null_objects in
+// crates/openshell-policy-schema/src/yaml.rs: it rejects a null document and a
+// null value at any schema-declared object path (profileObjectPaths). It runs
+// before typed decoding so a null object fails the same way it does upstream
+// rather than silently decoding to a zero value. A syntax error is left for the
+// typed decode to report with its richer message.
+func rejectNullObjects(data []byte) error {
+	var root any
+	if err := yaml.UnmarshalWithOptions(data, &root, yaml.UseOrderedMap()); err != nil {
+		return nil
+	}
+	if err := rejectNullAt(root, "", ""); err != nil {
+		return err
+	}
+	for _, p := range profileObjectPaths {
+		if err := rejectNullAt(root, p, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectNullAt mirrors reject_null_at_path. remaining is the unconsumed object
+// path; location is the dotted/bracketed position reached so far, for messages.
+func rejectNullAt(value any, remaining, location string) error {
+	if remaining == "" {
+		if value == nil {
+			loc := location
+			if loc == "" {
+				loc = "."
+			} else {
+				loc = boundProfilePath(loc)
+			}
+			return fmt.Errorf("%s: null is not an object", loc)
+		}
+		return nil
+	}
+	field, rest, _ := strings.Cut(remaining, ".")
+	if field == "*" {
+		switch v := value.(type) {
+		case yaml.MapSlice:
+			for _, item := range v {
+				if err := rejectNullAt(item.Value, rest, fmt.Sprintf("%s[%q]", location, fmt.Sprint(item.Key))); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			for _, k := range sortedKeys(v) {
+				if err := rejectNullAt(v[k], rest, fmt.Sprintf("%s[%q]", location, k)); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for i, child := range v {
+				if err := rejectNullAt(child, rest, fmt.Sprintf("%s[%d]", location, i)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	child, ok := lookupField(value, field)
+	if !ok {
+		return nil
+	}
+	loc := field
+	if location != "" {
+		loc = location + "." + field
+	}
+	return rejectNullAt(child, rest, loc)
+}
+
+// boundProfilePath caps a path for an error message so a long or odd mapping
+// key cannot produce an unbounded diagnostic.
+func boundProfilePath(loc string) string {
+	const max = 128
+	if len(loc) <= max {
+		return loc
+	}
+	return strings.ToValidUTF8(loc[:max], "") + "..."
 }

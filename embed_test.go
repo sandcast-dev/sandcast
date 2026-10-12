@@ -25,7 +25,7 @@ func TestEmbeddedDirectoriesAreNonEmpty(t *testing.T) {
 func TestEmbeddedAssets(t *testing.T) {
 	_, err := fs.Stat(BaseImages, "base-images.yaml")
 	require.NoError(t, err)
-	_, err = fs.Stat(Policy, "default-v0.1.2.yaml")
+	_, err = fs.Stat(Policy, "default-v0.1.3.yaml")
 	require.NoError(t, err)
 	_, err = fs.Stat(UpstreamProfiles, "github.yaml")
 	require.NoError(t, err)

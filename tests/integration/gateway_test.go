@@ -19,8 +19,8 @@ func startGateway(t *testing.T) []string {
 		t.Skip("podman not on PATH")
 	}
 	out, err := exec.Command("openshell", "--version").Output()
-	if err != nil || !strings.Contains(string(out), "0.1.2") {
-		t.Skipf("openshell CLI 0.1.2 required for the gateway test (got %q, %v)", strings.TrimSpace(string(out)), err)
+	if err != nil || !strings.Contains(string(out), "0.1.") {
+		t.Skipf("openshell CLI 0.1.x required for the gateway test (got %q, %v)", strings.TrimSpace(string(out)), err)
 	}
 	if sock, err := exec.Command("podman", "info", "--format", "{{.Host.RemoteSocket.Path}}").Output(); err != nil || strings.TrimSpace(string(sock)) == "" {
 		t.Skip("podman socket not available")

@@ -266,7 +266,7 @@ func TestPolicyUsesNumericIDsForNamedUsers(t *testing.T) {
 }
 
 // TestPolicyRootGroupUsesUID covers the OpenShift style base image user
-// (USER 1001 with primary group 0). OpenShell v0.1.2 rejects GID 0 for
+// (USER 1001 with primary group 0). OpenShell v0.1.3 rejects GID 0 for
 // run_as_group, so the policy runs the kept user with its UID as the group.
 func TestPolicyRootGroupUsesUID(t *testing.T) {
 	for _, group := range []string{"root", ""} {

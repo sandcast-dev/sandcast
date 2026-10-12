@@ -14,8 +14,8 @@ import (
 )
 
 // Pin is the OpenShell release whose default policy and validation limits this
-// package reproduces (tag v0.1.2, commit 6648bd0c).
-const Pin = "v0.1.2"
+// package reproduces (tag v0.1.3, commit e1f3c82c).
+const Pin = "v0.1.3"
 
 // DefaultsFile is the pinned upstream default policy at the root of the
 // policy directory.

@@ -94,8 +94,16 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 // RequiredVersion is the pinned CLI version without the leading v.
 func RequiredVersion() string { return strings.TrimPrefix(version.OpenShellPin, "v") }
 
-// CheckVersion fails unless "openshell --version" reports the pinned
-// release. It runs before any gateway call (R-11).
+// RequiredLine is the pinned major.minor line without the leading v, for
+// example "0.1" for a v0.1.3 pin.
+func RequiredLine() string { return minorLine(version.OpenShellPin) }
+
+// CheckVersion fails unless "openshell --version" reports a release on the
+// pinned minor line, for example any 0.1.x for a v0.1.3 pin. Patch releases on
+// that line keep the vendored profile and policy contract, so they are accepted
+// without a re-pin; a different major or minor is rejected. A pre-release or
+// build suffix (0.1.3-dev.102) is treated as its base version. It runs before
+// any gateway call (R-11).
 func (c *Client) CheckVersion(ctx context.Context) error {
 	r := c.Runner
 	if r == nil {
@@ -109,10 +117,33 @@ func (c *Client) CheckVersion(ctx context.Context) error {
 	if f := strings.Fields(got); len(f) > 0 {
 		got = strings.TrimPrefix(f[len(f)-1], "v")
 	}
-	if got != RequiredVersion() {
-		return fmt.Errorf("%w: found %s, the import step requires openshell %s", ErrVersion, got, version.OpenShellPin)
+	if !sameMinorLine(got, version.OpenShellPin) {
+		return fmt.Errorf("%w: found %s, the import step requires an openshell %s.x release (pinned to %s)",
+			ErrVersion, got, RequiredLine(), version.OpenShellPin)
 	}
 	return nil
+}
+
+// minorLine returns the major.minor prefix of a version string, ignoring a
+// leading v and any pre-release or build suffix. It returns "" when the string
+// has no major.minor.
+func minorLine(v string) string {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "." + parts[1]
+}
+
+// sameMinorLine reports whether got is a release on the same major.minor line
+// as want. An unparseable got never matches.
+func sameMinorLine(got, want string) bool {
+	g := minorLine(got)
+	return g != "" && g == minorLine(want)
 }
 
 func scopeArgs(scope, workspace string) []string {

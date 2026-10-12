@@ -15,7 +15,7 @@ func profileFile(id, name string) *fstest.MapFile {
 }
 
 func TestTierPrefix(t *testing.T) {
-	assert.Equal(t, "profiles/upstream/v0.1.2", TierUpstream.Prefix())
+	assert.Equal(t, "profiles/upstream/v0.1.3", TierUpstream.Prefix())
 	assert.Equal(t, "profiles/overlay", TierOverlay.Prefix())
 	assert.Equal(t, ".sandcast/profiles", TierProject.Prefix())
 	assert.Equal(t, "custom", Tier("custom").Prefix())
@@ -44,11 +44,11 @@ func TestResolveLaterTierWins(t *testing.T) {
 	assert.Equal(t, TierProject, gh.Tier)
 	assert.Equal(t, ".sandcast/profiles/my-github.yaml", gh.SourceFile)
 	assert.Equal(t, TierUpstream, set["pypi"].Tier)
-	assert.Equal(t, "profiles/upstream/v0.1.2/pypi.yaml", set["pypi"].SourceFile)
+	assert.Equal(t, "profiles/upstream/v0.1.3/pypi.yaml", set["pypi"].SourceFile)
 	assert.Equal(t, "profiles/overlay/npm.yaml", set["npm"].SourceFile)
 
 	assert.Equal(t, []Override{
-		{ID: "github", Loser: "profiles/upstream/v0.1.2/github.yaml", Winner: "profiles/overlay/github.yaml"},
+		{ID: "github", Loser: "profiles/upstream/v0.1.3/github.yaml", Winner: "profiles/overlay/github.yaml"},
 		{ID: "github", Loser: "profiles/overlay/github.yaml", Winner: ".sandcast/profiles/my-github.yaml"},
 	}, overrides)
 
@@ -99,7 +99,7 @@ func TestResolveShippedTiers(t *testing.T) {
 	set, overrides, err := Resolve(os.DirFS(upstreamDir), os.DirFS(overlayDir), nil)
 	require.NoError(t, err)
 	assert.Empty(t, overrides, "the overlay adds ids and shadows none")
-	assert.Len(t, set, 20)
+	assert.Len(t, set, 21)
 	for _, id := range []string{"npm", "crates-io", "go-proxy", "gitlab"} {
 		assert.Equal(t, TierOverlay, set[id].Tier, id)
 	}

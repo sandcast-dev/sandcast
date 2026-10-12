@@ -1,0 +1,17 @@
+id: example
+display_name: Example
+credentials:
+  - name: api_key
+    env_vars: [EXAMPLE_TOKEN]
+    auth_style: bearer
+    header_name: authorization
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: https://auth.example.com/token
+endpoints:
+  - host: api.example.com
+    port: 443
+    protocol: rest
+    access: read-only
+    tls: skip
+    allow_uninspected_credentials: true

@@ -161,9 +161,9 @@ func TestProfilesImportPlatformScopeSuffixes(t *testing.T) {
 
 func TestProfilesImportVersionMismatchExit3(t *testing.T) {
 	ta := builtProject(t)
-	ta.gw.version = "0.1.3-dev.102"
+	ta.gw.version = "0.2.0"
 	assert.Equal(t, ExitTool, ta.run("profiles", "import"))
-	assert.Contains(t, ta.stderr.String(), "requires openshell v0.1.2")
+	assert.Contains(t, ta.stderr.String(), "requires an openshell 0.1.x release")
 	assert.Len(t, ta.gw.calls, 1, "no gateway call after the version check")
 }
 

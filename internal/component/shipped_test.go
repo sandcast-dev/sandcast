@@ -54,7 +54,7 @@ func TestShippedComponentKeys(t *testing.T) {
 
 func TestShippedComponentsValid(t *testing.T) {
 	ids := knownProfileIDs(t)
-	assert.Len(t, ids, 20, "16 upstream plus 4 overlay profiles")
+	assert.Len(t, ids, 21, "17 upstream plus 4 overlay profiles")
 	for _, c := range loadShipped(t) {
 		t.Run(c.Key, func(t *testing.T) {
 			assert.Equal(t, path.Join("components", c.Key+".yaml"), c.SourceFile, "file name must be <key>.yaml")
@@ -67,7 +67,7 @@ func TestShippedComponentsValid(t *testing.T) {
 				assert.Empty(t, c.Targets)
 			}
 			for _, p := range c.Profiles {
-				assert.Contains(t, ids, p, "profile id must exist in profiles/upstream/v0.1.2 or profiles/overlay")
+				assert.Contains(t, ids, p, "profile id must exist in profiles/upstream/v0.1.3 or profiles/overlay")
 			}
 			switch c.Kind() {
 			case KindMise:

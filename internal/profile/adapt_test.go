@@ -146,7 +146,7 @@ func TestAdaptContent(t *testing.T) {
 	assert.Equal(t, "github-demo-sandbox.yaml", gh.File)
 	assert.Equal(t, Binaries{"/usr/bin/gh", "/usr/bin/git"}, gh.Profile.Binaries, "deduplicated and sorted")
 	assert.Equal(t, TierUpstream, gh.SourceTier)
-	assert.Equal(t, "profiles/upstream/v0.1.2/github.yaml", gh.SourceFile)
+	assert.Equal(t, "profiles/upstream/v0.1.3/github.yaml", gh.SourceFile)
 	assert.False(t, gh.Flagged)
 
 	npm := byID["npm"]

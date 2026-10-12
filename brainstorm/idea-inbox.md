@@ -181,3 +181,12 @@ Ideas captured from code reviews for future brainstorming.
 - **Summary**: A base user with GID 0 gets its UID as `run_as_group`, which may coincide with a privileged group.
 
 > The round-1 GID 0 policy fix handles the policy failure, but the derived `run_as_group` value itself can still land on a sensitive group id.
+
+### live-gateway-profile-source
+
+- **Source**: discussion
+- **Date**: 2026-10-12
+- **Reference**: OpenShell v0.1.3 pin refresh
+- **Summary**: Add an optional mode that reads provider profiles from a reachable gateway instead of only the vendored set, and a drift check that compares the vendored profiles against what a live gateway reports. The vendored set stays the default so offline, deterministic, no-gateway builds keep working; the live source is opt-in for when a gateway is available.
+
+> Today refreshing the pin means a manual re-vendor on every OpenShell release. A live source would let a build pick up the running gateway's profiles directly, and a drift check would flag when the vendored set has fallen behind the gateway, turning the re-vendor into a signalled action rather than a periodic manual chore.

@@ -1,9 +1,9 @@
 #!/bin/sh
-# Start or stop a throwaway OpenShell v0.1.2 gateway with the podman driver
+# Start or stop a throwaway OpenShell v0.1.3 gateway with the podman driver
 # for make test-gateway (research R-19, upstream container-deployment.mdx).
 #
 # Unlike the upstream recipe, XDG_STATE_HOME points into the state volume:
-# the v0.1.2 image's home (/app) is not writable and the gateway fails to
+# the v0.1.3 image's home (/app) is not writable and the gateway fails to
 # create its credential key otherwise. The container runs as its root user,
 # which rootless podman maps to the invoking user, so it can open the podman
 # socket; label separation is disabled for the socket mount.
@@ -20,7 +20,7 @@ name=sandcast-test-gateway
 volume=sandcast-test-gateway-state
 network=sandcast-test
 port=${SANDCAST_TEST_GATEWAY_PORT:-18180}
-image=${OPENSHELL_GATEWAY_IMAGE:-ghcr.io/nvidia/openshell/gateway:0.1.2}
+image=${OPENSHELL_GATEWAY_IMAGE:-ghcr.io/nvidia/openshell/gateway:0.1.3}
 endpoint=http://127.0.0.1:$port
 # The podman driver extracts the sandbox supervisor binary below
 # $XDG_DATA_HOME and asks podman to bind-mount it into each sandbox, so the
