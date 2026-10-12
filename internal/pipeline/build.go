@@ -16,8 +16,10 @@ import (
 
 // BuildOptions control the build step.
 type BuildOptions struct {
-	Verify        bool
-	Push          bool
+	Verify bool
+	// Push overrides the target's push field when set (nil: use the
+	// manifest), so --push=false skips the push of a target with push: true.
+	Push          *bool
 	NoCacheLayers bool
 	KeepStage     bool
 	// Progress receives the engine output (nil: only build.log).
@@ -70,7 +72,7 @@ func Build(ctx context.Context, env Env, planned *Planned, opts BuildOptions) (*
 		Profiles:      planned.Profiles,
 		NoCacheLayers: opts.NoCacheLayers,
 		KeepStage:     opts.KeepStage,
-		Push:          opts.Push || t.Push,
+		Push:          resolvePush(opts.Push, t.Push),
 		Progress:      opts.Progress,
 		AfterResolve:  after,
 	})
@@ -86,6 +88,15 @@ func Build(ctx context.Context, env Env, planned *Planned, opts BuildOptions) (*
 		}
 	}
 	return out, nil
+}
+
+// resolvePush returns the command-line choice when one was given, else the
+// target's push field.
+func resolvePush(flag *bool, target bool) bool {
+	if flag != nil {
+		return *flag
+	}
+	return target
 }
 
 // Verify runs the plan's checks inside image and writes verify.yaml.
