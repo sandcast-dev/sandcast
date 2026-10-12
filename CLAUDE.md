@@ -20,7 +20,7 @@ Key documents:
 - OpenShell sandbox images first, plain container images second. No SSH target.
 - Go CLI plus a portable skill bundle. The binary runs plan, build, verify and profile export without any agent. The binary installs its skills into Claude Code first; Codex, OpenCode and pi follow.
 - Base image registry plus a live probe per image digest, cached.
-- Components reference OpenShell provider profiles. No sandcast endpoint schema. Upstream example profiles are vendored at a pinned OpenShell release (v0.1.3), with a same-schema overlay for npm, crates.io, the Go module proxy and GitLab.
+- Components reference OpenShell provider profiles. No sandcast endpoint schema. Upstream example profiles are vendored at a pinned OpenShell release (v0.1.3), with a same-schema overlay for npm, crates.io, the Go module proxy, GitLab and Claude Code subscription (OAuth) login.
 - mise is the primary installer with a lockfile. Recipes are the escape hatch.
 - Podman by default, docker through the same command surface.
 - Capture is LLM-driven and writes the manifest. The Go core produces a build plan. The skill assembles the image definition, repairs failures, and promotes working layers into recipes.

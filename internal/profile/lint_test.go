@@ -29,7 +29,7 @@ func loadShipped(t *testing.T) (upstream, overlay []Entry) {
 func TestShippedProfilesLintClean(t *testing.T) {
 	upstream, overlay := loadShipped(t)
 	require.Len(t, upstream, 17, "vendored upstream profiles")
-	require.Len(t, overlay, 4, "overlay profiles")
+	require.Len(t, overlay, 5, "overlay profiles")
 
 	for _, e := range append(append([]Entry{}, upstream...), overlay...) {
 		t.Run(e.SourceFile, func(t *testing.T) {

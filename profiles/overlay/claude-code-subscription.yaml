@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Example provider profile. OpenShell does not load it; import it explicitly:
+#   openshell provider profile lint   -f providers/claude-code-subscription.yaml
+#   openshell provider profile import -f providers/claude-code-subscription.yaml --global
+#
+# Copy and edit this file rather than importing it unchanged. `binaries` is the
+# least-privilege control that decides which processes may reach the endpoints
+# below, so it has to name the paths in *your* image.
+#
+# This is the subscription (Claude Pro/Max) counterpart of the `claude-code`
+# profile. Subscription login is OAuth, not an API key: when you paste the
+# authorization code, the CLI exchanges it against Anthropic's OAuth endpoints
+# and later refreshes the token there. The `claude-code` profile only allows
+# api.anthropic.com, so that exchange is refused (OAuth error: ECONNREFUSED).
+# This profile adds the login hosts and carries no credential: the OAuth token
+# is managed by Claude Code itself, so OpenShell injects nothing. Use the
+# `claude-code` profile instead when you authenticate with ANTHROPIC_API_KEY.
+#
+# Verify the login hosts below against your own attempt: the paste-step error
+# does not name the refused host, so check the gateway's denied-connection log
+# while logging in and add or drop hosts to match.
+#
+# Client binaries:   claude.
+# Reference layout:  the Claude Code CLI at /usr/bin/claude or
+#                    /usr/local/bin/claude. An npm global install resolves
+#                    elsewhere (for example /usr/lib/node_modules/@anthropic-ai/**);
+#                    add that path if your image installs it that way.
+# Credential scope:  none. Subscription login uses an OAuth token that Claude
+#                    Code stores and refreshes itself; OpenShell injects no
+#                    credential. Add the ANTHROPIC_API_KEY credential from the
+#                    `claude-code` profile only if you also use an API key, and
+#                    keep it scoped to api.anthropic.com so it is never sent to
+#                    the login hosts.
+# Endpoint access:   api.anthropic.com for inference; console.anthropic.com and
+#                    claude.ai for the OAuth code exchange and token refresh;
+#                    statsig.anthropic.com and sentry.io for the CLI's telemetry
+#                    and error reporting. Drop the last two if your policy
+#                    forbids that traffic.
+# Smoke test:        openshell sandbox create --provider <name> -- \
+#                      claude -p 'reply with OK'
+
+id: claude-code-subscription
+display_name: Claude Code (subscription)
+description: Claude Code CLI with Claude Pro/Max subscription (OAuth) login
+category: agent
+inference_capable: true
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: console.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: claude.ai
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: statsig.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: sentry.io
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: [/usr/bin/claude, /usr/local/bin/claude]
