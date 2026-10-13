@@ -109,6 +109,12 @@ func TestScriptBoundsCapturedOutput(t *testing.T) {
 			assert.Equal(t, rawCheck{Key: "trailing", Exit: 2, Out: "out"}, byKey["trailing"], "trailing newlines are dropped as before")
 			assert.Equal(t, rawCheck{Key: "silent", Exit: 4}, byKey["silent"])
 			assert.Less(t, len(out), 4*MaxOutput+2048, "the probe output stays small")
+			if !onPath(t, sh, "head") {
+				// busybox built with the standalone shell runs its own head
+				// applet and never reaches the wrapper; the bounds above
+				// still hold.
+				return
+			}
 			calls, err := os.ReadFile(log)
 			require.NoError(t, err)
 			assert.Equal(t, len(reqs), strings.Count(string(calls), "-c "+strconv.Itoa(MaxOutput)+"\n"), "every check runs through head -c: %q", calls)
@@ -295,4 +301,12 @@ func TestProbeDeadlineFailsWithTimeout(t *testing.T) {
 func TestRunDeadlineGrowsWithChecks(t *testing.T) {
 	assert.Greater(t, runDeadline(3), 3*CheckTimeout, "every check gets its full limit plus start-up time")
 	assert.Greater(t, runDeadline(0), time.Duration(0))
+}
+
+// onPath reports whether the shell resolves cmd through PATH; a busybox
+// standalone shell prefers its own applet and prints the bare name.
+func onPath(t *testing.T, sh []string, cmd string) bool {
+	t.Helper()
+	out := runShell(t, sh, "command -v "+cmd)
+	return strings.HasPrefix(strings.TrimSpace(out), "/")
 }

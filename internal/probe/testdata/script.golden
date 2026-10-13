@@ -34,10 +34,27 @@ _cut='?'
 while [ ${#_cut} -lt "$_max" ]; do _cut=$_cut$_cut; done
 _to=
 if timeout 10 /bin/sh -c : >/dev/null 2>&1; then _to=1; fi
+_sg=
+if [ -n "$_to" ] && ! timeout --version >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then _sg=1; fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
 _run() {
-	if [ -n "$_to" ]; then
+	if [ -n "$_sg" ]; then
+		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		(
+			sleep "$_tmax" &
+			_sp=$!
+			trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
+			wait "$_sp" && kill -TERM -"$_cp" 2>/dev/null
+		) </dev/null >/dev/null 2>&1 3>&- 4>&- &
+		_wp=$!
+		wait "$_cp"
+		_rc=$?
+		kill "$_wp" 2>/dev/null
+		wait "$_wp" 2>/dev/null
+		return "$_rc"
+	elif [ -n "$_to" ]; then
 		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
 	else
 		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
