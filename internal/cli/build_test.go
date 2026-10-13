@@ -224,6 +224,7 @@ func TestReadLineHonoursCancel(t *testing.T) {
 func TestBuildReportRepeatsPlanNotices(t *testing.T) {
 	ta := newTestApp(t)
 	ta.project(t)
+	ta.opts.project = ta.dir
 	env, err := ta.pipelineEnv()
 	require.NoError(t, err)
 	notice := plan.Notice(plan.NoticeLockfileShadow, "gh", "base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0")
@@ -499,6 +500,7 @@ func TestBuildGatewayWarning(t *testing.T) {
 func TestBuildReportNoticeOrder(t *testing.T) {
 	ta := newTestApp(t)
 	ta.project(t)
+	ta.opts.project = ta.dir
 	env, err := ta.pipelineEnv()
 	require.NoError(t, err)
 	planned := &pipeline.Planned{Plan: &plan.Plan{Target: "openshell", Notices: []string{"lockfile-shadow: gh: x"}}}
