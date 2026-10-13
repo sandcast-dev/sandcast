@@ -60,9 +60,8 @@ const (
 	// zshNoTTYNoise is the note zsh -i prints when startup code enables the
 	// line editor (fzf key bindings do) without a terminal; a terminal
 	// session never shows it, so the zsh startup check ignores it.
-	zshNoTTYNoise      = `-e "can't change option: zle"`
-	sessionTerm        = "xterm-256color"
-	sessionDefaultPath = "/usr/local/bin:/usr/bin:/bin"
+	zshNoTTYNoise = `-e "can't change option: zle"`
+	sessionTerm   = "xterm-256color"
 )
 
 // Result is the outcome of one component check.
@@ -228,7 +227,7 @@ func binsPrelude(c plan.Component) (string, string) {
 // gives a session: only HOME, USER, TERM and the default PATH.
 func sessionEnv(u plan.FinalUser) string {
 	return "env -i HOME=" + shell.QuoteIfNeeded(u.Home) + " USER=" + shell.QuoteIfNeeded(u.Name) +
-		" TERM=" + sessionTerm + " PATH=" + sessionDefaultPath
+		" TERM=" + sessionTerm + " PATH=" + strings.Join(plan.OpenShellDefaultPath, ":")
 }
 
 // condition maps a request key to its condition.

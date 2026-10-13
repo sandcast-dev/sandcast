@@ -113,7 +113,8 @@ var mandatoryPhrases = map[string][]string{
 // revert that left the old instruction beside the new one would still pass.
 var forbiddenPhrases = map[string][]string{
 	// status is a read-only special parameter in zsh, so "status=$?" fails
-	// there (FR-022); snippets capture the exit status in rc instead.
+	// there (FR-022); snippets end with the sandcast command, so the
+	// subshell exits with its status.
 	"capture": {"status=$?"},
 	"build": {
 		"status=$?",

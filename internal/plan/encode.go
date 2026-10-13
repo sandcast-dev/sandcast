@@ -47,7 +47,7 @@ var MiseEnv = []EnvVar{
 	{Name: "MISE_USE_VERSIONS_HOST", Value: "0"},
 }
 
-// SessionEnvScript is /etc/profile.d/sandcast-env.sh (R-04, R-05). It is
+// defaultSessionEnvScript is /etc/profile.d/sandcast-env.sh (R-04, R-05). It is
 // POSIX sh, idempotent and safe to source more than once. It exports every
 // MISE_* variable of MiseEnv, defines _sandcast_path, which puts the mise
 // shims first on PATH, and calls it. In bash it also re-applies the shims
@@ -56,7 +56,7 @@ var MiseEnv = []EnvVar{
 // (bash -lc, OpenShell exec) runs it from a self-removing DEBUG trap right
 // before the first top-level command. The bash-only part sits in eval, so
 // dash and zsh never parse bash array syntax.
-var SessionEnvScript = sessionEnvScript(MiseEnv, nil)
+var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil)
 
 // SessionEnvScriptFor is the session environment script of p: the MISE_*
 // variables of MiseEnv followed by the image environment of the plan's

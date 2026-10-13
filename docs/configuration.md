@@ -171,7 +171,7 @@ After merging, every target type must have exactly one default. Unknown fields i
 
 ### The workspace path
 
-For the OpenShell target, the final user's home directory of a base image is its workspace path: OpenShell may mount the workspace volume over it at runtime (`/sandbox` on `nvidia-community-base`). The path comes from the probed image facts, never from a fixed name. A tool the base image provides only under the workspace path counts as missing and sandcast installs it; a tool whose first `PATH` hit lies there but which also exists elsewhere is taken from the other copy. The plan reports both cases as `workspace-path` notices. The container target has no workspace path. See [the build guide](guides/build.md#the-probe-delta).
+For the OpenShell target, the final user's home directory of a base image is its workspace path: OpenShell may mount the workspace volume over it at runtime (`/sandbox` on `nvidia-community-base`). The path comes from the probed image facts, never from a fixed name. A tool the base image provides only under the workspace path counts as missing and sandcast installs it; a tool whose first `PATH` hit lies there but which also exists elsewhere is taken from the other copy. The plan reports both cases as `workspace-path` notices. In the second case the probed version came from the hidden copy, so it counts as unknown: a locked mise component is shadowed and the plan adds an `unknown-version` notice. The container target has no workspace path. See [the build guide](guides/build.md#the-probe-delta).
 
 ### Resolving the base image
 

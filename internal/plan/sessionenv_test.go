@@ -15,7 +15,7 @@ import (
 )
 
 func TestSessionEnvScriptGolden(t *testing.T) {
-	testutil.Golden(t, "testdata/sandcast-env.sh.golden", []byte(SessionEnvScript))
+	testutil.Golden(t, "testdata/sandcast-env.sh.golden", []byte(defaultSessionEnvScript))
 }
 
 // TestSessionEnvScriptCoversMiseEnv checks that every MISE_* variable the
@@ -32,7 +32,7 @@ func TestSessionEnvScriptCoversMiseEnv(t *testing.T) {
 	keys := regexp.MustCompile(`(MISE_[A-Z_]+)=(\S+)`).FindAllStringSubmatch(envBlock, -1)
 	require.NotEmpty(t, keys)
 	for _, k := range keys {
-		assert.Contains(t, SessionEnvScript, "export "+k[1]+"='"+k[2]+"'\n", k[1])
+		assert.Contains(t, defaultSessionEnvScript, "export "+k[1]+"='"+k[2]+"'\n", k[1])
 	}
 }
 
@@ -42,7 +42,7 @@ func TestSessionEnvScriptCoversMiseEnv(t *testing.T) {
 func TestSessionEnvScriptShells(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sandcast-env.sh")
-	require.NoError(t, os.WriteFile(script, []byte(SessionEnvScript), 0o644))
+	require.NoError(t, os.WriteFile(script, []byte(defaultSessionEnvScript), 0o644))
 	ran := 0
 	for _, sh := range []string{"sh", "dash", "bash", "zsh"} {
 		path, err := exec.LookPath(sh)
@@ -77,7 +77,7 @@ func TestSessionEnvScriptBashHooks(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sandcast-env.sh")
-	require.NoError(t, os.WriteFile(script, []byte(SessionEnvScript), 0o644))
+	require.NoError(t, os.WriteFile(script, []byte(defaultSessionEnvScript), 0o644))
 	// --login reads ~/.bash_profile: source the script, then reset PATH as
 	// the community base image's ~/.bashrc does.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".bash_profile"),

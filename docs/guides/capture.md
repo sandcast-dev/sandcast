@@ -205,7 +205,7 @@ When you select a harness, the image gets the agent, its configuration for non-i
 | `url` | The remote URL, without credentials. |
 | `unpushed_commits` | Local commits the remote-tracking ref (`<remote>/HEAD`, else the upstream branch) lacks. Push them first, or the image gets the older remote state. `null` when no remote-tracking ref exists, so the count is unknown. |
 | `uncommitted_changes` | The working tree has changes the remote does not have. |
-| `name_match` | `match` when the marketplace file on the remote-tracking ref declares the locally registered name, `mismatch` when it declares another, `unknown` when no remote-tracking ref exists. |
+| `name_match` | `match` when the marketplace file on the remote-tracking ref declares the locally registered name, `mismatch` when it declares another, `unknown` when no remote-tracking ref exists or the marketplace file on it is missing or declares no name. |
 
 Discovery reads local git state only and never fetches, so capture works offline; the values are as fresh as your last fetch. Such plugins stay opt-in like every other plugin. A directory without a remote, a directory that only lies inside another repository, a remote URL that keeps a credential after the user information is removed, or a host without `git` is still skipped with a note.
 
