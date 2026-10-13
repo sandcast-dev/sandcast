@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -101,6 +103,9 @@ func readPins(root string, files []string) (toolPins, []string) {
 	for _, f := range files {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(f)))
 		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				note(f, "cannot be read: %v", errors.Unwrap(err))
+			}
 			continue
 		}
 		switch path.Base(f) {

@@ -300,7 +300,11 @@ func Build(in Inputs) (*Plan, error) {
 
 	// Kinded notices (R-15) follow the other notices, sorted by kind and
 	// subject so the plan stays deterministic.
-	deltaNotices = append(deltaNotices, homeRCNotices(facts, in.Target, len(miseTools) > 0)...)
+	// The probed rc files belong to the base image user's home; a created
+	// final user has another home, so they do not apply.
+	if !user.Created {
+		deltaNotices = append(deltaNotices, homeRCNotices(facts, in.Target, len(miseTools) > 0)...)
+	}
 	SortNotices(deltaNotices)
 	p.Notices = append(p.Notices, deltaNotices...)
 

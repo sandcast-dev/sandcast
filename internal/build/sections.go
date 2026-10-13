@@ -77,8 +77,10 @@ const (
 // ShellSwitchHook switches an interactive bash with a terminal on stdin and
 // stdout to a zsh login shell (R-07, FR-008). Non-interactive bash, sessions
 // without a terminal, an already running zsh, a missing /bin/zsh and
-// SANDCAST_NO_SHELL_SWITCH keep bash.
-const ShellSwitchHook = `case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && exec /bin/zsh -l ;; esac`
+// SANDCAST_NO_SHELL_SWITCH keep bash. The zsh it starts carries
+// SANDCAST_NO_SHELL_SWITCH=1, so a bash the user starts inside that zsh
+// stays bash instead of switching again (zsh does not export ZSH_VERSION).
+const ShellSwitchHook = `case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac`
 
 // SessionEnvContextFile is the build-context path of the session
 // environment script.

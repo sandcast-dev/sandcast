@@ -81,6 +81,12 @@ is never retried. --verify runs every component check afterwards.`,
 			if w := a.gatewayWarning(cmd, env, planned); w != "" {
 				runtimeNotices = append(runtimeNotices, w)
 			}
+			// Shown before the build as well, so an emulation or gateway
+			// pitfall is visible before a long build starts; the report
+			// repeats them.
+			for _, n := range runtimeNotices {
+				a.logf("notice: %s", n)
+			}
 			opts := pipeline.BuildOptions{Verify: doVerify, Push: push, NoCacheLayers: noCacheLayers, KeepStage: keepStage}
 			if a.opts.verbose {
 				opts.Progress = a.Stderr

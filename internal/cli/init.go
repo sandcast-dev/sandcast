@@ -75,7 +75,7 @@ func (a *App) initCommand() *cobra.Command {
 			_, _ = fmt.Fprintf(a.Stdout, "created %s\n", l.RelToRoot(filepath.Join(l.SandcastDir(), ".gitignore")))
 			if image == "" && target == manifest.TargetOpenShell {
 				_, _ = fmt.Fprintf(a.Stdout, "note: targets.openshell.image is %s; this works only with a local OpenShell gateway that shares this engine's image storage. "+
-					"For a remote gateway, rerun with --image <registry>/%s --platform <os/arch> --push.\n", m.Targets.OpenShell.Image, name)
+					"For a remote gateway, rerun with --force --image <registry>/%s --platform <os/arch> --push.\n", m.Targets.OpenShell.Image, name)
 			}
 			return nil
 		},

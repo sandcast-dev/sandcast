@@ -38,7 +38,7 @@ func TestInit(t *testing.T) {
 func TestInitRemoteGatewayFlags(t *testing.T) {
 	ta := newTestApp(t)
 	require.Equal(t, 0, ta.run("init", "--name", "demo"))
-	assert.Contains(t, ta.stdout.String(), "note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --image <registry>/demo --platform <os/arch> --push.\n")
+	assert.Contains(t, ta.stdout.String(), "note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --force --image <registry>/demo --platform <os/arch> --push.\n")
 
 	ta.stdout.Reset()
 	require.Equal(t, 0, ta.run("init", "--name", "demo", "--force", "--image", "quay.io/rhuss/demo:v2", "--platform", "linux/amd64", "--push"), ta.stderr.String())

@@ -86,6 +86,8 @@ failed: 1
 }
 ```
 
+`unpushed_commits` is `null` when no remote-tracking ref exists locally (the count is unknown). Only a directory that is the top level of its git repository is proposed through a remote.
+
 Skill entry under `~/.claude/skills`:
 
 ```json

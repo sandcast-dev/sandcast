@@ -425,6 +425,6 @@ func GatewayWarning(ctx context.Context, gw *gateway.Client, image string) strin
 		return ""
 	}
 	return plan.Notice(plan.NoticeGateway, plan.NoticeSubjectImage, fmt.Sprintf(
-		"the active gateway %s is remote and cannot pull %s from this engine's local storage; set targets.openshell.image to a registry reference the cluster can reach and targets.openshell.push to true",
+		"the active gateway %s is remote and cannot pull %s, because a localhost reference names this machine (its engine storage or a registry on it); set targets.openshell.image to a registry reference the cluster can reach and targets.openshell.push to true",
 		active.Name, ref.String()))
 }

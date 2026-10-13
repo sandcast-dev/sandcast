@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -159,4 +160,19 @@ func TestMatchNotesUnparsablePinFiles(t *testing.T) {
 	assert.Contains(t, res.Notes[0], "go.mod: no go directive")
 	assert.Contains(t, res.Notes[1], "package.json: invalid JSON")
 	assert.Contains(t, byKey(res), "node", "the file is still evidence")
+}
+
+// TestMatchNotesUnreadablePinFile: a pin file that exists but cannot be read
+// yields a note naming it, and match still succeeds.
+func TestMatchNotesUnreadablePinFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	root, _ := writeProject(t, map[string]string{".python-version": "3.14.5\n"})
+	file := filepath.Join(root, ".python-version")
+	require.NoError(t, os.Chmod(file, 0))
+	t.Cleanup(func() { _ = os.Chmod(file, 0o644) })
+	res, err := Match(context.Background(), root, shipped(t), Options{})
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(res.Notes, "\n"), ".python-version: cannot be read: permission denied")
 }

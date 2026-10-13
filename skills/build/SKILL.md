@@ -182,20 +182,20 @@ USER sandbox
 
 ### 3d: Store the fragment
 
-Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives; it runs unchanged in sh, bash and zsh, removes the file on every path and ends with the exit status of `sandcast`. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
+Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives; it runs unchanged in sh, bash and zsh, in a subshell so that its `exit` and traps never end your own shell, removes the file on every exit path (an interrupt included) and ends with the exit status of `sandcast`. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
 
 ```sh
-if tmp="$(mktemp)"; then
-cat > "$tmp" <<'SANDCAST_FRAGMENT'
+(
+tmp="$(mktemp)" || exit
+trap 'rm -f "$tmp"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cat > "$tmp" <<'SANDCAST_FRAGMENT' || exit
 <the fragment>
 SANDCAST_FRAGMENT
 sandcast fragments write <key> --file "$tmp"
-rc=$?
-rm -f "$tmp"
-(exit "$rc")
-else
-false
-fi
+)
 ```
 
 The command also reads the fragment from standard input. If it exits 2, fix what the validation message names and write again. If the message reports a credential-shaped value, remove it; never weaken, split or encode it to get past the check.

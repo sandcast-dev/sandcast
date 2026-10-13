@@ -347,3 +347,39 @@ func TestComponentBins(t *testing.T) {
 		`$.components[0].bins[4]: invalid binary name "a/b"`,
 	}, paths)
 }
+
+// TestTargetImageReference rejects an image that carries its own tag or
+// digest, which would become image:tag:latest, and a tag that makes the
+// reference invalid; a registry port is not a tag.
+func TestTargetImageReference(t *testing.T) {
+	for _, tc := range []struct {
+		image, tag, want string
+	}{
+		{"quay.io/x/demo", "", ""},
+		{"localhost:5000/demo", "v1", ""},
+		{"quay.io/x/demo:v1", "", "carries a tag or digest"},
+		{"quay.io/x/demo@sha256:" + strings.Repeat("a", 64), "", "carries a tag or digest"},
+		{"quay.io/x/demo", "bad tag", "contains whitespace"},
+		{"quay.io/x/demo", "-v1", "invalid tag"},
+	} {
+		t.Run(tc.image+":"+tc.tag, func(t *testing.T) {
+			m := Skeleton("demo", "base", TargetOpenShell)
+			m.Targets.OpenShell.Image, m.Targets.OpenShell.Tag = tc.image, tc.tag
+			m.Targets.Container = &Target{Image: tc.image, Tag: tc.tag}
+			var got []Diagnostic
+			for _, d := range m.Validate() {
+				if strings.HasSuffix(d.Path, ".image") {
+					got = append(got, d)
+				}
+			}
+			if tc.want == "" {
+				assert.Empty(t, got)
+				return
+			}
+			require.Len(t, got, 2, "%v", got)
+			assert.Equal(t, "$.targets.openshell.image", got[0].Path)
+			assert.Equal(t, "$.targets.container.image", got[1].Path)
+			assert.Contains(t, got[0].Message, tc.want)
+		})
+	}
+}

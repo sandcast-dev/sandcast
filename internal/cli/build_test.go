@@ -414,6 +414,10 @@ func TestEmulationNotice(t *testing.T) {
 		found = found || strings.HasPrefix(n, "emulation: rust: ")
 	}
 	assert.True(t, found, "build report carries the emulation notice: %v", rep.Notices)
+	errOut := ta.stderr.String()
+	at := strings.Index(errOut, "notice: emulation: rust: ")
+	require.GreaterOrEqual(t, at, 0, "build prints the notice on stderr: %s", errOut)
+	assert.Less(t, at, strings.Index(errOut, "building "), "the notice appears before the build starts")
 	plan, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "plan.yaml"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(plan), "emulation", "the plan file never carries engine facts")

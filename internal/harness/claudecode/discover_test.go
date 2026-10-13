@@ -301,8 +301,21 @@ func TestDiscoverGitMarketplaces(t *testing.T) {
 
 	gitRepo(t, addMarket("noremote-market"), "noremote-market")
 
+	cred := gitRepo(t, addMarket("cred-market"), "cred-market")
+	cred("remote", "add", "origin", "https://git.example.com/org/cred-market.git?token=${MARKET_TOKEN}")
+
 	plain := addMarket("plain-dir")
 	require.NoError(t, os.MkdirAll(plain, 0o755))
+
+	// A marketplace directory inside an enclosing repository (a dotfiles
+	// checkout, for example) is not proposed through that repository.
+	enclosing := gitRepo(t, filepath.Join(dev, "enclosing"), "enclosing")
+	enclosing("remote", "add", "origin", "https://github.com/acme/dotfiles.git")
+	trackRemote(enclosing, "origin")
+	nested := filepath.Join(dev, "enclosing", "nested-market")
+	markets["nested-market"] = `{"source":{"source":"directory","path":"` + nested + `"}}`
+	plugins["tool@nested-market"] = `[{"scope":"user"}]`
+	require.NoError(t, os.MkdirAll(nested, 0o755))
 
 	writeJSONFile := func(rel string, entries map[string]string) {
 		var parts []string
@@ -331,22 +344,28 @@ func TestDiscoverGitMarketplaces(t *testing.T) {
 	}
 
 	assert.Equal(t, "acme/gh-market", byName["tool@gh-market"].Source)
-	assert.Equal(t, &harness.RemoteInfo{URL: "https://github.com/acme/gh-market.git", UnpushedCommits: 1, NameMatch: harness.NameMatch}, byName["tool@gh-market"].Remote)
+	assert.Equal(t, &harness.RemoteInfo{URL: "https://github.com/acme/gh-market.git", UnpushedCommits: intPtr(1), NameMatch: harness.NameMatch}, byName["tool@gh-market"].Remote)
 
 	assert.Equal(t, "https://git.example.com/org/other-market.git", byName["tool@other-market"].Source, "credentials stripped")
-	assert.Equal(t, &harness.RemoteInfo{URL: "https://git.example.com/org/other-market.git", NameMatch: harness.NameMismatch}, byName["tool@other-market"].Remote)
+	assert.Equal(t, &harness.RemoteInfo{URL: "https://git.example.com/org/other-market.git", UnpushedCommits: intPtr(0), NameMatch: harness.NameMismatch}, byName["tool@other-market"].Remote)
 
 	assert.Equal(t, "acme/dirty-market", byName["tool@dirty-market"].Source, "origin wins over other remotes")
-	assert.Equal(t, &harness.RemoteInfo{URL: "git@github.com:acme/dirty-market.git", UncommittedChanges: true, NameMatch: harness.NameMatch}, byName["tool@dirty-market"].Remote)
+	assert.Equal(t, &harness.RemoteInfo{URL: "git@github.com:acme/dirty-market.git", UnpushedCommits: intPtr(0), UncommittedChanges: true, NameMatch: harness.NameMatch}, byName["tool@dirty-market"].Remote)
 
 	assert.Equal(t, "https://gitlab.example.com/team/noref-market", byName["tool@noref-market"].Source)
-	assert.Equal(t, &harness.RemoteInfo{URL: "https://gitlab.example.com/team/noref-market", NameMatch: harness.NameUnknown}, byName["tool@noref-market"].Remote)
+	assert.Equal(t, &harness.RemoteInfo{URL: "https://gitlab.example.com/team/noref-market", NameMatch: harness.NameUnknown}, byName["tool@noref-market"].Remote,
+		"without a remote-tracking ref the unpushed count is unknown (nil), not 0")
 
 	assert.NotContains(t, byName, "tool@noremote-market")
 	assert.NotContains(t, byName, "tool@plain-dir")
+	assert.NotContains(t, byName, "tool@cred-market")
+	assert.NotContains(t, byName, "tool@nested-market", "an enclosing repository's remote is not the marketplace's")
 	notes := strings.Join(d.Notes, "\n")
 	assert.Contains(t, notes, `plugin tool@noremote-market skipped: local marketplace "noremote-market" cannot be copied into the image and has no git remote`)
 	assert.Contains(t, notes, `plugin tool@plain-dir skipped: local marketplace "plain-dir" cannot be copied into the image and has no git remote`)
+	assert.Contains(t, notes, `plugin tool@cred-market skipped: the git remote URL of local marketplace "cred-market" carries a credential that cannot be removed`)
+	assert.NotContains(t, notes, `"cred-market" cannot be copied into the image and has no git remote`)
+	assert.Contains(t, notes, `plugin tool@nested-market skipped: local marketplace "nested-market" cannot be copied into the image and has no git remote`)
 	assert.Contains(t, notes, `plugin tool@other-market: credentials removed from the git remote URL of local marketplace "other-market"`)
 	for _, n := range d.Notes {
 		assert.NotContains(t, n, "skipped: local marketplace \"gh-market\"")
@@ -395,3 +414,5 @@ func TestPortability(t *testing.T) {
 		assert.Equal(t, want, reason, source)
 	}
 }
+
+func intPtr(n int) *int { return &n }

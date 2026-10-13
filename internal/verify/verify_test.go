@@ -18,6 +18,7 @@ import (
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/probe"
+	"github.com/rhuss/sandcast/internal/shell"
 )
 
 func testPlan() *plan.Plan {
@@ -153,17 +154,21 @@ func TestSessionRequests(t *testing.T) {
 		"session.bash-login.broken", "session.bash-login.go", "session.bash-login.zsh",
 		"session.bash.startup",
 	}, keys(bash))
-	assert.Equal(t, "env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc 'go version'", bash[4].Command)
+	resolveGo := "command -v go >/dev/null || { echo 'sandcast: go does not resolve through the session PATH' >&2; exit 127; }\n"
+	assert.Equal(t, "env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc "+shell.Quote(resolveGo+"go version"), bash[4].Command)
 	assert.Equal(t, "1.25", bash[4].Selector, "the session check keeps the component's expectations")
-	assert.Equal(t, "printf '%s\\n' '{ go version\n} 2>&1' | env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -i 2>/dev/null", bash[1].Command)
+	assert.Equal(t, "printf '%s\\n' "+shell.Quote("{ "+resolveGo+"go version\n} 2>&1")+" | env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -i 2>/dev/null", bash[1].Command)
 
 	zsh := SessionRequests(openshellPlan("zsh"))
 	assert.Contains(t, keys(zsh), "session.zsh.go")
 	assert.Contains(t, keys(zsh), "session.zsh.startup")
 	assert.Len(t, zsh, 10)
 	for _, r := range zsh {
+		if r.Key == "session.zsh.go" {
+			assert.Contains(t, r.Command, "zsh -il -c", "a login zsh, as the switch hook starts it")
+		}
 		if r.Key == "session.zsh.startup" {
-			assert.Contains(t, r.Command, "zsh -i -c")
+			assert.Contains(t, r.Command, "zsh -il -c")
 			assert.Contains(t, r.Command, plan.CuratedRCLoadedVar)
 		}
 	}
@@ -189,6 +194,33 @@ func TestSessionRequestsRunLocally(t *testing.T) {
 		assert.Contains(t, string(out), "/sh", r.Key)
 		assert.Contains(t, string(out), "it's", "%s keeps the check's stderr", r.Key)
 	}
+}
+
+// TestSessionChecksResolveEveryBin runs the session commands with the
+// host's shells for a component whose check calls only its first binary:
+// a second binary that does not resolve fails every session check (FR-010).
+func TestSessionChecksResolveEveryBin(t *testing.T) {
+	for _, sh := range []string{"bash", "zsh"} {
+		if _, err := exec.LookPath(sh); err != nil {
+			t.Skipf("no %s", sh)
+		}
+	}
+	p := openshellPlan("zsh")
+	p.FinalUser.Home = t.TempDir()
+	p.Components = []plan.Component{{Key: "sh", Bins: []string{"sh", "sandcast-no-such-bin"}, Check: plan.Check{Command: "command -v sh"}}}
+	ran := 0
+	for _, r := range SessionRequests(p) {
+		if r.Key == "session.zsh.startup" {
+			continue
+		}
+		ran++
+		out, err := exec.Command("/bin/sh", "-c", r.Command).CombinedOutput()
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "%s: %s", r.Key, out)
+		assert.Equal(t, 127, exitErr.ExitCode(), r.Key)
+		assert.Contains(t, string(out), "sandcast-no-such-bin does not resolve", r.Key)
+	}
+	assert.Equal(t, 3, ran)
 }
 
 // TestRunSessionFailureFailsVerify checks that session entries are reported

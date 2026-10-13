@@ -263,6 +263,8 @@ func TestShellSwitchHookBehavior(t *testing.T) {
 	out, err = exec.Command(bash, "-c", ShellSwitchHook+"\necho non-interactive").CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	assert.Contains(t, string(out), "non-interactive")
+	assert.Contains(t, ShellSwitchHook, "SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l",
+		"the switched zsh marks its environment, so a nested interactive bash stays bash")
 }
 
 func TestCuratedRC(t *testing.T) {

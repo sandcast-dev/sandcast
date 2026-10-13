@@ -19,7 +19,7 @@ fi
 if ! grep -qsF '# sandcast: switch interactive terminal sessions to zsh' "$rc"; then
   cat >> "$rc" <<'SANDCAST_RC'
 # sandcast: switch interactive terminal sessions to zsh
-case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && exec /bin/zsh -l ;; esac
+case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac
 SANDCAST_RC
 fi
 SANDCAST_EOF

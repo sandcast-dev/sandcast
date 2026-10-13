@@ -127,8 +127,10 @@ const (
 type RemoteInfo struct {
 	// URL is the remote URL with credentials stripped.
 	URL string `json:"url" yaml:"url"`
-	// UnpushedCommits counts local commits the remote-tracking ref lacks.
-	UnpushedCommits int `json:"unpushed_commits" yaml:"unpushed_commits"`
+	// UnpushedCommits counts local commits the remote-tracking ref lacks;
+	// nil (null) when no remote-tracking ref exists locally, so the count is
+	// unknown.
+	UnpushedCommits *int `json:"unpushed_commits" yaml:"unpushed_commits"`
 	// UncommittedChanges is true when the working tree has changes.
 	UncommittedChanges bool `json:"uncommitted_changes" yaml:"uncommitted_changes"`
 	// NameMatch compares the marketplace name in the remote's marketplace

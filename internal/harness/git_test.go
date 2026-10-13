@@ -11,7 +11,7 @@ import (
 )
 
 func TestGitArgs(t *testing.T) {
-	assert.Equal(t, []string{"-C", "/repo", "-c", "core.quotepath=off", "-c", "color.ui=false", "--no-pager", "remote", "get-url", "origin"},
+	assert.Equal(t, []string{"-C", "/repo", "-c", "core.quotepath=off", "-c", "color.ui=false", "-c", "core.fsmonitor=false", "--no-pager", "remote", "get-url", "origin"},
 		gitArgs("/repo", []string{"remote", "get-url", "origin"}))
 	env := gitEnv()
 	assert.True(t, slices.Contains(env, "GIT_TERMINAL_PROMPT=0"))

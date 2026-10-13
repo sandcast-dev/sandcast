@@ -129,8 +129,12 @@ func extensionDetail(e harness.Extension) string {
 		parts = append(parts, "not portable: "+e.Reason)
 	}
 	if r := e.Remote; r != nil {
-		parts = append(parts, fmt.Sprintf("from git remote %s, %d unpushed commit(s), uncommitted changes: %t, marketplace name: %s",
-			r.URL, r.UnpushedCommits, r.UncommittedChanges, r.NameMatch))
+		unpushed := "unpushed commits unknown (no remote-tracking ref)"
+		if r.UnpushedCommits != nil {
+			unpushed = fmt.Sprintf("%d unpushed commit(s)", *r.UnpushedCommits)
+		}
+		parts = append(parts, fmt.Sprintf("from git remote %s, %s, uncommitted changes: %t, marketplace name: %s",
+			r.URL, unpushed, r.UncommittedChanges, r.NameMatch))
 	}
 	if len(parts) == 0 {
 		return ""

@@ -92,7 +92,7 @@ func BuildRecipe(fragmentsDir, recipesDir, key string, o PromoteOptions) (*Promo
 		c.Image.ReadOnly = append(c.Image.ReadOnly, opt)
 	}
 	if c.Check.Command == "" {
-		c.Check.Command = "command -v " + c.Installer.Script.Bins[0]
+		c.Check.Command = plan.DefaultCheck(c.Installer.Script.Bins...)
 	}
 	if len(env) > 0 {
 		if c.Image == nil {

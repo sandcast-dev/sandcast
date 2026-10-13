@@ -616,6 +616,23 @@ func TestHomeRCNotices(t *testing.T) {
 	assert.Empty(t, homeRCNotices(probe.Facts{}, manifest.TargetOpenShell, true))
 }
 
+// TestHomeRCNoticesSkippedForCreatedUser: the probed rc files belong to the
+// base image user's home; a root base image gets a created final user with
+// another home, so the plan reports none of them.
+func TestHomeRCNoticesSkippedForCreatedUser(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(p.Notices, "\n"), "home-rc-path: image: /sandbox/.bashrc")
+
+	in = testInputs(t, testManifest(), nil)
+	in.Probe.Facts.User = probe.User{Name: "root", UID: 0, GID: 0, Group: "root", Home: "/root", Shell: "/bin/bash"}
+	p, err = Build(in)
+	require.NoError(t, err)
+	require.True(t, p.FinalUser.Created)
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "home-rc-path")
+}
+
 func TestFactsOfCopiesHomeRCResetsPath(t *testing.T) {
 	f := factsOf(probe.Facts{HomeRCResetsPath: []string{".bashrc"}})
 	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)

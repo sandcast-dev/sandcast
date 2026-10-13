@@ -24,7 +24,7 @@ With `shell.program: zsh`, followed by:
 
 ```sh
 # sandcast: switch interactive terminal sessions to zsh
-case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && exec /bin/zsh -l ;; esac
+case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac
 ```
 
 ## System zshenv (appended block, `shell.program: zsh` or zsh present)
@@ -47,4 +47,5 @@ With `shell.program: zsh`, the final user's login shell is `/bin/zsh`, for creat
 
 - `env -i HOME=<home> USER=<user> TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc 'command -v <bin>'` resolves every component binary.
 - The same with `bash -i` reading the check from stdin resolves every component binary.
-- With zsh: `zsh -i -c 'command -v <bin>'` resolves every binary and `zsh -i -c exit` writes nothing to stderr.
+- With zsh: `zsh -il -c 'command -v <bin>'` resolves every binary and `zsh -il -c exit` writes nothing to stderr (a login zsh, as the switch hook starts it).
+- The switched zsh carries `SANDCAST_NO_SHELL_SWITCH=1`, so a bash started inside it stays bash.

@@ -78,7 +78,7 @@ Without `--image`, the OpenShell target gets `localhost/<name>`, and init says w
 $ sandcast init --name demo
 created .sandcast/manifest.yaml (base image nvidia-community-base, target openshell)
 created .sandcast/.gitignore
-note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --image <registry>/demo --platform <os/arch> --push.
+note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --force --image <registry>/demo --platform <os/arch> --push.
 ```
 
 For a gateway on a cluster, name a registry the cluster can pull from, the cluster's architecture and push:
@@ -283,6 +283,9 @@ Each `probe_delta` entry of a mise component that `mise.lock` locks for the targ
 | `unknown-version` | The base image's version could not be read, or came from a copy under the workspace path; the locked version is installed. |
 | `workspace-path` | A binary under the workspace path (the final user's home, OpenShell target) was ignored. |
 | `home-rc-path` | A home directory rc file of the base image resets `PATH`. |
+| `reference` | A target image is a Docker Hub reference without a namespace; the notice names the reference it resolves to (`docker.io/library/<name>`). |
+
+Engine facts never enter the plan file. When the build platform differs from the engine host's architecture and the plan installs a component known to fail under emulation, plan prints an `emulation` notice on stderr only; `sandcast build` prints it as well and repeats it in the build report.
 
 See [the build guide](guides/build.md#the-probe-delta) for the rules.
 
@@ -347,7 +350,7 @@ sandcast verify [flags]
 
 `verify` reads the checks from `.sandcast/build/<target>/plan.yaml`; without a plan it exits 2. It reports every result, writes `verify.yaml` next to the plan, and exits 1 when any check failed.
 
-For the OpenShell target, verify always runs session checks as well, in the same container and without a flag to skip them. They reproduce the environment OpenShell gives a session (`env -i` with only `HOME`, `USER`, `TERM=xterm-256color` and `PATH=/usr/local/bin:/usr/bin:/bin`) and run each component check again: `session.bash-login.<component>` through `bash -lc`, `session.bash-interactive.<component>` fed on stdin to `bash -i`, and with `shell.program: zsh` also `session.zsh.<component>` through `zsh -i -c`. The startup check of the selected shell program, `session.zsh.startup` for zsh or `session.bash.startup` for bash, fails when the interactive shell writes anything to stderr during startup or does not read the curated rc. Notes a shell prints only because verify runs it without a terminal are ignored: bash's `no job control in this shell` lines and zsh's `can't change option: zle`. Session checks count toward `failed` and the exit status. The [build guide](guides/build.md#the-session-environment) explains the session environment.
+For the OpenShell target, verify always runs session checks as well, in the same container and without a flag to skip them. They reproduce the environment OpenShell gives a session (`env -i` with only `HOME`, `USER`, `TERM=xterm-256color` and `PATH=/usr/local/bin:/usr/bin:/bin`) and run each component check again, preceded by a `command -v` test of every binary of the component (a binary that does not resolve fails the entry with exit 127): `session.bash-login.<component>` through `bash -lc`, `session.bash-interactive.<component>` fed on stdin to `bash -i`, and with `shell.program: zsh` also `session.zsh.<component>` through a login `zsh -il -c`, as the switch hook starts it. The startup check of the selected shell program, `session.zsh.startup` for zsh or `session.bash.startup` for bash, fails when the interactive shell writes anything to stderr during startup or does not read the curated rc. Notes a shell prints only because verify runs it without a terminal are ignored: bash's `no job control in this shell` lines and zsh's `can't change option: zle`. Session checks count toward `failed` and the exit status. The [build guide](guides/build.md#the-session-environment) explains the session environment.
 
 The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output). Session checks follow in a `session checks` group with the columns `CHECK`, `CONDITION`, `RESULT` and `OUTPUT`. A summary line closes the report:
 
@@ -424,7 +427,7 @@ imported: claude-code (workspace scope)
 imported: go-proxy (workspace scope)
 ```
 
-When the `openshell` CLI reports the active gateway as remote (`openshell gateway list`) and the adapted set belongs to a `localhost/` image, the report starts with a `warning: gateway: image: ...` line: such a gateway cannot pull an image from this engine's local storage, so set `targets.openshell.image` to a registry reference and `targets.openshell.push` to `true`. A failed lookup produces no warning and never fails the import.
+When the `openshell` CLI reports the active gateway as remote (`openshell gateway list`) and the adapted set belongs to a `localhost/` image, the report starts with a `warning: gateway: image: ...` line: such a gateway cannot pull a reference that names this machine (the engine's local storage or a registry on `localhost:<port>`), so set `targets.openshell.image` to a registry reference and `targets.openshell.push` to `true`. A failed lookup produces no warning and never fails the import.
 
 The JSON report has `scope`, `imported`, `updated`, `conflicts`, `dry_run`, `mapping` (`upstream_id` and `adapted_id` per profile), `warnings` and `index` (the path of the rewritten `index.yaml`, omitted when the import changed nothing). When an `openshell` call fails part way, the command still prints the profiles the gateway already accepted, sets `error` in the JSON report, and exits 1.
 
@@ -498,7 +501,7 @@ sandcast harness discover <name>
 
 Each replaced value is reported as `redacted: <path> (<kind>) -> <placeholder>; supply it as a provider credential at runtime`, and entries that cannot be baked are reported as `note:` lines. An unknown harness name exits 2. The [capture guide](guides/capture.md#what-discovery-finds) lists the files the Claude Code adapter reads.
 
-Every plugin and skill carries `portable` and, when it is not portable, a `reason`: a source under `~/.claude/skills`, `~/.claude/plugins` or anywhere else on the host is read on the machine that runs the plan, so a manifest that uses it builds only there. `owner/repo`, URLs and paths inside the project are portable. A plugin whose local marketplace directory cannot be copied into the image but is a git checkout with a remote is listed with a proposed `source` (`owner/repo` for GitHub, else the remote URL without credentials) and a `remote` object: `url`, `unpushed_commits`, `uncommitted_changes` and `name_match` (`match`, `mismatch` or `unknown`). Discovery reads local git state only and never fetches. A marketplace directory without a remote, or a host without `git`, still produces a skip note. The console appends both facts to each `plugin:` and `skill:` line.
+Every plugin and skill carries `portable` and, when it is not portable, a `reason`: a source under `~/.claude/skills`, `~/.claude/plugins` or anywhere else on the host is read on the machine that runs the plan, so a manifest that uses it builds only there. `owner/repo`, URLs and paths inside the project are portable. A plugin whose local marketplace directory cannot be copied into the image but is a git checkout with a remote is listed with a proposed `source` (`owner/repo` for GitHub, else the remote URL without credentials) and a `remote` object: `url`, `unpushed_commits` (`null` when no remote-tracking ref exists), `uncommitted_changes` and `name_match` (`match`, `mismatch` or `unknown`). Discovery reads local git state only and never fetches. A marketplace directory without a remote, one that is not the top level of its git repository, or a host without `git`, still produces a skip note. The console appends both facts to each `plugin:` and `skill:` line.
 
 ### sandcast skills install
 

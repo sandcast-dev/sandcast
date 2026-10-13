@@ -76,13 +76,14 @@ func fillPlaceholders(s string) string {
 }
 
 // stubs puts fake sandcast, curl, jq, tar and openshell executables in a
-// directory. The sandcast stub exits with $SANDCAST_STUB_RC; none reads
-// standard input.
+// directory. The sandcast stub exits with $SANDCAST_STUB_RC, or first sends
+// $SANDCAST_STUB_SIGNAL to the shell that runs it, as an interrupt would;
+// none reads standard input.
 func stubs(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"sandcast":  "#!/bin/sh\nexit \"${SANDCAST_STUB_RC:-0}\"\n",
+		"sandcast":  "#!/bin/sh\nif [ -n \"$SANDCAST_STUB_SIGNAL\" ]; then kill -\"$SANDCAST_STUB_SIGNAL\" \"$PPID\"; sleep 1; fi\nexit \"${SANDCAST_STUB_RC:-0}\"\n",
 		"curl":      "#!/bin/sh\nexit 0\n",
 		"jq":        "#!/bin/sh\nexit 0\n",
 		"tar":       "#!/bin/sh\nexit 0\n",
@@ -94,9 +95,10 @@ func stubs(t *testing.T) string {
 }
 
 // TestSnippets runs every sh snippet of the skill bundle under sh, bash and
-// zsh with the sandcast stub exiting 0 and 2 (FR-022, SC-009): the snippet
-// succeeds, ends with sandcast's exit status, and leaves no temporary file
-// behind. A missing shell fails the test.
+// zsh with the sandcast stub exiting 0 and 2, and with an interrupt while
+// sandcast runs (FR-022, SC-009): the snippet ends with sandcast's exit
+// status (128+signal after an interrupt), and leaves no temporary file
+// behind on any of these paths. A missing shell fails the test.
 func TestSnippets(t *testing.T) {
 	shells := map[string]string{}
 	for _, sh := range []string{"sh", "bash", "zsh"} {
@@ -111,7 +113,13 @@ func TestSnippets(t *testing.T) {
 		script := fillPlaceholders(sn.text)
 		usesSandcast := sandcastLineRe.MatchString(script)
 		for _, shName := range []string{"sh", "bash", "zsh"} {
-			for _, rc := range []int{0, 2} {
+			for _, rc := range []int{0, 2, 130} {
+				// Only a snippet with a temporary file has an interrupt path
+				// to test; a plain command may be exec'd by the shell, so the
+				// stub's parent would be this test.
+				if rc == 130 && (!usesSandcast || !strings.Contains(script, "mktemp")) {
+					continue
+				}
 				name := sn.skill + ":" + itoa(sn.line) + "/" + shName + "/rc" + itoa(rc)
 				t.Run(name, func(t *testing.T) {
 					tmp := t.TempDir()
@@ -125,6 +133,9 @@ func TestSnippets(t *testing.T) {
 						"HOME=" + project,
 						"TMPDIR=" + tmp,
 						"SANDCAST_STUB_RC=" + itoa(rc),
+					}
+					if rc == 130 {
+						cmd.Env = append(cmd.Env, "SANDCAST_STUB_SIGNAL=INT")
 					}
 					out, err := cmd.CombinedOutput()
 					require.NoError(t, ctx.Err(), "snippet timed out: %s", out)

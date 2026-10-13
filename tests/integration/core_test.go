@@ -302,11 +302,11 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.Contains(t, out, "SHELL_IS=/bin/bash", "no switch without a terminal")
 
 	// zsh: every binary resolves and startup writes nothing to stderr.
-	out, stderr, err := run("", false, "/bin/zsh", "-i", "-c", check.String())
+	out, stderr, err := run("", false, "/bin/zsh", "-il", "-c", check.String())
 	require.NoError(t, err)
 	assert.NotContains(t, out, "MISSING")
-	assert.Empty(t, stderr, "zsh -i startup writes nothing to stderr")
-	out, _, err = run("", false, "/bin/zsh", "-i", "-c", "starship --version")
+	assert.Empty(t, stderr, "zsh -il startup writes nothing to stderr")
+	out, _, err = run("", false, "/bin/zsh", "-il", "-c", "starship --version")
 	require.NoError(t, err, "a mise tool runs in the session")
 	assert.Contains(t, out, "starship")
 
@@ -319,6 +319,10 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.NotContains(t, out, "zsh-newuser-install")
 	assert.NotContains(t, out, "This is the Z Shell configuration function")
 	assert.NotContains(t, out, "command not found")
+	// A bash the user starts inside the switched zsh stays bash.
+	out, _, err = run("/bin/bash -i -c 'echo NESTED=${ZSH_VERSION:-bash}'\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
+	require.NoError(t, err)
+	assert.Contains(t, out, "NESTED=bash", "a nested interactive bash does not switch again")
 	// The escape hatch keeps bash.
 	out, _, err = run("echo SWITCHED=${ZSH_VERSION:-no}\nexit\n", false, "/usr/bin/script", "-qec", "env SANDCAST_NO_SHELL_SWITCH=1 /bin/bash -i", "/dev/null")
 	require.NoError(t, err)

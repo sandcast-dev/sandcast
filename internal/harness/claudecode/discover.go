@@ -417,8 +417,12 @@ func marketplaceSource(ctx context.Context, plugin, name string, markets map[str
 		if err != nil {
 			dir, perr := hostPath(source, env.Home, env.Project)
 			if perr == nil {
-				if remoteSource, remote, ok := gitMarketplace(ctx, env.Git, dir, name, plugin, notes); ok {
+				remoteSource, remote, gerr := gitMarketplace(ctx, env.Git, dir, name, plugin, notes)
+				if gerr == nil {
 					return remoteSource, remote
+				}
+				if errors.Is(gerr, errRemoteCredential) {
+					return skip("the git remote URL of local marketplace %q carries a credential that cannot be removed", name)
 				}
 			}
 			return skip("local marketplace %q cannot be copied into the image and has no git remote: %v", name, err)
@@ -443,30 +447,48 @@ func githubRepo(url string) (string, bool) {
 	return "", false
 }
 
+// errNoGitRemote and errRemoteCredential are the reasons gitMarketplace
+// proposes no source.
+var (
+	errNoGitRemote      = errors.New("no git remote")
+	errRemoteCredential = errors.New("the git remote URL carries a credential")
+)
+
 // gitMarketplace proposes a local marketplace directory through its git
 // remote (R-18): origin when present, else the first remote. The source is
 // owner/repo for GitHub and the remote URL, without credentials, otherwise.
 // It reads local git state only and never fetches: unpushed commits against
 // <remote>/HEAD (else the upstream branch), uncommitted changes, and the
 // marketplace name in the remote's .claude-plugin/marketplace.json compared
-// with the locally registered name. ok is false without git, outside a git
-// repository or without a remote.
-func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin string, notes *[]string) (string, *harness.RemoteInfo, bool) {
+// with the locally registered name. Without a remote-tracking ref the
+// unpushed count stays nil (unknown). It returns errNoGitRemote without
+// git, when dir is not the top level of a git repository (a directory
+// inside an enclosing repository is not that repository's marketplace), or
+// without a remote, and errRemoteCredential when the remote URL keeps a
+// credential after the user information is removed.
+func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin string, notes *[]string) (string, *harness.RemoteInfo, error) {
 	if git == nil {
-		return "", nil, false
+		return "", nil, errNoGitRemote
+	}
+	top, err := git.Run(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil || !sameDir(top, dir) {
+		return "", nil, errNoGitRemote
 	}
 	out, err := git.Run(ctx, dir, "remote")
 	if err != nil || strings.TrimSpace(out) == "" {
-		return "", nil, false
+		return "", nil, errNoGitRemote
 	}
 	remotes := strings.Fields(out)
 	remote := remotes[0]
 	if slices.Contains(remotes, "origin") {
 		remote = "origin"
 	}
+	if strings.HasPrefix(remote, "-") {
+		return "", nil, errNoGitRemote
+	}
 	url, err := git.Run(ctx, dir, "remote", "get-url", remote)
 	if err != nil || url == "" {
-		return "", nil, false
+		return "", nil, errNoGitRemote
 	}
 	if clean, userinfo, had := harness.SplitUserinfo(url); had && userinfo != "git" {
 		url = clean
@@ -474,12 +496,12 @@ func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin stri
 			"plugin %s: credentials removed from the git remote URL of local marketplace %q", plugin, name))
 	}
 	if sourceCarriesCredential(url) {
-		*notes = append(*notes, fmt.Sprintf("plugin %s: the git remote URL of local marketplace %q carries a credential", plugin, name))
-		return "", nil, false
+		return "", nil, errRemoteCredential
 	}
 	info := &harness.RemoteInfo{URL: url, NameMatch: harness.NameUnknown}
 	tracking := ""
-	for _, ref := range []string{remote + "/HEAD", "@{u}"} {
+	// The full ref name keeps a remote name from being read as an option.
+	for _, ref := range []string{"refs/remotes/" + remote + "/HEAD", "@{u}"} {
 		if _, err := git.Run(ctx, dir, "rev-parse", "--verify", "--quiet", ref); err == nil {
 			tracking = ref
 			break
@@ -487,7 +509,10 @@ func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin stri
 	}
 	if tracking != "" {
 		if n, err := git.Run(ctx, dir, "rev-list", "--count", tracking+"..HEAD"); err == nil {
-			_, _ = fmt.Sscanf(n, "%d", &info.UnpushedCommits)
+			var count int
+			if _, err := fmt.Sscanf(n, "%d", &count); err == nil {
+				info.UnpushedCommits = &count
+			}
 		}
 		if data, err := git.Run(ctx, dir, "show", tracking+":.claude-plugin/marketplace.json"); err == nil {
 			var mk struct {
@@ -508,7 +533,21 @@ func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin stri
 	if repo, ok := githubRepo(url); ok {
 		source = repo
 	}
-	return source, info, true
+	return source, info, nil
+}
+
+// sameDir reports whether two host paths name the same directory, after
+// resolving symbolic links (git prints the top level resolved).
+func sameDir(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(ra) == filepath.Clean(rb)
 }
 
 // portability decides whether a source resolves the same on every machine

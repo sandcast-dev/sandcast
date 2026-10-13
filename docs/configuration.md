@@ -79,7 +79,7 @@ You do not need to list components that sandcast adds by itself: the shell progr
 
 | Field | Type | Default | Rules |
 |-------|------|---------|-------|
-| `targets.<target>.image` | string | | Required. Image name without tag. |
+| `targets.<target>.image` | string | | Required. Image name without tag; validation rejects a tag or digest here (use `tag`). |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
 | `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. |
 | `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
@@ -407,4 +407,4 @@ Probe results are keyed by the image digest together with the platform, because 
 | `OPENSHELL_GATEWAY`, `OPENSHELL_GATEWAY_ENDPOINT` | `profiles import` | Not read by sandcast. The `openshell` CLI inherits them and uses them to select the gateway. |
 | `CONTAINER_CONNECTION`, `CONTAINER_HOST` | every command that runs podman | Not read by sandcast. podman inherits them and builds, runs and pushes on the selected connection, for example a remote amd64 host. The `emulation` notice compares the target platform with that host's architecture. See the [cross-architecture guide](guides/cross-arch.md). |
 | `DOCKER_HOST` | every command that runs docker | Not read by sandcast. docker inherits it, with the same effect as the podman variables. |
-| `SANDCAST_NO_SHELL_SWITCH` | images with `shell.program: zsh` | Not read by sandcast. Set in a sandbox's environment, it keeps an interactive OpenShell session in bash instead of switching to zsh. |
+| `SANDCAST_NO_SHELL_SWITCH` | images with `shell.program: zsh` | Not read by sandcast. Set in a sandbox's environment, it keeps an interactive OpenShell session in bash instead of switching to zsh. The switched zsh sets it, so a bash started inside that zsh stays bash. |

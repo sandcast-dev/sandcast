@@ -28,7 +28,7 @@ All three must pass before a phase is considered done.
 cd "$P" && sandcast init --name lockdemo
 # add unpinned gh, node, python, codex components to .sandcast/manifest.yaml
 sandcast lock --platform linux/arm64 --platform linux/amd64
-sandcast plan --json | jq '.delta[] | select(.key|IN("gh","node","python","codex")) | {key, action, present_version, locked_version}'
+sandcast plan --json | jq '.probe_delta[] | select(.component_key|IN("gh","node","python","codex")) | {component_key, action, installed_version, locked_version}'
 sandcast build --verify --json | jq '.notices'
 ```
 
@@ -36,7 +36,7 @@ Expected: every differing component has `action: shadow` and a `lockfile-shadow`
 
 ### Workspace path (#2, SC-002)
 
-Expected from the same plan: `python` has a `workspace-path` notice and is installed; after the build, no resolved path in `.sandcast/build/profiles/` starts with `/sandbox/`, and the adapted `pypi` profile is not flagged.
+Expected from the same plan: `python` has a `workspace-path` notice and is installed; after the build, no resolved path in `.sandcast/build/openshell/profiles/` starts with `/sandbox/`, and the adapted `pypi` profile is not flagged.
 
 ### Session environment (#11, SC-003, SC-004)
 
@@ -69,7 +69,7 @@ Expected: `rust` 1.95.0 from `rust-toolchain.toml`, `python` 3.14.5 from `.pytho
 podman run -d --rm -p 5000:5000 --name reg docker.io/library/registry:2
 sandcast init --name pushdemo --image localhost:5000/demo/pushdemo --push --force
 sandcast build --json | jq '{image_ref, sandbox_create, pushed, digest}'
-grep -n 'sandcast push' .sandcast/build/build.log
+grep -n 'sandcast push' .sandcast/build/openshell/build.log
 ```
 
 Expected: `pushed: true`, a `sha256:` digest, a `sandbox_create` line with the same reference, and a push section in the log.

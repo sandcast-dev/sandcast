@@ -160,7 +160,7 @@ targets:
     image: localhost/demo
 `, map[string]string{})
 	require.Len(t, diags, 1, "%v", diags)
-	assert.Equal(t, "$.components", diags[0].Path)
+	assert.Equal(t, "$.components[1].bins[0]", diags[0].Path, "the conflict points at the declared binary")
 	assert.Contains(t, diags[0].Message, "git")
 	assert.Contains(t, diags[0].Message, "my-git")
 }

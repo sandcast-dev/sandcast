@@ -25,8 +25,10 @@ type ExecGit struct {
 
 // gitArgs builds the argument list: -C dir selects the repository, and the
 // fixed settings keep the output stable and free of pagers and colors.
+// core.fsmonitor is off because a repository's own configuration could
+// otherwise make git status run a command of its choice.
 func gitArgs(dir string, args []string) []string {
-	return append([]string{"-C", dir, "-c", "core.quotepath=off", "-c", "color.ui=false", "--no-pager"}, args...)
+	return append([]string{"-C", dir, "-c", "core.quotepath=off", "-c", "color.ui=false", "-c", "core.fsmonitor=false", "--no-pager"}, args...)
 }
 
 // gitEnv keeps git from prompting for credentials or reading a terminal.

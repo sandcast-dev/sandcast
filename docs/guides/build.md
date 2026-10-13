@@ -202,7 +202,7 @@ OpenShell v0.1.3 starts every session with a cleared environment. A session gets
 | System bash rc (`/etc/bash.bashrc`, else `/etc/bashrc`) | OpenShell target with the script above or `shell.program: zsh` | A `# sandcast: session environment` block that sources `sandcast-env.sh`, so an interactive bash that is not a login shell gets it too. It is appended before the line that sources a curated bash configuration, so that configuration finds the tools. |
 | System zshenv (`/etc/zsh/zshenv`, or `/etc/zshenv` when the image uses that path) | zsh in the base image or `shell.program: zsh` | Sources `sandcast-env.sh` and defines `zsh-newuser-install` as a no-op, so zsh never starts its new-user wizard in a home directory without `.zshrc` (an empty workspace volume). |
 
-**Home directory rc files that reset `PATH`.** The community base image's `/sandbox/.bashrc` sets `PATH` to a fixed value, and `/sandbox/.profile` sources it. bash reads these files after the system files, so they would drop the shims again. The `PROMPT_COMMAND` hook repairs the `PATH` before the first prompt of an interactive bash, and the `DEBUG` trap repairs it before the command of a `bash -lc`. sandcast never edits files under the workspace path. The probe records which of `.bashrc`, `.profile` and `.bash_profile` in the base user's home assign `PATH` without referencing `$PATH`, and the plan reports each one as a notice:
+**Home directory rc files that reset `PATH`.** The community base image's `/sandbox/.bashrc` sets `PATH` to a fixed value, and `/sandbox/.profile` sources it. bash reads these files after the system files, so they would drop the shims again. The `PROMPT_COMMAND` hook repairs the `PATH` before the first prompt of an interactive bash, and the `DEBUG` trap repairs it before the command of a `bash -lc`. sandcast never edits files under the workspace path. The probe records which of `.bashrc`, `.profile` and `.bash_profile` in the base user's home assign `PATH` without referencing `$PATH`, and when the base image user stays the final user (its home is the session home), the plan reports each one as a notice:
 
 ```text
 home-rc-path: image: /sandbox/.bashrc resets PATH; sandcast re-applies the mise shims after it
@@ -212,10 +212,10 @@ home-rc-path: image: /sandbox/.bashrc resets PATH; sandcast re-applies the mise 
 
 ```sh
 # sandcast: switch interactive terminal sessions to zsh
-case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && exec /bin/zsh -l ;; esac
+case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac
 ```
 
-An interactive bash with a terminal on stdin and stdout replaces itself with a zsh login shell, which reads zshenv and the curated rc. A non-interactive bash (`bash -lc`, agent tool calls, pipes) and a session without a terminal keep bash and run the command themselves. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment (for example `openshell sandbox create --env SANDCAST_NO_SHELL_SWITCH=1`) to stay in bash. The final user's login shell is set to `/bin/zsh` as well, so that an OpenShell release that honors the login shell needs no hook.
+An interactive bash with a terminal on stdin and stdout replaces itself with a zsh login shell, which reads zshenv and the curated rc. A non-interactive bash (`bash -lc`, agent tool calls, pipes) and a session without a terminal keep bash and run the command themselves. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment (for example `openshell sandbox create --env SANDCAST_NO_SHELL_SWITCH=1`) to stay in bash. The zsh the hook starts carries `SANDCAST_NO_SHELL_SWITCH=1`, so a bash started inside that zsh stays bash. The final user's login shell is set to `/bin/zsh` as well, so that an OpenShell release that honors the login shell needs no hook.
 
 `verify` checks all of this under session conditions, see [step 4](#step-4-verify).
 
@@ -292,9 +292,9 @@ For the OpenShell target, verify always adds session checks in the same containe
 
 | Check | Condition | Passes when |
 |-------|-----------|-------------|
-| `session.bash-login.<component>` | `session:bash-login` | The component's check passes in `bash -lc '<check>'`, as `openshell sandbox exec` runs it. |
+| `session.bash-login.<component>` | `session:bash-login` | Every binary of the component resolves and the component's check passes in `bash -lc '<check>'`, as `openshell sandbox exec` runs it. |
 | `session.bash-interactive.<component>` | `session:bash-interactive` | The same check, fed on stdin to `bash -i` as in `openshell sandbox connect`, passes after the home rc files ran. |
-| `session.zsh.<component>` | `session:zsh` | With `shell.program: zsh`, the check passes in `zsh -i -c '<check>'`. |
+| `session.zsh.<component>` | `session:zsh` | With `shell.program: zsh`, the same in a login `zsh -il -c '<check>'`, as the switch hook starts zsh. |
 | `session.zsh.startup` | `session:zsh` | With `shell.program: zsh`, an interactive zsh reads the curated rc and writes nothing to stderr during startup, apart from the `can't change option: zle` note that appears only without a terminal. |
 | `session.bash.startup` | `session:bash-interactive` | With `shell.program: bash`, an interactive bash reads the curated rc and writes nothing to stderr during startup, apart from bash's own notes about the missing terminal. |
 
@@ -335,7 +335,7 @@ A fragment is a piece of Containerfile for one component, stored in `.sandcast/f
 sandcast fragments write mytool --file /tmp/mytool.containerfile
 ```
 
-The plan uses a stored fragment for a component when no tier defines the component, or when the definition is `unresolvable` on this base image. The fragment goes into the `50-fragments` section. For a key that no tier defines, verify runs `command -v <key>`, so the fragment must put an executable with exactly that name on the final user's `PATH`. `sandcast manifest validate` accepts a manifest key that has an active stored fragment.
+The plan uses a stored fragment for a component when no tier defines the component, or when the definition is `unresolvable` on this base image. The fragment goes into the `50-fragments` section. For a key that no tier defines, verify runs `command -v` for each binary the manifest entry declares in `bins`, else `command -v <key>`, so the fragment must put each of these executables on the final user's `PATH`. `sandcast manifest validate` accepts a manifest key that has an active stored fragment.
 
 `sandcast fragments write` validates the fragment before storing it:
 
@@ -429,7 +429,7 @@ The conversion works like this:
 - `ENV` lines become `image.env`.
 - `WORKDIR <dir>` becomes `mkdir -p <dir> && cd <dir>`.
 - The `USER` lines decide `as_root`: steps that run as root (no `USER`, `root`, `0`, or a user other than the final user of the last plan) give `as_root: true`, steps that run as the final user give `as_root: false`.
-- When a tier already defines the key, its `check`, `provides`, `profiles`, `targets`, `match` and `image` are carried over. Otherwise the check is `command -v <first binary>`.
+- When a tier already defines the key, its `check`, `provides`, `profiles`, `targets`, `match` and `image` are carried over. Otherwise the check runs `command -v` for every binary, as the fragment's check did.
 
 Promotion refuses fragments that a script cannot express: fragments with `COPY`, `ARG` or `LABEL`, fragments that mix root and final-user `RUN` steps, and fragments without a `RUN` step. Keep such a fragment as it is, or rewrite it with `RUN` steps only. Review the generated recipe like code before committing it, because every non-interactive build of the project runs it.
 

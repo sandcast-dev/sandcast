@@ -121,5 +121,7 @@ func TestExtensionDetail(t *testing.T) {
 	assert.Equal(t, "  (not portable: source under ~/.claude/skills is read on the machine that runs the plan)",
 		extensionDetail(harness.Extension{Source: "~/.claude/skills/x", Reason: "source under ~/.claude/skills is read on the machine that runs the plan"}))
 	assert.Equal(t, "  (from git remote https://github.com/a/b.git, 2 unpushed commit(s), uncommitted changes: true, marketplace name: match)",
-		extensionDetail(harness.Extension{Source: "a/b", Portable: true, Remote: &harness.RemoteInfo{URL: "https://github.com/a/b.git", UnpushedCommits: 2, UncommittedChanges: true, NameMatch: "match"}}))
+		extensionDetail(harness.Extension{Source: "a/b", Portable: true, Remote: &harness.RemoteInfo{URL: "https://github.com/a/b.git", UnpushedCommits: func() *int { n := 2; return &n }(), UncommittedChanges: true, NameMatch: "match"}}))
+	assert.Equal(t, "  (from git remote https://example.com/a.git, unpushed commits unknown (no remote-tracking ref), uncommitted changes: false, marketplace name: unknown)",
+		extensionDetail(harness.Extension{Source: "https://example.com/a.git", Portable: true, Remote: &harness.RemoteInfo{URL: "https://example.com/a.git", NameMatch: "unknown"}}))
 }

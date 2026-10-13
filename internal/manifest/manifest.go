@@ -358,6 +358,8 @@ func (m *Manifest) Validate() []Diagnostic {
 	if t := m.Targets.OpenShell; t != nil {
 		if t.Image == "" {
 			add("$.targets.openshell.image", "required")
+		} else if msg := imageProblem(t); msg != "" {
+			add("$.targets.openshell.image", "%s", msg)
 		}
 		if t.AllowedDomainsFile != "" {
 			add("$.targets.openshell.allowed_domains_file", "only the container target writes an allowed-domains file")
@@ -366,6 +368,8 @@ func (m *Manifest) Validate() []Diagnostic {
 	if t := m.Targets.Container; t != nil {
 		if t.Image == "" {
 			add("$.targets.container.image", "required")
+		} else if msg := imageProblem(t); msg != "" {
+			add("$.targets.container.image", "%s", msg)
 		}
 		if t.AllowedDomainsFile != "" {
 			if err := CheckAllowedDomainsFile(t.AllowedDomainsFile); err != nil {
@@ -374,6 +378,27 @@ func (m *Manifest) Validate() []Diagnostic {
 		}
 	}
 	return diags
+}
+
+// imageProblem reports a target image that carries its own tag or digest
+// (the tag belongs in the tag field; image:tag would become
+// image:tag:latest) or whose reference with the tag is not a valid image
+// reference.
+func imageProblem(t *Target) string {
+	name := t.Image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if strings.ContainsAny(name, ":@") {
+		return fmt.Sprintf("%s carries a tag or digest; set the image name here and the tag in the tag field", safeValue(t.Image))
+	}
+	if _, err := imageref.Normalize(t.Ref()); err != nil {
+		if len(redact.Scan(err.Error())) > 0 {
+			return "invalid image reference " + redactedValue
+		}
+		return err.Error()
+	}
+	return ""
 }
 
 // CheckAllowedDomainsFile fails when name cannot be the container target's

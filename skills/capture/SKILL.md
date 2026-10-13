@@ -65,7 +65,7 @@ The JSON has `harness`, `mcp_servers` (each with `name`, `command` or `url`, `en
 
    For a non-portable local marketplace, explain the same limit and offer two remedies: copy the marketplace directory into the project (same rules) and use its `./` path as the plugin source, or publish it as a git repository and use `owner/repo` or its URL.
 
-   A plugin with a `remote` object was proposed through the git remote of its local marketplace, so you need no manual remote lookup. It stays opt-in like every other plugin. Before the user decides, present its remote notes: the remote `url`; `unpushed_commits` greater than 0 or `uncommitted_changes: true` means the image gets the remote's state, not the local one, so the user should push first; `name_match: mismatch` means the remote's marketplace file declares another name than the locally registered one, and `name_match: unknown` means it could not be checked because no remote-tracking ref exists locally (discovery never fetches).
+   A plugin with a `remote` object was proposed through the git remote of its local marketplace, so you need no manual remote lookup. It stays opt-in like every other plugin. Before the user decides, present its remote notes: the remote `url`; `unpushed_commits` greater than 0 or `uncommitted_changes: true` means the image gets the remote's state, not the local one, so the user should push first, and `unpushed_commits: null` means the count is unknown because no remote-tracking ref exists locally; `name_match: mismatch` means the remote's marketplace file declares another name than the locally registered one, and `name_match: unknown` means it could not be checked because no remote-tracking ref exists locally (discovery never fetches).
 4. For every entry in `redacted`, explain: the value at `path` looked like a credential (`kind`), the binary replaced it with `placeholder`, and the user supplies the real value at runtime as a provider credential under the environment variable named in `env_var` (the `env` key when the whole env value was the secret, `SANDCAST_SECRET_N` for a secret inside a longer value, an argument or a URL, including an access key in a URL path). Never offer to fill in the value.
    MCP servers reached by `url` carry their bearer credential as one `env` entry, either a placeholder such as `MCP_<NAME>_TOKEN: "${SANDCAST_SECRET_N}"` or a reference such as `VAR: "${VAR}"`. Keep both forms unchanged.
 5. Show every `notes` entry.
@@ -225,20 +225,20 @@ Show the user the final curated configuration and the list of referenced compone
 
 ### 4d: Write it
 
-Write the curated text to a private temporary file created with `mktemp`, store it in the manifest, and delete the file. Run it as one shell command so that `$tmp` survives, and set `--program` to the shell you curated (`zsh` or `bash`). The snippet runs unchanged in sh, bash and zsh, removes the file on every path and ends with the exit status of `sandcast`, so an exit 2 reaches you:
+Write the curated text to a private temporary file created with `mktemp`, store it in the manifest, and delete the file. Run it as one shell command so that `$tmp` survives, and set `--program` to the shell you curated (`zsh` or `bash`). The snippet runs unchanged in sh, bash and zsh, in a subshell so that its `exit` and traps never end your own shell. It removes the file on every exit path, an interrupt included, and ends with the exit status of `sandcast`, so an exit 2 reaches you:
 
 ```sh
-if tmp="$(mktemp)"; then
-cat > "$tmp" <<'SANDCAST_RC'
+(
+tmp="$(mktemp)" || exit
+trap 'rm -f "$tmp"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cat > "$tmp" <<'SANDCAST_RC' || exit
 <the curated configuration>
 SANDCAST_RC
 sandcast manifest set-shell --program <zsh|bash> --file "$tmp"
-rc=$?
-rm -f "$tmp"
-(exit "$rc")
-else
-false
-fi
+)
 ```
 
 The command also accepts the configuration on standard input. If it exits 2 because of a credential-shaped value, remove that line and write again; never weaken the value to get past the check.
