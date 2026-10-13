@@ -52,14 +52,8 @@ func Assemble(p *plan.Plan) (string, error) {
 			}
 		}
 	}
-	if p.Shell.RCPath != "" {
-		if err := add(execTemplate(shellTemplate, map[string]any{
-			"Program":     p.Shell.Program,
-			"Path":        p.Shell.RCPath,
-			"ContextFile": ShellContextFile(p.Shell.Program),
-		})); err != nil {
-			return "", err
-		}
+	if err := add(shellSection(p)); err != nil {
+		return "", err
 	}
 	for _, h := range p.Harnesses {
 		sections = append(sections, h.Fragment)
@@ -89,6 +83,80 @@ func fromReference(ref, digest string) string {
 		ref = ref[:i]
 	}
 	return ref + "@" + digest
+}
+
+// shellSection renders 60-shell (contracts/image-shell.md), in this order:
+// the session environment script (R-04), the session environment block and
+// the zsh switch hook in the system bash rc of OpenShell images (R-04,
+// R-07), the curated rc, which therefore runs after the session environment
+// in an interactive bash, the zshenv block (R-06) and the login shell of a
+// kept final user (a created user gets it from useradd). It renders nothing
+// when none of them applies.
+func shellSection(p *plan.Plan) (string, error) {
+	zshProgram := p.Shell.Program == "zsh"
+	openshell := p.Target == manifest.TargetOpenShell
+	sessionEnv := NeedsSessionEnv(p)
+	bashRC := openshell && (sessionEnv || zshProgram)
+	zshEnv := zshProgram || hasZsh(p)
+	login := ""
+	if zshProgram && !p.FinalUser.Created {
+		login = "/bin/zsh"
+	}
+	if p.Shell.RCPath == "" && !sessionEnv && !bashRC && !zshEnv && login == "" {
+		return "", nil
+	}
+	title := "session environment"
+	if p.Shell.RCPath != "" {
+		title += " and curated " + p.Shell.Program + " configuration"
+	}
+	return execTemplate(shellTemplate, map[string]any{
+		"Title":          title,
+		"Program":        p.Shell.Program,
+		"RCPath":         p.Shell.RCPath,
+		"ContextFile":    ShellContextFile(p.Shell.Program),
+		"SessionEnv":     sessionEnv,
+		"EnvContextFile": SessionEnvContextFile,
+		"BashRC":         bashRC,
+		"Switch":         openshell && zshProgram,
+		"ZshEnv":         zshEnv,
+		"EnvMarker":      SessionEnvMarker,
+		"EnvPath":        plan.SessionEnvPath,
+		"SwitchMarker":   ShellSwitchMarker,
+		"SwitchHook":     ShellSwitchHook,
+		"LoginShell":     login,
+		"User":           p.FinalUser.Name,
+	})
+}
+
+// usesMise reports whether the plan installs anything through the 30-mise
+// layer.
+func usesMise(p *plan.Plan) bool {
+	return uniqueFragment(p, plan.SectionMise) != ""
+}
+
+// NeedsSessionEnv reports whether the image carries the session environment
+// script: whenever mise tools are installed (a login shell whose system
+// profile resets PATH needs the shims back, on either target), and for the
+// OpenShell target whenever the components or harnesses set image
+// environment variables, which an OpenShell session would otherwise lose.
+func NeedsSessionEnv(p *plan.Plan) bool {
+	return usesMise(p) || (p.Target == manifest.TargetOpenShell && len(p.Image.Env) > 0)
+}
+
+// hasZsh reports whether zsh is in the base image or planned.
+func hasZsh(p *plan.Plan) bool {
+	for _, s := range p.ImageFacts.Shells {
+		if path.Base(s) == "zsh" {
+			return true
+		}
+	}
+	return p.Component("zsh") != nil
+}
+
+// CuratedRC is the curated rc file content: CuratedRCPrefix, then the
+// manifest's rc (R-06).
+func CuratedRC(p *plan.Plan) string {
+	return CuratedRCPrefix + p.Shell.RC
 }
 
 // ShellContextFile is the build-context path of the curated configuration.

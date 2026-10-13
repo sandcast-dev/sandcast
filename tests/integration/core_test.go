@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -235,4 +236,262 @@ func writeFragment(t *testing.T, dir, key, body string) {
 	cmd.Stdin = strings.NewReader(body)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
+}
+
+// TestSessionEnvironment covers FR-006 to FR-010 and FR-025 under podman:
+// a zsh image on the community base is started with the environment
+// OpenShell gives a session (env -i with HOME, USER, TERM and the default
+// PATH, bash as the started program) and must resolve every component
+// binary in a login bash, an interactive bash and an interactive zsh, start
+// zsh without stderr output, switch to zsh only with a terminal, and fail
+// verify once its zshenv block is removed (SC-003, SC-004).
+func TestSessionEnvironment(t *testing.T) {
+	engine := requireEngine(t)
+	requireMise(t)
+	img := "localhost/sandcast-it-session:latest"
+	broken := "localhost/sandcast-it-session-broken:latest"
+	dir := project(t, sessionManifest("sc-session", "localhost/sandcast-it-session"))
+	removeImages(t, engine, img, broken)
+	require.Zero(t, sandcast(t, dir, nil, "lock", "--platform", hostPlatform()).code)
+	r := sandcast(t, dir, nil, "build", "--verify")
+	require.Zero(t, r.code, "build --verify runs the session checks and passes")
+	assert.Contains(t, r.stdout, "session checks")
+	assert.Contains(t, r.stdout, "session.zsh.startup")
+
+	run := func(stdin string, tty bool, args ...string) (string, string, error) {
+		t.Helper()
+		full := []string{"run", "--rm"}
+		if stdin != "" {
+			full = append(full, "-i")
+		}
+		if tty {
+			full = append(full, "-t")
+		}
+		full = append(full, "--entrypoint", "/usr/bin/env", img)
+		full = append(full, sessionEnvArgs...)
+		full = append(full, args...)
+		cmd := exec.Command(engine, full...)
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		t.Logf("%s %s\nstdout:\n%sstderr:\n%s", engine, strings.Join(args, " "), stdout.String(), stderr.String())
+		return stdout.String(), stderr.String(), err
+	}
+
+	bins := planBins(t, dir, "openshell")
+	var check strings.Builder
+	for _, b := range bins {
+		fmt.Fprintf(&check, "command -v %s || echo MISSING %s\n", b, b)
+	}
+	// exec: OpenShell runs bash -lc.
+	out, _, err := run("", false, "/bin/bash", "-lc", check.String())
+	require.NoError(t, err)
+	assert.NotContains(t, out, "MISSING", "bash -lc resolves every binary")
+	assert.Contains(t, out, "/opt/mise/shims/starship")
+	out, _, err = run("", false, "/bin/bash", "-lc", `printf '%s\n' "$MISE_DATA_DIR" "$MISE_CONFIG_DIR"`)
+	require.NoError(t, err)
+	assert.Equal(t, "/opt/mise\n/etc/mise\n", out, "MISE_* settings in the session")
+
+	// connect: OpenShell runs bash -i; without a terminal it must not switch.
+	out, _, err = run(check.String()+"echo SHELL_IS=$0\n", false, "/bin/bash", "-i")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "MISSING", "bash -i resolves every binary after ~/.bashrc reset PATH")
+	assert.Contains(t, out, "SHELL_IS=/bin/bash", "no switch without a terminal")
+
+	// zsh: every binary resolves and startup writes nothing to stderr.
+	out, stderr, err := run("", false, "/bin/zsh", "-i", "-c", check.String())
+	require.NoError(t, err)
+	assert.NotContains(t, out, "MISSING")
+	assert.Empty(t, stderr, "zsh -i startup writes nothing to stderr")
+	out, _, err = run("", false, "/bin/zsh", "-i", "-c", "starship --version")
+	require.NoError(t, err, "a mise tool runs in the session")
+	assert.Contains(t, out, "starship")
+
+	// With a terminal, an interactive bash switches to a zsh login shell:
+	// script(1) gives bash a pseudo terminal and feeds it our commands. No
+	// new-user wizard and no command-not-found output may appear.
+	out, _, err = run("echo SWITCHED=$ZSH_VERSION\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
+	require.NoError(t, err)
+	assert.Regexp(t, `SWITCHED=5\.`, out, "bash -i with a terminal switched to zsh")
+	assert.NotContains(t, out, "zsh-newuser-install")
+	assert.NotContains(t, out, "This is the Z Shell configuration function")
+	assert.NotContains(t, out, "command not found")
+	// The escape hatch keeps bash.
+	out, _, err = run("echo SWITCHED=${ZSH_VERSION:-no}\nexit\n", false, "/usr/bin/script", "-qec", "env SANDCAST_NO_SHELL_SWITCH=1 /bin/bash -i", "/dev/null")
+	require.NoError(t, err)
+	assert.Contains(t, out, "SWITCHED=no")
+	// Non-interactive bash with a terminal runs the command itself.
+	out, _, err = run("", true, "/bin/bash", "-lc", "echo RAN=$0")
+	require.NoError(t, err)
+	assert.Contains(t, out, "RAN=/bin/bash")
+
+	// The final user's login shell is zsh.
+	out, _, err = run("", false, "/bin/sh", "-c", "getent passwd sandbox | cut -d: -f7")
+	require.NoError(t, err)
+	assert.Equal(t, "/bin/zsh\n", strings.ReplaceAll(out, "\r", ""))
+
+	// SC-004: the same image without its zshenv block fails verify with
+	// session.zsh entries, although the image-environment checks pass.
+	build := exec.Command(engine, "build", "-t", broken, "-f", "-", dir)
+	build.Stdin = strings.NewReader("FROM " + img + "\nUSER root\nRUN sed -i '/sandcast/d' /etc/zsh/zshenv\nUSER sandbox\n")
+	bout, err := build.CombinedOutput()
+	require.NoError(t, err, "%s", bout)
+	r = sandcast(t, dir, nil, "verify", "--image", broken)
+	assert.Equal(t, 1, r.code, "verify fails the broken session setup")
+	results := readVerifyResults(t, filepath.Join(dir, ".sandcast", "build", "openshell", "verify.yaml"))
+	failedSession := 0
+	for key, res := range results {
+		if !strings.HasPrefix(key, "session.") {
+			assert.True(t, res.OK, "%s passes with the image environment", key)
+			continue
+		}
+		if strings.HasPrefix(key, "session.zsh.") && !res.OK {
+			failedSession++
+			assert.Equal(t, "session:zsh", res.Condition)
+		}
+	}
+	assert.Positive(t, failedSession, "session.zsh entries fail")
+	assert.False(t, results["session.zsh.startup"].OK)
+}
+
+type verifyEntry struct {
+	OK        bool
+	Condition string
+}
+
+func readVerifyResults(t *testing.T, path string) map[string]verifyEntry {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var v struct {
+		Results []struct {
+			ComponentKey string `yaml:"component_key"`
+			Condition    string `yaml:"condition"`
+			OK           bool   `yaml:"ok"`
+		} `yaml:"results"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &v))
+	out := map[string]verifyEntry{}
+	for _, r := range v.Results {
+		out[r.ComponentKey] = verifyEntry{OK: r.OK, Condition: r.Condition}
+	}
+	return out
+}
+
+// TestLockfileDecidesVersions reproduces issues #1 and #2 on the community
+// base image, which ships gh, node, python and codex, with python first on
+// PATH under /sandbox: the versions verify reports equal mise.lock, every
+// differing component carries a notice, python is not taken from the
+// workspace path, and no adapted profile names a binary under /sandbox
+// (SC-001, SC-002).
+func TestLockfileDecidesVersions(t *testing.T) {
+	engine := requireEngine(t)
+	requireMise(t)
+	img := "localhost/sandcast-it-lock:latest"
+	dir := project(t, `schema_version: 1
+name: sc-lock
+base_image: nvidia-community-base
+components:
+  - key: gh
+  - key: node
+  - key: python
+  - key: codex
+targets:
+  openshell:
+    image: localhost/sandcast-it-lock
+`)
+	removeImages(t, engine, img)
+	require.Zero(t, sandcast(t, dir, nil, "lock", "--platform", hostPlatform()).code)
+	r := sandcast(t, dir, nil, "build", "--verify", "--json")
+	require.Zero(t, r.code, "build --verify")
+	var rep struct {
+		Notices []string `json:"notices"`
+		Verify  struct {
+			Results []struct {
+				ComponentKey string `json:"component_key"`
+				Condition    string `json:"condition"`
+				Version      string `json:"version"`
+				OK           bool   `json:"ok"`
+			} `json:"results"`
+		} `json:"verify"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(r.stdout), &rep))
+
+	locked := lockedVersions(t, filepath.Join(dir, ".sandcast", "mise.lock"))
+	noticeFor := func(key string, kinds ...string) bool {
+		for _, n := range rep.Notices {
+			for _, k := range kinds {
+				if strings.HasPrefix(n, k+": "+key+": ") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, key := range []string{"gh", "node", "python", "codex"} {
+		want, ok := locked[key]
+		require.True(t, ok, "%s is locked", key)
+		found := false
+		for _, res := range rep.Verify.Results {
+			if res.ComponentKey == key && res.Condition == "image" {
+				found = true
+				assert.True(t, res.OK, key)
+				assert.Equal(t, want, res.Version, "%s: verify reports the locked version (SC-001)", key)
+			}
+		}
+		assert.True(t, found, "%s verified", key)
+		assert.True(t, noticeFor(key, "lockfile-shadow", "unknown-version"), "%s: the base image version differs and a notice says so", key)
+	}
+	assert.True(t, noticeFor("python", "workspace-path"), "python's first PATH hit lies under /sandbox")
+
+	// SC-002: no resolved binary under the workspace path.
+	profiles := filepath.Join(dir, ".sandcast", "build", "openshell", "profiles")
+	entries, err := os.ReadDir(profiles)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if e.Name() == "index.yaml" || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(profiles, e.Name()))
+		require.NoError(t, err)
+		var p struct {
+			Binaries []string `yaml:"binaries"`
+		}
+		require.NoError(t, yaml.Unmarshal(data, &p))
+		for _, b := range p.Binaries {
+			assert.False(t, strings.HasPrefix(b, "/sandbox/"), "%s lists %s", e.Name(), b)
+		}
+	}
+	out, err := exec.Command(engine, "image", "inspect", "--format", `{{index .Config.Labels "io.sandcast.profiles-index"}}`, img).Output()
+	require.NoError(t, err)
+	var label struct {
+		IDs     []string `json:"ids"`
+		Flagged []string `json:"flagged"`
+	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(out), &label), "label %q", out)
+	assert.Contains(t, label.IDs, "pypi")
+	assert.NotContains(t, label.Flagged, "pypi", "the adapted pypi profile is not flagged (SC-002)")
+}
+
+// lockedVersions returns the first locked version of every tool in a mise
+// lockfile, keyed by tool name.
+func lockedVersions(t *testing.T, path string) map[string]string {
+	t.Helper()
+	var lock struct {
+		Tools map[string][]struct {
+			Version string `toml:"version"`
+		} `toml:"tools"`
+	}
+	_, err := toml.DecodeFile(path, &lock)
+	require.NoError(t, err)
+	out := map[string]string{}
+	for tool, entries := range lock.Tools {
+		if len(entries) > 0 {
+			out[tool] = entries[0].Version
+		}
+	}
+	return out
 }

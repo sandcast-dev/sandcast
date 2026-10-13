@@ -73,14 +73,26 @@ func testProbe(wanted []Wanted) *probe.Result {
 		}
 		checks[w.Key] = probe.CheckResult{ComponentKey: w.Key, Status: status, Version: version}
 	}
+	// The base image ships an older starship outside the workspace path
+	// (shadowed by the locked version) and a go that lives only under the
+	// workspace path (installed).
+	if _, ok := checks["starship"]; ok {
+		checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0",
+			Path: "/usr/bin/starship", Paths: []string{"/usr/bin/starship"}}
+	}
+	if _, ok := checks["go"]; ok {
+		checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.14",
+			Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go"}}
+	}
 	return &probe.Result{
 		Facts: probe.Facts{
 			Digest: testDigest, Reference: "ghcr.io/nvidia/openshell-community/sandboxes/base:latest", Platform: "linux/arm64",
-			OS:             probe.OS{ID: "ubuntu", IDLike: "debian", Name: "Ubuntu", Version: "24.04"},
-			PackageManager: "apt-get",
-			User:           probe.User{Name: "sandbox", UID: 1000, GID: 1000, Group: "sandbox", Home: "/sandbox", Shell: "/bin/bash"},
-			Shells:         []string{"/bin/bash", "/bin/sh"},
-			ProbedAt:       "2026-10-08T12:00:00Z",
+			OS:               probe.OS{ID: "ubuntu", IDLike: "debian", Name: "Ubuntu", Version: "24.04"},
+			PackageManager:   "apt-get",
+			User:             probe.User{Name: "sandbox", UID: 1000, GID: 1000, Group: "sandbox", Home: "/sandbox", Shell: "/bin/bash"},
+			Shells:           []string{"/bin/bash", "/bin/sh"},
+			HomeRCResetsPath: []string{".bashrc"},
+			ProbedAt:         "2026-10-08T12:00:00Z",
 		},
 		Checks: checks,
 	}
@@ -439,8 +451,52 @@ func TestBuildDeltaEdgeCases(t *testing.T) {
 		assert.Equal(t, ActionShadow, p.Component("go").Action)
 		assert.Equal(t, SectionMise, p.Component("go").FragmentName)
 		assert.Contains(t, p.Mise.TOML, `go = "1.25"`)
-		assert.Contains(t, p.ProbeDelta, DeltaEntry{ComponentKey: "go", Status: "incompatible", InstalledVersion: "1.20.0", RequiredVersion: "1.25", Action: ActionShadow})
+		assert.Contains(t, p.ProbeDelta, DeltaEntry{ComponentKey: "go", Status: "incompatible", InstalledVersion: "1.20.0", RequiredVersion: "1.25", LockedVersion: "1.25.14", Action: ActionShadow,
+			Notices: []string{"lockfile-shadow: go: base image has 1.20.0, mise.lock pins 1.25.14 for linux/arm64; installing 1.25.14"}})
 		assert.NotContains(t, keysOf(p.Unresolved), "go")
+	})
+
+	t.Run("present at the locked version is skipped", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.24.0", Paths: []string{"/usr/bin/starship"}}
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("starship").Action)
+		for _, n := range p.Notices {
+			assert.NotContains(t, n, "starship:")
+		}
+	})
+
+	t.Run("lock entry without the target platform fails first", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.24.0", Paths: []string{"/usr/bin/starship"}}
+		in.Platform = Selected{Value: "linux/amd64", Source: "flag"}
+		_, err := Build(in)
+		var le *LockError
+		require.ErrorAs(t, err, &le)
+		assert.Equal(t, "linux-x64", le.Platform)
+		require.Len(t, le.Errors, 1)
+		assert.Equal(t, "starship", le.Errors[0].Key, "a present tool still fails for the missing platform")
+	})
+
+	t.Run("present tool without lock entry keeps todays rule", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		delete(in.Lock.Tools, "starship")
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0", Paths: []string{"/usr/bin/starship"}}
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("starship").Action)
+	})
+
+	t.Run("container target keeps a home binary", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Target = manifest.TargetContainer
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("go").Action, "no workspace volume replaces the home directory")
+		for _, n := range p.Notices {
+			assert.NotContains(t, n, "workspace-path")
+		}
 	})
 
 	t.Run("incompatible package covered by a stored fragment", func(t *testing.T) {
@@ -485,7 +541,7 @@ func TestWriteOutputs(t *testing.T) {
 	lock, err := os.ReadFile("testdata/mise.lock")
 	require.NoError(t, err)
 	require.NoError(t, WriteOutputs(dir, p, lock))
-	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "mise/sandcast-mise.sh", "policy.yaml"} {
+	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "policy.yaml"} {
 		_, err := os.Stat(dir + "/" + f)
 		assert.NoError(t, err, f)
 	}
@@ -547,4 +603,21 @@ func TestSelectAddsGitForHarnessPlugins(t *testing.T) {
 	for _, w := range wanted {
 		assert.NotEqual(t, "git", w.Key, "no plugins, no implicit git")
 	}
+}
+
+func TestHomeRCNotices(t *testing.T) {
+	facts := probe.Facts{User: probe.User{Home: "/sandbox"}, HomeRCResetsPath: []string{".bashrc", ".profile"}}
+	assert.Equal(t, []string{
+		"home-rc-path: image: /sandbox/.bashrc resets PATH; sandcast re-applies the mise shims after it",
+		"home-rc-path: image: /sandbox/.profile resets PATH; sandcast re-applies the mise shims after it",
+	}, homeRCNotices(facts, manifest.TargetOpenShell, true))
+	assert.Contains(t, homeRCNotices(facts, manifest.TargetContainer, true)[0], "bash sessions that read it lose the directories")
+	assert.Contains(t, homeRCNotices(facts, manifest.TargetOpenShell, false)[0], "bash sessions that read it lose the directories", "nothing re-applies shims without mise")
+	assert.Empty(t, homeRCNotices(probe.Facts{}, manifest.TargetOpenShell, true))
+}
+
+func TestFactsOfCopiesHomeRCResetsPath(t *testing.T) {
+	f := factsOf(probe.Facts{HomeRCResetsPath: []string{".bashrc"}})
+	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)
+	assert.Nil(t, factsOf(probe.Facts{}).HomeRCResetsPath)
 }

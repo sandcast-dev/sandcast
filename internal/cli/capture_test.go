@@ -93,3 +93,25 @@ func TestHarnessListDiscover(t *testing.T) {
 	assert.Contains(t, ta.stdout.String(), "nothing configured")
 	assert.Equal(t, ExitUsage, ta.run("harness", "discover", "vscode"))
 }
+
+func TestComponentsMatchPinnedColumn(t *testing.T) {
+	ta := newTestApp(t)
+	fixture, err := filepath.Abs("../../tests/fixtures/pinned-project")
+	require.NoError(t, err)
+	require.Equal(t, 0, ta.run("components", "match", fixture, "--no-host"), ta.stderr.String())
+	out := ta.stdout.String()
+	assert.Contains(t, out, "PINNED")
+	assert.Regexp(t, `rust\s+project\s+-\s+1\.95\.0\s`, out)
+	assert.Regexp(t, `node\s+project\s+-\s+20\.11\.1\s`, out)
+
+	ta.stdout.Reset()
+	require.Equal(t, 0, ta.run("components", "match", fixture, "--no-host", "--json"))
+	var res capture.Result
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &res))
+	assert.NotNil(t, res.Notes)
+	for _, p := range res.Proposals {
+		if p.Key == "python" {
+			assert.Equal(t, []capture.PinnedVersion{{Value: "3.14.5", File: ".python-version", Kind: capture.PinExact}}, p.PinnedVersions)
+		}
+	}
+}

@@ -8,7 +8,7 @@ POSIX sh, idempotent, safe to source more than once. Replaces `/etc/profile.d/sa
 
 Responsibilities:
 
-1. Export every `MISE_*` variable the image `ENV` sets, with the same values.
+1. Export every `MISE_*` variable the image `ENV` sets, with the same values, followed by the component and harness environment of the plan (`image.env`, for example `RUSTUP_HOME`, `GOPATH`, `CLAUDE_CONFIG_DIR`), without `PATH`. Added during implementation: a session without `RUSTUP_HOME` and `CARGO_HOME` makes the rust shims look under the workspace home, and without `GOTOOLCHAIN=local` the go command may download toolchains (SC-005).
 2. Define `_sandcast_path`, which prepends `/opt/mise/shims` to `PATH` unless it is already the first element.
 3. Call `_sandcast_path`.
 4. In bash only: append `_sandcast_path` to the `PROMPT_COMMAND` array, and in a login non-interactive bash set the self-removing `DEBUG` trap (R-05, subject to the phase 1 spike).

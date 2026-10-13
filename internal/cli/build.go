@@ -25,7 +25,10 @@ type buildReport struct {
 	AllowedDomains string             `json:"allowed_domains,omitempty"`
 	Verify         *verify.Report     `json:"verify,omitempty"`
 	Resolutions    []build.Resolution `json:"resolutions"`
-	Error          string             `json:"error,omitempty"`
+	// Notices repeats the plan notices, followed by runtime notices
+	// (FR-002, R-15).
+	Notices []string `json:"notices"`
+	Error   string   `json:"error,omitempty"`
 }
 
 func (a *App) buildCommand() *cobra.Command {
@@ -67,7 +70,7 @@ is never retried. --verify runs every component check afterwards.`,
 			}
 			a.logf("building %s (log: %s)", env.Manifest.Target(planned.Plan.Target).Ref(), env.Layout.RelToRoot(planned.Dir+"/"+build.BuildLogName))
 			built, err := pipeline.Build(cmd.Context(), env, planned, opts)
-			report := buildReportOf(env, built)
+			report := buildReportOf(env, planned, built)
 			if err != nil {
 				report.Error = err.Error()
 			}
@@ -123,8 +126,11 @@ func (a *App) printLogTail(path string, n int) {
 	}
 }
 
-func buildReportOf(env pipeline.Env, built *pipeline.Built) buildReport {
-	r := buildReport{Flagged: []string{}, Resolutions: []build.Resolution{}}
+func buildReportOf(env pipeline.Env, planned *pipeline.Planned, built *pipeline.Built) buildReport {
+	r := buildReport{Flagged: []string{}, Resolutions: []build.Resolution{}, Notices: []string{}}
+	if planned != nil && planned.Plan != nil {
+		r.Notices = append(r.Notices, planned.Plan.Notices...)
+	}
 	if built == nil || built.Build == nil {
 		return r
 	}
@@ -158,9 +164,6 @@ func printBuildReport(a *App, r buildReport) {
 		if r.StageImage != "" {
 			_, _ = fmt.Fprintf(a.Stdout, "stage image kept as %s\n", r.StageImage)
 		}
-		if r.Verify == nil {
-			return
-		}
 	} else {
 		_ = keyValue(a.Stdout,
 			"image", r.Image,
@@ -174,6 +177,9 @@ func printBuildReport(a *App, r buildReport) {
 		for _, id := range r.Flagged {
 			_, _ = fmt.Fprintf(a.Stdout, "flagged: profile %s: %s\n", id, r.flagReasons[id])
 		}
+	}
+	for _, n := range r.Notices {
+		_, _ = fmt.Fprintf(a.Stdout, "notice: %s\n", n)
 	}
 	if r.Verify != nil {
 		_, _ = fmt.Fprintln(a.Stdout)

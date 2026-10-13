@@ -1,0 +1,24 @@
+# 60-shell: session environment and curated bash configuration
+USER root
+COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh
+RUN chmod 0644 /etc/profile.d/sandcast-env.sh
+RUN <<'SANDCAST_EOF'
+set -eu
+rc=
+for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc; do
+  if [ -f "$f" ]; then rc=$f; break; fi
+done
+[ -n "$rc" ] || rc=/etc/bash.bashrc
+if ! grep -qsF '# sandcast: session environment' "$rc"; then
+  cat >> "$rc" <<'SANDCAST_RC'
+
+# sandcast: session environment
+[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
+SANDCAST_RC
+fi
+SANDCAST_EOF
+COPY shell/sandcast.sh /etc/profile.d/sandcast.sh
+RUN chmod 0644 /etc/profile.d/sandcast.sh \
+ && for rc in /etc/bash.bashrc /etc/bashrc; do \
+      if [ -f "$rc" ]; then grep -qs '/etc/profile.d/sandcast.sh' "$rc" || printf '\n[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh\n' >> "$rc"; fi; \
+    done

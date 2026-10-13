@@ -76,6 +76,9 @@ type ImageFacts struct {
 	PackageManager string   `yaml:"package_manager" json:"package_manager"`
 	User           User     `yaml:"user" json:"user"`
 	Shells         []string `yaml:"shells" json:"shells"`
+	// HomeRCResetsPath lists the files in the default user's home that
+	// assign PATH without referencing $PATH (R-05).
+	HomeRCResetsPath []string `yaml:"home_rc_resets_path,omitempty" json:"home_rc_resets_path,omitempty"`
 }
 
 // OS identifies the base image operating system.
@@ -112,7 +115,15 @@ type DeltaEntry struct {
 	Status           string `yaml:"status" json:"status"`
 	InstalledVersion string `yaml:"installed_version,omitempty" json:"installed_version,omitempty"`
 	RequiredVersion  string `yaml:"required_version,omitempty" json:"required_version,omitempty"`
-	Action           string `yaml:"action" json:"action"`
+	// LockedVersion is the version mise.lock locks for the target platform
+	// (mise components with a lock entry only).
+	LockedVersion string `yaml:"locked_version,omitempty" json:"locked_version,omitempty"`
+	// IgnoredPaths are binary paths the workspace rule discarded.
+	IgnoredPaths []string `yaml:"ignored_paths,omitempty" json:"ignored_paths,omitempty"`
+	Action       string   `yaml:"action" json:"action"`
+	// Notices explain decisions that depart from a plain present or
+	// missing result; plan.Build moves them into the plan's notices.
+	Notices []string `yaml:"-" json:"-"`
 }
 
 // Component is one resolved component with its rendered fragment.

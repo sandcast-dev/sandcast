@@ -70,8 +70,8 @@ You do not need to list components that sandcast adds by itself: the shell progr
 
 | Field | Type | Rules |
 |-------|------|-------|
-| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. |
-| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. Write it with `sandcast manifest set-shell`. |
+| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. With `zsh`, the final user's login shell is `/bin/zsh` (created and kept users alike) and the zsh new-user wizard is disabled; on the OpenShell target, an interactive terminal session that OpenShell starts in bash also switches to a zsh login shell. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment to stay in bash. See [the session environment](guides/build.md#the-session-environment). |
+| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. sandcast prepends two lines that re-apply the mise shims and mark the file as read for verify. Write it with `sandcast manifest set-shell`. |
 | `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. |
 
 ### targets
@@ -167,6 +167,10 @@ The user file merges over the shipped registry by entry name, per target type:
 - A user entry marked as default clears the shipped default of its target type.
 
 After merging, every target type must have exactly one default. Unknown fields in either file are errors. `sandcast base-images list` shows the merged result.
+
+### The workspace path
+
+For the OpenShell target, the final user's home directory of a base image is its workspace path: OpenShell may mount the workspace volume over it at runtime (`/sandbox` on `nvidia-community-base`). The path comes from the probed image facts, never from a fixed name. A tool the base image provides only under the workspace path counts as missing and sandcast installs it; a tool whose first `PATH` hit lies there but which also exists elsewhere is taken from the other copy. The plan reports both cases as `workspace-path` notices. The container target has no workspace path. See [the build guide](guides/build.md#the-probe-delta).
 
 ### Resolving the base image
 
@@ -360,11 +364,11 @@ All sandcast files in a project live under `.sandcast/`. The top level holds com
 | `plan.yaml` | `plan`, `build` | The build plan. |
 | `mise/mise.toml` | `plan`, `build` | The generated mise configuration, when mise tools are planned. |
 | `mise/mise.lock` | `plan`, `build` | A copy of `.sandcast/mise.lock` for the build context. |
-| `mise/sandcast-mise.sh` | `plan`, `build` | Profile script that keeps the mise shims on the `PATH` of login shells. |
 | `policy.yaml` | `plan`, `build` | The image-embedded OpenShell policy (OpenShell target only). |
 | `Containerfile` | `build` | The pass-1 image definition. |
 | `Containerfile.final` | `build` | The pass-2 image definition that adds the adapted profiles. |
 | `shell/sandcast.zsh` or `shell/sandcast.sh` | `build` | The curated shell configuration for the build context. |
+| `shell/sandcast-env.sh` | `build` | The session environment script, installed as `/etc/profile.d/sandcast-env.sh` (see [the session environment](guides/build.md#the-session-environment)). |
 | `harness/` | `build` | Harness files staged for the build context. |
 | `build.log` | `build` | The engine output of both passes. |
 | `profiles/<id>.yaml` | `build`, `profiles export` | The adapted provider profiles. |

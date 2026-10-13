@@ -5,6 +5,28 @@ Changing a pin below requires an entry in this file.
 
 ## Unreleased
 
+### Field feedback fixes (feature 002-field-feedback-fixes)
+
+- #1: the lockfile decides tool versions; a base image tool at a different version than `mise.lock` is shadowed with the locked version.
+- #2: binaries that resolve only under the workspace path are ignored for the OpenShell target and installed.
+- #3: `sandcast components match` reports pinned versions from project files, and the capture skill proposes them.
+- #4: manifest component entries can declare `bins` for components no tier defines.
+- #5: harness discovery proposes a source for local marketplaces that are git checkouts with a remote.
+- #6: skill bundle snippets run in sh, bash and zsh and always remove their temporary files.
+- #7: harness discovery marks every skill and plugin source as portable or not portable.
+- #8: `sandcast init` accepts `--image`, `--platform` and `--push`; reference and remote gateway warnings.
+- #9: emulation notice for emulation-sensitive components and a cross-architecture build guide.
+- #10: the build report carries the fully qualified image reference, the push result and the digest.
+- #11: interactive and exec sessions get the mise tools, the `MISE_*` settings and the curated shell; verify checks the session environment.
+
+### Compatibility
+
+- Probe cache format 2: the first plan after the upgrade runs one full re-probe per base image.
+- Skill bundle 0.2.0: `sandcast skills check` reports installed skills as outdated.
+- Images with `shell.program: zsh` now switch interactive terminal sessions from bash to zsh. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment to stay in bash.
+
+### Standalone build (feature 001-sandcast-standalone-build)
+
 First release of the standalone sandcast tool (feature 001-sandcast-standalone-build).
 
 ### Core build (User Story 1)

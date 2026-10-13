@@ -15,6 +15,7 @@ const (
 	linePkgMgr = "pkgmgr"
 	lineUser   = "user"
 	lineShells = "shells"
+	lineHomeRC = "homerc"
 	lineCheck  = "check"
 	factsLines = 4
 )
@@ -22,11 +23,12 @@ const (
 // rawCheck is one check line of the probe output. Timeout is set when
 // timeout(1) stopped the check.
 type rawCheck struct {
-	Key     string `json:"key"`
-	Exit    int    `json:"exit"`
-	Path    string `json:"path"`
-	Out     string `json:"out"`
-	Timeout bool   `json:"timeout"`
+	Key     string   `json:"key"`
+	Exit    int      `json:"exit"`
+	Path    string   `json:"path"`
+	Paths   []string `json:"paths"`
+	Out     string   `json:"out"`
+	Timeout bool     `json:"timeout"`
 }
 
 // errNoProbeLines is the Parse error for an output without any probe line.
@@ -40,9 +42,13 @@ type shellsLine struct {
 	List []string `json:"list"`
 }
 
+type homeRCLine struct {
+	ResetsPath []string `json:"resets_path"`
+}
+
 // Parse reads the output of a probe script. facts is nil when the output has
-// no facts lines (a partial probe); when one facts line is present, all four
-// must be. Lines that do not start with "{" are ignored, unknown line types
+// no facts lines (a partial probe); when one facts line is present, the os,
+// pkgmgr, user and shells lines must be. The homerc line is optional. Lines that do not start with "{" are ignored, unknown line types
 // too. A malformed JSON line, a duplicate line or an output without any probe
 // line is an error.
 func Parse(stdout []byte) (*Facts, []rawCheck, error) {
@@ -77,6 +83,13 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 			var sh shellsLine
 			err = json.Unmarshal(line, &sh)
 			facts.Shells = dedupe(sh.List)
+		case lineHomeRC:
+			var rc homeRCLine
+			err = json.Unmarshal(line, &rc)
+			facts.HomeRCResetsPath = dedupe(rc.ResetsPath)
+			if len(facts.HomeRCResetsPath) == 0 {
+				facts.HomeRCResetsPath = nil
+			}
 		case lineCheck:
 			var c rawCheck
 			if c, err = parseCheck(line, keys); err == nil {
@@ -98,10 +111,14 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 	if len(seen) == 0 && len(checks) == 0 {
 		return nil, nil, errNoProbeLines
 	}
+	required := len(seen)
+	if seen[lineHomeRC] {
+		required--
+	}
 	if len(seen) == 0 {
 		return nil, checks, nil
 	}
-	if len(seen) != factsLines {
+	if required != factsLines {
 		var missing []string
 		for _, t := range []string{lineOS, linePkgMgr, lineUser, lineShells} {
 			if !seen[t] {
@@ -129,6 +146,9 @@ func parseCheck(line []byte, keys map[string]bool) (rawCheck, error) {
 		return c, fmt.Errorf("duplicate check line for %s", c.Key)
 	}
 	keys[c.Key] = true
+	if len(c.Paths) == 0 {
+		c.Paths = nil
+	}
 	return c, nil
 }
 

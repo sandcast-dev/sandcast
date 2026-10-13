@@ -64,3 +64,20 @@ func keptUser(u probe.User) FinalUser {
 	}
 	return FinalUser{Name: name, UID: u.UID, GID: u.GID, Group: group, Home: home}
 }
+
+// WorkspacePath is the directory OpenShell may mount the workspace volume
+// over at runtime (spec "Workspace path"): the final user's home for the
+// OpenShell target, which OpenShell v0.1.3 uses as the session HOME and
+// workspace root. It comes from the image facts, never a fixed /sandbox.
+// The container target has no workspace volume, so it returns "" and the
+// workspace rule is off (FR-003).
+func WorkspacePath(facts probe.Facts, target string) string {
+	if target != manifest.TargetOpenShell {
+		return ""
+	}
+	home := FinalUserFor(facts, target).Home
+	if home == "" || home == "/" {
+		return ""
+	}
+	return home
+}

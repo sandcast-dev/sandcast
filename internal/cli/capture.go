@@ -57,12 +57,15 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 			if len(res.Proposals) == 0 {
 				_, _ = fmt.Fprintln(a.Stdout, "nothing detected")
 			}
-			tb := newTable(a.Stdout, "COMPONENT", "SOURCE", "VERSION", "EVIDENCE")
+			tb := newTable(a.Stdout, "COMPONENT", "SOURCE", "VERSION", "PINNED", "EVIDENCE")
 			for _, p := range res.Proposals {
-				tb.row(p.Key, p.Source, orDash(p.DetectedVersion), strings.Join(p.Evidence, "; "))
+				tb.row(p.Key, p.Source, orDash(p.DetectedVersion), orDash(p.PinnedSummary()), strings.Join(p.Evidence, "; "))
 			}
 			if err := tb.flush(); err != nil {
 				return err
+			}
+			for _, n := range res.Notes {
+				_, _ = fmt.Fprintf(a.Stdout, "note: %s\n", n)
 			}
 			names := make([]string, 0, len(res.Available))
 			for _, av := range res.Available {

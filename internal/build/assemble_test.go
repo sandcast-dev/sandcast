@@ -1,6 +1,8 @@
 package build
 
 import (
+	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -141,4 +143,129 @@ func TestFromReferenceReplacesPinnedDigest(t *testing.T) {
 	assert.Equal(t, "ghcr.io/x/y:1@"+testDigest, fromReference("ghcr.io/x/y:1", testDigest))
 	assert.Equal(t, "ghcr.io/x/y:1@"+testDigest, fromReference("ghcr.io/x/y:1@sha256:"+strings.Repeat("a", 64), testDigest))
 	assert.Equal(t, "localhost:5000/y@"+testDigest, fromReference("localhost:5000/y", testDigest))
+}
+
+// TestShellSection covers the 60-shell variants of contracts/image-shell.md.
+func TestShellSection(t *testing.T) {
+	envLine := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh"
+	tests := []struct {
+		name    string
+		mutate  func(p *plan.Plan)
+		present []string
+		absent  []string
+		golden  string
+		order   []string
+	}{
+		{
+			name:    "openshell zsh with rc and created user",
+			present: []string{"COPY shell/sandcast.zsh", SessionEnvMarker, ShellSwitchMarker, ShellSwitchHook, "zsh-newuser-install() { :; }", envLine},
+			absent:  []string{"usermod -s"},
+		},
+		{
+			name:    "openshell zsh without rc and kept user",
+			mutate:  func(p *plan.Plan) { p.Shell.RC, p.Shell.RCPath = "", ""; p.FinalUser.Created = false },
+			present: []string{"# 60-shell: session environment\n", SessionEnvMarker, ShellSwitchHook, "zsh-newuser-install", "usermod -s /bin/zsh sandbox", "chsh -s /bin/zsh sandbox", `sed -i 's#^\(sandbox:.*:\)[^:]*$#\1/bin/zsh#' /etc/passwd`},
+			absent:  []string{"COPY shell/sandcast.zsh"},
+			golden:  "testdata/shell-zsh-kept-user.golden",
+		},
+		{
+			name: "openshell without mise but with image env ships the env script",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "none"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+			},
+			present: []string{"COPY shell/sandcast-env.sh", SessionEnvMarker},
+			absent:  []string{ShellSwitchMarker, "zshenv"},
+		},
+		{
+			name: "openshell bash program renders no switch hook",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
+			},
+			present: []string{"COPY shell/sandcast.sh /etc/profile.d/sandcast.sh", SessionEnvMarker, envLine},
+			absent:  []string{ShellSwitchMarker, "zshenv", "usermod"},
+			golden:  "testdata/shell-bash.golden",
+			// The curated bash rc runs after the session environment in an
+			// interactive bash, so its tools are on PATH.
+			order: []string{SessionEnvMarker, "/etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh"},
+		},
+		{
+			name: "zsh in the base image gets the zshenv block",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "none"}
+				p.ImageFacts.Shells = []string{"/bin/bash", "/usr/bin/zsh"}
+			},
+			present: []string{"zsh-newuser-install", SessionEnvMarker},
+			absent:  []string{ShellSwitchMarker, "usermod"},
+		},
+		{
+			name: "container target has no bash rc block",
+			mutate: func(p *plan.Plan) {
+				p.Target = "container"
+				p.Policy = ""
+				p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
+			},
+			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", "usermod -s /bin/zsh root"},
+			absent:  []string{"/etc/bash.bashrc", ShellSwitchMarker},
+		},
+		{
+			name: "nothing to do renders no section",
+			mutate: func(p *plan.Plan) {
+				p.Target = "container"
+				p.Policy = ""
+				p.Shell = plan.Shell{Program: "none"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+			},
+			absent: []string{"# 60-shell"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testPlan(t)
+			if tt.mutate != nil {
+				tt.mutate(p)
+			}
+			got, err := Assemble(p)
+			require.NoError(t, err)
+			for _, s := range tt.present {
+				assert.Contains(t, got, s)
+			}
+			for _, s := range tt.absent {
+				assert.NotContains(t, got, s)
+			}
+			last := -1
+			for _, o := range tt.order {
+				i := strings.Index(got, o)
+				require.GreaterOrEqual(t, i, 0, o)
+				assert.Greater(t, i, last, "order: %s", o)
+				last = i
+			}
+			if tt.golden != "" {
+				section, err := shellSection(p)
+				require.NoError(t, err)
+				testutil.Golden(t, tt.golden, []byte(section))
+			}
+		})
+	}
+}
+
+// TestShellSwitchHookBehavior runs the hook in bash: without a terminal it
+// must not switch shells (FR-008, acceptance scenario 4).
+func TestShellSwitchHookBehavior(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	out, err := exec.Command(bash, "--norc", "-i", "-c", ShellSwitchHook+"\necho stayed-in-bash").CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Contains(t, string(out), "stayed-in-bash")
+	out, err = exec.Command(bash, "-c", ShellSwitchHook+"\necho non-interactive").CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Contains(t, string(out), "non-interactive")
+}
+
+func TestCuratedRC(t *testing.T) {
+	p := testPlan(t)
+	assert.Equal(t, "_sandcast_path 2>/dev/null || true\nSANDCAST_RC_LOADED=1\nautoload -Uz compinit && compinit -C\n", CuratedRC(p))
 }

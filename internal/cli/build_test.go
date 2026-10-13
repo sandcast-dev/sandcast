@@ -16,6 +16,8 @@ import (
 
 	"github.com/rhuss/sandcast/internal/build"
 	"github.com/rhuss/sandcast/internal/engine"
+	"github.com/rhuss/sandcast/internal/pipeline"
+	"github.com/rhuss/sandcast/internal/plan"
 )
 
 func TestBuildVerifyEndToEnd(t *testing.T) {
@@ -214,4 +216,75 @@ func TestReadLineHonoursCancel(t *testing.T) {
 	line, err = (&App{Stdin: strings.NewReader("")}).readLine(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, line)
+}
+
+// TestBuildReportRepeatsPlanNotices checks that plan notices reach the JSON
+// report and the console as notice: lines (FR-002).
+func TestBuildReportRepeatsPlanNotices(t *testing.T) {
+	ta := newTestApp(t)
+	ta.project(t)
+	env, err := ta.pipelineEnv()
+	require.NoError(t, err)
+	notice := plan.Notice(plan.NoticeLockfileShadow, "gh", "base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0")
+	planned := &pipeline.Planned{Plan: &plan.Plan{Notices: []string{notice}}}
+	built := &pipeline.Built{Build: &build.Result{Image: "localhost/demo:latest", Containerfile: filepath.Join(ta.dir, ".sandcast", "build", "openshell", "Containerfile")}}
+	rep := buildReportOf(env, planned, built)
+	assert.Equal(t, []string{notice}, rep.Notices)
+
+	data, err := json.Marshal(rep)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"notices":["lockfile-shadow: gh: `)
+
+	printBuildReport(ta.App, rep)
+	assert.Contains(t, ta.stdout.String(), "notice: "+notice+"\n")
+
+	empty := buildReportOf(env, nil, nil)
+	data, err = json.Marshal(empty)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"notices":[]`)
+}
+
+// TestVerifySessionStartupFailureExit1 checks that a failing session check
+// fails verify and build --verify with exit status 1 and shows up in the
+// session group and in the JSON condition field (FR-010).
+func TestVerifySessionStartupFailureExit1(t *testing.T) {
+	ta := newTestApp(t)
+	ta.project(t)
+	ta.eng.failing["session.zsh.startup"] = true
+	assert.Equal(t, ExitFailure, ta.run("build", "--verify"))
+	out := ta.stdout.String()
+	assert.Contains(t, out, "session checks (cleared environment as in an OpenShell session):")
+	assert.Regexp(t, `session\.zsh\.startup\s+session:zsh\s+FAIL`, out)
+	assert.Regexp(t, `session\.bash-login\.go\s+session:bash-login\s+ok`, out)
+	assert.Contains(t, out, "1 failed")
+
+	ta.stdout.Reset()
+	assert.Equal(t, ExitFailure, ta.run("verify", "--json"))
+	var rep struct {
+		Results []struct {
+			ComponentKey string `json:"component_key"`
+			Condition    string `json:"condition"`
+			OK           bool   `json:"ok"`
+		} `json:"results"`
+		Failed int `json:"failed"`
+	}
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+	assert.Equal(t, 1, rep.Failed)
+	found := false
+	for _, r := range rep.Results {
+		if r.ComponentKey == "session.zsh.startup" {
+			found = true
+			assert.Equal(t, "session:zsh", r.Condition)
+			assert.False(t, r.OK)
+		}
+		if r.ComponentKey == "go" {
+			assert.Equal(t, "image", r.Condition)
+		}
+	}
+	assert.True(t, found)
+
+	ta.eng.failing = map[string]bool{}
+	ta.stdout.Reset()
+	assert.Equal(t, 0, ta.run("verify"))
+	assert.Contains(t, ta.stdout.String(), " 0 failed")
 }

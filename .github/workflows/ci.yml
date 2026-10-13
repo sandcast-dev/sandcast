@@ -24,6 +24,11 @@ jobs:
         with:
           version: v2.14.0
           install-only: true
+      # The skill snippet test runs every snippet under sh, bash and zsh and
+      # fails when a shell is missing.
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - run: make verify
       - run: make build
 

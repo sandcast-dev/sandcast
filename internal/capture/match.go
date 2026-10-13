@@ -39,6 +39,10 @@ type Proposal struct {
 	Source          string   `json:"source"`
 	Evidence        []string `json:"evidence"`
 	DetectedVersion string   `json:"detected_version,omitempty"`
+	// PinnedVersions are the versions the project pins for the component's
+	// mise tool, for project proposals only (FR-004). For go the highest
+	// version comes first.
+	PinnedVersions []PinnedVersion `json:"pinned_versions,omitempty"`
 }
 
 // Available is a component capture can offer as an optional addition.
@@ -53,6 +57,9 @@ type Result struct {
 	Project   string      `json:"project"`
 	Proposals []Proposal  `json:"proposals"`
 	Available []Available `json:"available"`
+	// Notes name project files that could not be read for pinned versions,
+	// as "<file>: <reason>" (FR-004).
+	Notes []string `json:"notes"`
 }
 
 // Options control Match.
@@ -82,9 +89,27 @@ func Match(ctx context.Context, project string, comps []*component.Component, o 
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Project: project, Proposals: []Proposal{}, Available: []Available{}}
+	pins, notes := readPins(project, files)
+	res := &Result{Project: project, Proposals: []Proposal{}, Available: []Available{}, Notes: []string{}}
+	res.Notes = append(res.Notes, notes...)
 	for _, c := range comps {
 		p, ok := matchOne(ctx, c, files, o)
+		if tool := miseTool(c); tool != "" {
+			// A .tool-versions or mise.toml entry for the component's tool
+			// is evidence on its own (R-09).
+			for _, pin := range pins[tool] {
+				if slices.Contains(declaringFiles, path.Base(pin.File)) && !slices.Contains(p.Evidence, pin.File) {
+					p.Evidence = append(p.Evidence, pin.File)
+					if p.Source == "" {
+						p.Source = SourceProject
+					}
+					ok = true
+				}
+			}
+			if p.Source == SourceProject {
+				p.PinnedVersions = pins[tool]
+			}
+		}
 		if ok {
 			res.Proposals = append(res.Proposals, p)
 			continue
@@ -151,6 +176,28 @@ func matchOne(ctx context.Context, c *component.Component, files []string, o Opt
 		p.Evidence = append(p.Evidence, "always included")
 	}
 	return p, p.Source != ""
+}
+
+// miseTool returns the mise tool name of c, "" for other installers.
+func miseTool(c *component.Component) string {
+	if c.Installer.Mise == nil {
+		return ""
+	}
+	return c.Installer.Mise.Tool
+}
+
+// PinnedSummary is the pinned column of the match table: the first exact
+// value, else the first value with its kind, else "".
+func (p Proposal) PinnedSummary() string {
+	for _, v := range p.PinnedVersions {
+		if v.Kind == PinExact {
+			return v.Value
+		}
+	}
+	if len(p.PinnedVersions) > 0 {
+		return p.PinnedVersions[0].Value + " (" + p.PinnedVersions[0].Kind + ")"
+	}
+	return ""
 }
 
 // globMatch matches a component glob against a project-relative path. A

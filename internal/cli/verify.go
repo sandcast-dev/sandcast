@@ -22,7 +22,13 @@ func (a *App) verifyCommand() *cobra.Command {
 		Short: "Run every component check inside the built image",
 		Long: `verify runs each component's check as the image's final user under the
 container engine (no gateway needed), writes verify.yaml, reports every
-result, and exits 1 if any check failed.`,
+result, and exits 1 if any check failed.
+
+For the OpenShell target it always adds session checks: every component
+binary must resolve in a login bash and an interactive bash started with
+OpenShell's cleared environment (only HOME, USER, TERM and the default
+PATH), and with shell.program zsh also in an interactive zsh, whose startup
+must read the curated rc and write nothing to stderr.`,
 		Args: args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			env, err := a.pipelineEnv()
@@ -90,16 +96,35 @@ func checkBuildDir(l fsutil.Layout, dir string) error {
 }
 
 func printVerify(a *App, r *verify.Report) {
-	tb := newTable(a.Stdout, "COMPONENT", "RESULT", "VERSION", "OUTPUT")
+	var image, session []verify.Result
 	for _, res := range r.Results {
-		result := "ok"
-		if !res.OK {
-			result = "FAIL (" + res.Status + ")"
+		if res.IsSession() {
+			session = append(session, res)
+		} else {
+			image = append(image, res)
 		}
-		tb.row(res.ComponentKey, result, orDash(res.Version), firstLine(res.Output))
+	}
+	tb := newTable(a.Stdout, "COMPONENT", "RESULT", "VERSION", "OUTPUT")
+	for _, res := range image {
+		tb.row(res.ComponentKey, verifyResult(res), orDash(res.Version), firstLine(res.Output))
 	}
 	_ = tb.flush()
+	if len(session) > 0 {
+		_, _ = fmt.Fprintln(a.Stdout, "\nsession checks (cleared environment as in an OpenShell session):")
+		tb = newTable(a.Stdout, "CHECK", "CONDITION", "RESULT", "OUTPUT")
+		for _, res := range session {
+			tb.row(res.ComponentKey, res.Condition, verifyResult(res), firstLine(res.Output))
+		}
+		_ = tb.flush()
+	}
 	_, _ = fmt.Fprintf(a.Stdout, "verify %s: %d passed, %d failed\n", r.Image.Reference, r.Passed, r.Failed)
+}
+
+func verifyResult(res verify.Result) string {
+	if res.OK {
+		return "ok"
+	}
+	return "FAIL (" + res.Status + ")"
 }
 
 func firstLine(s string) string {

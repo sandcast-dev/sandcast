@@ -251,6 +251,17 @@ wrote .sandcast/build/openshell/plan.yaml
 
 With `--json`, the command prints the plan itself, with the same fields as `plan.yaml`.
 
+Each `probe_delta` entry of a mise component that `mise.lock` locks for the target platform carries `locked_version`, and entries the workspace rule changed carry `ignored_paths`. Notices with a kind have the form `<kind>: <component or image>: <message>`, follow the other notices sorted by kind and component, and appear as `notice:` lines:
+
+| Kind | Meaning |
+|------|---------|
+| `lockfile-shadow` | The base image has a different version than `mise.lock`; the locked version is installed. |
+| `unknown-version` | The base image's version could not be read, or came from a copy under the workspace path; the locked version is installed. |
+| `workspace-path` | A binary under the workspace path (the final user's home, OpenShell target) was ignored. |
+| `home-rc-path` | A home directory rc file of the base image resets `PATH`. |
+
+See [the build guide](guides/build.md#the-probe-delta) for the rules.
+
 ### sandcast build
 
 Plan, assemble the Containerfile from the plan and the stored fragments, build the image in two passes, and write the adapted profile set.
@@ -263,7 +274,7 @@ sandcast build [flags]
 |------|---------|---------|
 | `--target <openshell\|container>` | the default target | Target to build. |
 | `--platform <platform>` | the manifest `platform`, else the host | Target platform. |
-| `--verify` | off | Run every component check in the built image afterwards. |
+| `--verify` | off | Run every component check in the built image afterwards, plus the session checks for the OpenShell target (see [sandcast verify](#sandcast-verify)). |
 | `--push` | off | Push the final image. The target field `push: true` has the same effect. |
 | `--no-cache-layers` | off | Build pass 1 without the engine layer cache. |
 | `--keep-stage` | off | Keep the pass-1 image as `<image>:sandcast-stage`. |
@@ -285,7 +296,7 @@ COMPONENT        RESULT  VERSION  OUTPUT
 verify localhost/demo:latest: 9 passed, 0 failed
 ```
 
-The JSON report has `image`, `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method) and `error`.
+The JSON report has `image`, `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method), `notices` and `error`. `notices` repeats the plan notices (see [sandcast plan](#sandcast-plan)); the console prints each one as a `notice:` line before the verify report. With `--verify`, the verify report includes the session checks and their `condition`.
 
 ### sandcast verify
 
@@ -302,13 +313,17 @@ sandcast verify [flags]
 
 `verify` reads the checks from `.sandcast/build/<target>/plan.yaml`; without a plan it exits 2. It reports every result, writes `verify.yaml` next to the plan, and exits 1 when any check failed.
 
-The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output), followed by a summary line:
+For the OpenShell target, verify always runs session checks as well, in the same container and without a flag to skip them. They reproduce the environment OpenShell gives a session (`env -i` with only `HOME`, `USER`, `TERM=xterm-256color` and `PATH=/usr/local/bin:/usr/bin:/bin`) and run each component check again: `session.bash-login.<component>` through `bash -lc`, `session.bash-interactive.<component>` fed on stdin to `bash -i`, and with `shell.program: zsh` also `session.zsh.<component>` through `zsh -i -c`. The startup check of the selected shell program, `session.zsh.startup` for zsh or `session.bash.startup` for bash, fails when the interactive shell writes anything to stderr during startup or does not read the curated rc. Notes a shell prints only because verify runs it without a terminal are ignored: bash's `no job control in this shell` lines and zsh's `can't change option: zle`. Session checks count toward `failed` and the exit status. The [build guide](guides/build.md#the-session-environment) explains the session environment.
+
+The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output). Session checks follow in a `session checks` group with the columns `CHECK`, `CONDITION`, `RESULT` and `OUTPUT`. A summary line closes the report:
 
 ```text
 verify localhost/demo:latest: 9 passed, 0 failed
 ```
 
 A `FAIL (timeout)` row is a check that did not finish within the check timeout; its output starts with `timeout:`, or with `not run:` for a check that never ran because the container was stopped first.
+
+Every result in `verify.yaml` and in the JSON report carries a `condition`: `image` for the component checks with the image environment, and `session:bash-login`, `session:bash-interactive` or `session:zsh` for the session checks.
 
 ### sandcast profiles lint
 
@@ -412,17 +427,19 @@ sandcast components match [<dir>] [flags]
 
 `<dir>` defaults to `--project`, else the current directory. Each proposal has a source: `project` (ecosystem files such as `go.mod`), `host` (a tool on the host `PATH`), `harness` (a selected harness) or `always` (base system components). Components that do not match are listed as available. An unknown harness name exits 2.
 
+Project proposals carry `pinned_versions`: every version the project pins for the component's mise tool, each with its `value`, its `file` and its `kind` (`exact` for a full version without an operator, `channel` for a word such as `stable`, `nightly` or `lts/*`, `range` otherwise). The files read are `go.mod` and `go.work` (`go` and `toolchain` directives, the highest version first), `rust-toolchain.toml` and `rust-toolchain` (`channel`), `.python-version`, `pyproject.toml` (`requires-python`), `.nvmrc`, `.node-version`, `package.json` (`engines.node`), `.tool-versions` and `mise.toml` (`[tools]`). An entry in `.tool-versions` or `mise.toml` is evidence for the component that installs the tool. A file that cannot be parsed adds a line to `notes` (printed as `note:` lines) and the match still succeeds. The table's `PINNED` column shows the first exact value, else the first value with its kind.
+
 ```console
 $ sandcast components match tests/fixtures/reference-project --no-host
-COMPONENT        SOURCE   VERSION  EVIDENCE
-ca-certificates  always   -        always included
-curl             always   -        always included
-git              always   -        always included
-go               project  -        go.mod
-iproute2         always   -        always included
-nftables         always   -        always included
-python           project  -        pyproject.toml; uv.lock
-uv               project  -        uv.lock
+COMPONENT        SOURCE   VERSION  PINNED          EVIDENCE
+ca-certificates  always   -        -               always included
+curl             always   -        -               always included
+git              always   -        -               always included
+go               project  -        1.25 (range)    go.mod
+iproute2         always   -        -               always included
+nftables         always   -        -               always included
+python           project  -        >=3.12 (range)  pyproject.toml; uv.lock
+uv               project  -        -               uv.lock
 
 available: bash, bat, claude-code, codex, fzf, gh, jq, lsd, node, opencode, pnpm, ripgrep, rust, starship, yq, zoxide, zsh
 ```

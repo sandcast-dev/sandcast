@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,7 +52,7 @@ func TestDeltaFor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e, reason := DeltaFor(tt.comp, "1.25", tt.check, tt.pm)
+			e, reason := DeltaFor(tt.comp, "1.25", tt.check, DeltaOptions{PackageManager: tt.pm})
 			assert.Equal(t, tt.wantAction, e.Action)
 			assert.Equal(t, tt.comp.Key, e.ComponentKey)
 			if tt.wantReason == "" {
@@ -61,7 +62,7 @@ func TestDeltaFor(t *testing.T) {
 			}
 		})
 	}
-	e, _ := DeltaFor(miseComp("go"), "latest", missing, "apt-get")
+	e, _ := DeltaFor(miseComp("go"), "latest", missing, DeltaOptions{PackageManager: "apt-get"})
 	assert.Empty(t, e.RequiredVersion, "latest is not recorded as a requirement")
 }
 
@@ -71,7 +72,7 @@ func TestDeltaForTimeout(t *testing.T) {
 	timedOut := probe.CheckResult{Status: probe.StatusTimeout, Output: "timeout: the check did not finish within 2m0s", Exit: 124}
 	for _, comp := range []*component.Component{miseComp("go"), pkgComp("zsh", "apt-get")} {
 		t.Run(comp.Key, func(t *testing.T) {
-			e, reason := DeltaFor(comp, "1.25", timedOut, "apt-get")
+			e, reason := DeltaFor(comp, "1.25", timedOut, DeltaOptions{PackageManager: "apt-get"})
 			assert.Empty(t, reason)
 			assert.Equal(t, string(probe.StatusMissing), e.Status)
 			assert.Equal(t, ActionInstall, e.Action)
@@ -118,4 +119,93 @@ func TestMiseToolUsesCheckVersionWhenInstallerHasNone(t *testing.T) {
 	c.Check.Expect.Version = "1.25"
 	got := MiseTools([]Wanted{{Key: "go", Def: c}})
 	assert.Equal(t, []mise.Tool{{Key: "go", Tool: "go", Version: "1.25"}}, got, "the installed version is the one the checks expect")
+}
+
+// TestDeltaForLockAndWorkspace covers every row of the decision table in
+// data-model "Delta entry" plus the rules without a lock entry (FR-001 to
+// FR-003, acceptance scenarios 1 to 5 of User Story 2).
+func TestDeltaForLockAndWorkspace(t *testing.T) {
+	ws := "/sandbox"
+	check := func(status probe.Status, version string, paths ...string) probe.CheckResult {
+		c := probe.CheckResult{Status: status, Version: version, Paths: paths}
+		if len(paths) > 0 {
+			c.Path = paths[0]
+		}
+		return c
+	}
+	tests := []struct {
+		name       string
+		comp       *component.Component
+		check      probe.CheckResult
+		locked     string
+		workspace  string
+		wantAction string
+		wantStatus string
+		wantIgnore []string
+		wantKinds  []string
+	}{
+		{name: "missing installs", comp: miseComp("gh"), check: check(probe.StatusMissing, ""), locked: "2.102.0", workspace: ws, wantAction: ActionInstall, wantStatus: "missing"},
+		{name: "only under workspace installs", comp: miseComp("python"), check: check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3"), locked: "3.14.5", workspace: ws,
+			wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/.uv/python/bin/python3"}, wantKinds: []string{NoticeWorkspacePath}},
+		{name: "incompatible only under workspace installs", comp: miseComp("python"), check: check(probe.StatusIncompatible, "3.10.0", "/sandbox/.venv/bin/python3"), locked: "3.14.5", workspace: ws,
+			wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/.venv/bin/python3"}, wantKinds: []string{NoticeWorkspacePath}},
+		{name: "first hit under workspace shadows with unknown version", comp: miseComp("python"), check: check(probe.StatusPresent, "3.14.5", "/sandbox/.venv/bin/python3", "/usr/bin/python3"), locked: "3.14.5", workspace: ws,
+			wantAction: ActionShadow, wantStatus: "present", wantIgnore: []string{"/sandbox/.venv/bin/python3"}, wantKinds: []string{NoticeWorkspacePath, NoticeUnknownVersion}},
+		{name: "outside and equal skips", comp: miseComp("gh"), check: check(probe.StatusPresent, "2.102.0", "/usr/bin/gh"), locked: "2.102.0", workspace: ws, wantAction: ActionSkip, wantStatus: "present"},
+		{name: "equal with v prefix skips", comp: miseComp("gh"), check: check(probe.StatusPresent, "v2.102.0", "/usr/bin/gh"), locked: "2.102.0", workspace: ws, wantAction: ActionSkip, wantStatus: "present"},
+		{name: "outside and different shadows", comp: miseComp("gh"), check: check(probe.StatusPresent, "2.93.0", "/usr/bin/gh"), locked: "2.102.0", workspace: ws,
+			wantAction: ActionShadow, wantStatus: "present", wantKinds: []string{NoticeLockfileShadow}},
+		{name: "incompatible and different shadows", comp: miseComp("node"), check: check(probe.StatusIncompatible, "20.1.0", "/usr/bin/node"), locked: "24.3.0", workspace: ws,
+			wantAction: ActionShadow, wantStatus: "incompatible", wantKinds: []string{NoticeLockfileShadow}},
+		{name: "unknown present version shadows", comp: miseComp("codex"), check: check(probe.StatusPresent, "", "/usr/local/bin/codex"), locked: "0.162.1", workspace: ws,
+			wantAction: ActionShadow, wantStatus: "present", wantKinds: []string{NoticeUnknownVersion}},
+		{name: "workspace copy later on PATH is no notice", comp: miseComp("gh"), check: check(probe.StatusPresent, "2.102.0", "/usr/bin/gh", "/sandbox/bin/gh"), locked: "2.102.0", workspace: ws,
+			wantAction: ActionSkip, wantStatus: "present"},
+		{name: "no lock entry present skips", comp: miseComp("gh"), check: check(probe.StatusPresent, "2.93.0", "/usr/bin/gh"), workspace: ws, wantAction: ActionSkip, wantStatus: "present"},
+		{name: "no lock entry unknown version skips", comp: miseComp("gh"), check: check(probe.StatusPresent, "", "/usr/bin/gh"), workspace: ws, wantAction: ActionSkip, wantStatus: "present"},
+		{name: "no lock entry incompatible shadows", comp: miseComp("gh"), check: check(probe.StatusIncompatible, "2.0.0", "/usr/bin/gh"), workspace: ws, wantAction: ActionShadow, wantStatus: "incompatible"},
+		{name: "no lock entry mixed paths counts as present", comp: miseComp("python"), check: check(probe.StatusIncompatible, "3.10.0", "/sandbox/.venv/bin/python3", "/usr/bin/python3"), workspace: ws,
+			wantAction: ActionSkip, wantStatus: "incompatible", wantIgnore: []string{"/sandbox/.venv/bin/python3"}, wantKinds: []string{NoticeWorkspacePath}},
+		{name: "package only under workspace installs", comp: pkgComp("git", "apt-get"), check: check(probe.StatusPresent, "2.43.0", "/sandbox/bin/git"), workspace: ws,
+			wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/bin/git"}, wantKinds: []string{NoticeWorkspacePath}},
+		{name: "package mixed paths counts as present", comp: pkgComp("git", "apt-get"), check: check(probe.StatusPresent, "2.43.0", "/sandbox/bin/git", "/usr/bin/git"), workspace: ws,
+			wantAction: ActionSkip, wantStatus: "present", wantIgnore: []string{"/sandbox/bin/git"}, wantKinds: []string{NoticeWorkspacePath}},
+		{name: "container target keeps a home binary", comp: miseComp("python"), check: check(probe.StatusPresent, "3.14.5", "/sandbox/.uv/python/bin/python3"), locked: "3.14.5",
+			wantAction: ActionSkip, wantStatus: "present"},
+		{name: "workspace prefix is not a parent", comp: miseComp("gh"), check: check(probe.StatusPresent, "2.102.0", "/sandboxes/bin/gh"), locked: "2.102.0", workspace: ws, wantAction: ActionSkip, wantStatus: "present"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, reason := DeltaFor(tt.comp, "latest", tt.check, DeltaOptions{PackageManager: "apt-get", LockedVersion: tt.locked, Platform: "linux/arm64", WorkspacePath: tt.workspace})
+			assert.Empty(t, reason)
+			assert.Equal(t, tt.wantAction, e.Action)
+			assert.Equal(t, tt.wantStatus, e.Status)
+			assert.Equal(t, tt.wantIgnore, e.IgnoredPaths)
+			assert.Equal(t, tt.locked, e.LockedVersion)
+			var kinds []string
+			for _, n := range e.Notices {
+				kind, _, _ := strings.Cut(n, ": ")
+				kinds = append(kinds, kind)
+				assert.True(t, strings.HasPrefix(n, kind+": "+tt.comp.Key+": "), n)
+			}
+			assert.Equal(t, tt.wantKinds, kinds)
+		})
+	}
+
+	e, _ := DeltaFor(miseComp("gh"), "latest", check(probe.StatusPresent, "2.93.0", "/usr/bin/gh"), DeltaOptions{LockedVersion: "2.102.0", Platform: "linux/arm64", WorkspacePath: ws})
+	assert.Equal(t, []string{"lockfile-shadow: gh: base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0"}, e.Notices)
+	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3.14"), DeltaOptions{LockedVersion: "3.14.5", WorkspacePath: ws})
+	assert.Equal(t, []string{"workspace-path: python: found only under /sandbox (workspace path): /sandbox/.uv/python/bin/python3.14; installing it"}, e.Notices)
+}
+
+func TestWorkspacePath(t *testing.T) {
+	community := probe.Facts{User: probe.User{Name: "sandbox", UID: 998, GID: 998, Home: "/sandbox"}}
+	assert.Equal(t, "/sandbox", WorkspacePath(community, manifest.TargetOpenShell))
+	assert.Empty(t, WorkspacePath(community, manifest.TargetContainer), "no workspace volume for the container target")
+	other := probe.Facts{User: probe.User{Name: "dev", UID: 1001, GID: 1001, Home: "/workspace"}}
+	assert.Equal(t, "/workspace", WorkspacePath(other, manifest.TargetOpenShell), "taken from the facts, not hard-coded")
+	root := probe.Facts{User: probe.User{Name: "root", UID: 0, Home: "/root"}}
+	assert.Equal(t, CreatedUserHome, WorkspacePath(root, manifest.TargetOpenShell), "the created user's home")
+	slash := probe.Facts{User: probe.User{Name: "app", UID: 1234, GID: 1234, Home: "/"}}
+	assert.Empty(t, WorkspacePath(slash, manifest.TargetOpenShell), "a home of / never hides the whole image")
 }

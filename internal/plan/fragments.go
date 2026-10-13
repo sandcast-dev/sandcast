@@ -55,16 +55,10 @@ RUN apk add --no-cache \
 
 var miseTemplate = template.Must(template.New("mise").Parse(`# {{.Section}}: tools installed by mise {{.Pin}} in locked mode
 USER root
-ENV MISE_DATA_DIR={{.DataDir}} \
-    MISE_CONFIG_DIR={{.ConfigDir}} \
-    MISE_CACHE_DIR={{.RuntimeDir}}/cache \
-    MISE_STATE_DIR={{.RuntimeDir}}/state \
-    MISE_TRUSTED_CONFIG_PATHS={{.ConfigDir}} \
-    MISE_USE_VERSIONS_HOST=0 \
-    PATH={{.DataDir}}/shims:$PATH
+ENV {{range .Env}}{{.Name}}={{.Value}} \
+    {{end}}PATH={{.DataDir}}/shims:$PATH
 COPY mise/mise.toml mise/mise.lock {{.ConfigDir}}/
-COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-RUN chmod 0644 {{.ConfigFile}} {{.LockFile}} /etc/profile.d/sandcast-mise.sh \
+RUN chmod 0644 {{.ConfigFile}} {{.LockFile}} \
  && for attempt in 1 2 3; do \
       if curl -fsSL --connect-timeout 20 --max-time 300 -o {{.Binary}} {{.URL}}; then break; fi; \
       if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise {{.Pin}} after 3 attempts: {{.URL}}" >&2; exit 1; fi; \
@@ -137,6 +131,7 @@ func MiseFragment(user FinalUser, pin, misePlatform string) (string, error) {
 		"Binary":     MiseBinary,
 		"User":       user.Name,
 		"Group":      user.Group,
+		"Env":        MiseEnv,
 	})
 }
 
