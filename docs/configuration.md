@@ -239,6 +239,8 @@ A component never carries network endpoints. A top-level `endpoints` key is reje
 | `harnesses` | Harness names chosen during capture, such as `claude-code`. |
 | `always` | `true` proposes the component for every project. Only base system components use it. |
 
+Host detection is a closed set: a tool is proposed from the host only when some component names it in `host_tools`. The capture guide covers [how to extend and manage that list](guides/capture.md#managing-the-detected-host-tool-list).
+
 ### installer
 
 | Kind | Fields | Meaning |
@@ -307,7 +309,7 @@ OpenShell provider profiles come from three tiers. A later tier overrides an ear
 | Order | Tier | Location | Content |
 |-------|------|----------|---------|
 | 1 | `upstream` | `profiles/upstream/v0.1.3/`, embedded | The 17 example profiles of OpenShell v0.1.3, unmodified |
-| 2 | `overlay` | `profiles/overlay/`, embedded | `npm`, `crates-io`, `go-proxy`, `gitlab` |
+| 2 | `overlay` | `profiles/overlay/`, embedded | `npm`, `crates-io`, `go-proxy`, `gitlab`, `claude-code-subscription` |
 | 3 | `project` | `.sandcast/profiles/` in the project | Your own profiles in the same schema |
 
 Profile files use the upstream OpenShell provider profile schema without extensions. When a referenced profile id is defined in more than one tier, the plan records which file won. Besides the three tiers, a build generates an `mcp-<name>` profile for every harness MCP server whose endpoint no agent profile covers; it appears in the adapted set with the tier `project` (see [harness MCP servers](guides/profiles.md#harness-mcp-servers)). The [profiles guide](guides/profiles.md) covers lint, adaptation and import.

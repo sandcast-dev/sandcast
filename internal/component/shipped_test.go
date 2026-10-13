@@ -54,7 +54,7 @@ func TestShippedComponentKeys(t *testing.T) {
 
 func TestShippedComponentsValid(t *testing.T) {
 	ids := knownProfileIDs(t)
-	assert.Len(t, ids, 21, "17 upstream plus 4 overlay profiles")
+	assert.Len(t, ids, 22, "17 upstream plus 5 overlay profiles")
 	for _, c := range loadShipped(t) {
 		t.Run(c.Key, func(t *testing.T) {
 			assert.Equal(t, path.Join("components", c.Key+".yaml"), c.SourceFile, "file name must be <key>.yaml")

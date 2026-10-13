@@ -15,7 +15,7 @@ Profiles come from three tiers. A later tier overrides an earlier one with the s
 | Order | Tier | Location | Profiles |
 |-------|------|----------|----------|
 | 1 | `upstream` | `profiles/upstream/v0.1.3/`, embedded in the binary | The 17 example profiles of OpenShell v0.1.3, byte for byte: `anthropic`, `aws`, `aws-bedrock`, `aws-s3`, `claude-code`, `codex`, `copilot`, `cursor`, `deepinfra`, `github`, `google-cloud`, `google-vertex-ai`, `nvidia`, `oci-genai`, `openai`, `openrouter`, `pypi` |
-| 2 | `overlay` | `profiles/overlay/`, embedded in the binary | `npm`, `crates-io`, `go-proxy`, `gitlab` |
+| 2 | `overlay` | `profiles/overlay/`, embedded in the binary | `npm`, `crates-io`, `go-proxy`, `gitlab`, `claude-code-subscription` |
 | 3 | `project` | `.sandcast/profiles/` in the project | Your own profiles |
 
 Two files with the same id inside one tier are an error.

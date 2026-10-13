@@ -58,7 +58,7 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - Component tiers: shipped (25 components), remote registry with checksum-verified refresh, project components and promoted recipes.
 - mise as the installer: generated `mise.toml`, `sandcast lock` through the host mise, locked installs into `/opt/mise` with shims on `PATH`.
 - Deterministic build plan (`plan.yaml`), Containerfile assembled from fixed sections, two-pass build with the adapted profile set copied into the image and `io.sandcast.*` labels.
-- OpenShell provider profiles: the 17 upstream examples vendored at v0.1.3, an overlay for npm, crates.io, the Go module proxy and GitLab, built-in lint mirroring v0.1.3, adaptation of `binaries` to resolved paths, and import through the `openshell` CLI at workspace or platform scope.
+- OpenShell provider profiles: the 17 upstream examples vendored at v0.1.3, an overlay for npm, crates.io, the Go module proxy, GitLab and Claude Code subscription (OAuth) login, built-in lint mirroring v0.1.3, adaptation of `binaries` to resolved paths, and import through the `openshell` CLI at workspace or platform scope.
 - Image-embedded OpenShell policy from the pinned default plus component needs; no network entries.
 - Redaction of credential shapes in manifests, fragments and every build output.
 
@@ -78,7 +78,7 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - OpenShell v0.1.3 (commit e1f3c82c): vendored example profiles, profile lint rules, default sandbox policy, `openshell` CLI for the import step, gateway image `ghcr.io/nvidia/openshell/gateway:0.1.3` for `make test-gateway`.
 - mise v2026.10.4 inside images; host `mise` 2026.9.16 or newer for `sandcast lock`.
 - Remote component registry v0.1.0.
-- Manifest schema version 1, plan schema version 1, skill bundle 0.1.0.
+- Manifest schema version 1, plan schema version 1, skill bundle 0.1.1.
 
 ### OpenShell pin refresh v0.1.2 to v0.1.3
 

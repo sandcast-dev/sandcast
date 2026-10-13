@@ -86,6 +86,42 @@ The skill keeps `always` proposals unless you remove them, sets a `version` only
 
 When you want a tool that no tier defines, there are two ways forward. Add it with `optional: true`, and `/sandcast-build` offers to write an install fragment for it. Or define it first in `.sandcast/components/<key>.yaml` (see [component definitions](../configuration.md#component-definitions)).
 
+### Managing the detected host-tool list
+
+Host detection is a closed set, not a scan of your `PATH`. A host tool is proposed only when some component defines it in `match.host_tools`, so the detectable set is exactly the union of the `host_tools` of every component across the three tiers (shipped, registry, project). A binary that no component names is never proposed from the host, even when it is installed. A binary that resolves only through a shell alias or function is also not detected: `host_tools` uses an absolute `PATH` lookup, not the shell. Detect the real tool behind the alias by giving it a component instead.
+
+The shipped components that declare `host_tools` today are `bash`, `bat`, `fzf`, `gh`, `jq`, `lsd`, `ripgrep` (binary `rg`), `starship`, `yq`, `zoxide` and `zsh`. Language toolchains such as `go`, `python`, `node` and `rust` are proposed from project files rather than the host, and base tools such as `git`, `curl` and `ca-certificates` use `match.always`.
+
+Inspect the current set:
+
+```sh
+sandcast components list --json          # every key and its winning tier
+sandcast components show <key>           # the effective definition, including host_tools
+sandcast components match . --host       # what matched in this project and on this host
+```
+
+Extend or change the set through the component tiers; a later tier overrides an earlier one with the same key (see [component tiers](../configuration.md#component-tiers)).
+
+- **Detect a new host binary.** Add a project component at `.sandcast/components/<key>.yaml` with `match.host_tools: [<binary>]`, plus an `installer` and a `check` so the tool can also be built into the image. For example, to detect and install `shellcheck`:
+
+  ```yaml
+  key: shellcheck
+  name: ShellCheck
+  match:
+    host_tools: [shellcheck]
+  installer:
+    mise:
+      tool: shellcheck
+  check:
+    command: shellcheck --version
+  ```
+
+- **Change detection of an existing tool.** Give a project component the same `key` as a shipped or registry component and set the `host_tools` you want. Because the project tier wins, your definition replaces the one that shipped (the plan records a notice naming the winning and losing file).
+
+- **Share across projects.** Publish the component to the [remote component registry](../configuration.md#remote-component-registry) so a whole team picks it up with `sandcast components refresh`, without a new sandcast release; or contribute it to the shipped set in `components/`.
+
+The `match.host_tools` field is defined in the [match reference](../configuration.md#match); the [component README](../../components/README.md) covers writing a full definition.
+
 ## Shell curation
 
 The image gets a curated copy of your interactive shell configuration, installed under `/etc` for the final user. Host configurations carry plugin managers, macOS paths and host-only tools that break inside a Linux sandbox, so the skill applies fixed rules. They encode the failures recorded while the image build skill of cc-deck was developed. sandcast curates zsh and bash; for any other login shell, the skill asks whether to skip the shell configuration or write a minimal one with you.

@@ -99,7 +99,7 @@ func TestResolveShippedTiers(t *testing.T) {
 	set, overrides, err := Resolve(os.DirFS(upstreamDir), os.DirFS(overlayDir), nil)
 	require.NoError(t, err)
 	assert.Empty(t, overrides, "the overlay adds ids and shadows none")
-	assert.Len(t, set, 21)
+	assert.Len(t, set, 22)
 	for _, id := range []string{"npm", "crates-io", "go-proxy", "gitlab"} {
 		assert.Equal(t, TierOverlay, set[id].Tier, id)
 	}
