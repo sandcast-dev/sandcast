@@ -28,7 +28,9 @@ jobs:
       - run: make build
 
   integration:
-    runs-on: ubuntu-latest
+    # sandcast needs podman 5 (heredoc RUN instructions); Ubuntu 24.04 ships
+    # podman 4.9, Ubuntu 26.04 ships podman 5.
+    runs-on: ubuntu-26.04
     needs: verify
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +42,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman
           podman version
+          major=$(podman version --format '{{.Client.Version}}' | cut -d. -f1)
+          test "$major" -ge 5 || { echo "podman 5 or newer required"; exit 1; }
       # sandcast lock needs a host mise; the integration tests fail instead of
       # skipping without it because CI is set. The release comes from the pin
       # in internal/version.MisePin and is checked against SHASUMS256.txt.
