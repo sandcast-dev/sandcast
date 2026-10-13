@@ -87,3 +87,35 @@ func TestManifestSetShell(t *testing.T) {
 	assert.Equal(t, ExitUsage, ta.run("manifest", "set-shell"))
 	assert.Equal(t, ExitUsage, ta.run("manifest", "set-shell", "--program", "fish"))
 }
+
+// TestManifestValidateWarnings covers FR-012: a namespace-less Docker Hub
+// reference is a warning on the console and in JSON, valid stays true and
+// the exit status 0; plan repeats it as a reference notice.
+func TestManifestValidateWarnings(t *testing.T) {
+	ta := newTestApp(t)
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo\n", "image: docker.io/demo\n", 1))
+	ta.write(t, ".sandcast/mise.lock", testLock)
+	require.Equal(t, 0, ta.run("manifest", "validate"), ta.stdout.String())
+	assert.Contains(t, ta.stdout.String(), "valid\n")
+	assert.Contains(t, ta.stdout.String(), "warning: $.targets.openshell.image: docker.io/demo resolves to docker.io/library/demo; add your namespace (docker.io/<user>/demo)\n")
+
+	ta.stdout.Reset()
+	require.Equal(t, 0, ta.run("manifest", "validate", "--json"))
+	var rep validateReport
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+	assert.True(t, rep.Valid)
+	require.Len(t, rep.Warnings, 1)
+	assert.Equal(t, "$.targets.openshell.image", rep.Warnings[0].Path)
+
+	ta.stdout.Reset()
+	require.Equal(t, 0, ta.run("plan", "--json"), ta.stderr.String())
+	var p struct {
+		Notices []string `json:"notices"`
+	}
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &p))
+	assert.Contains(t, p.Notices, "reference: targets.openshell.image: docker.io/demo resolves to docker.io/library/demo; add your namespace (docker.io/<user>/demo)")
+
+	ta.stdout.Reset()
+	require.Equal(t, 0, ta.run("plan", "--target", "container", "--json"), ta.stderr.String())
+	assert.NotContains(t, ta.stdout.String(), "reference: targets.openshell", "only the planned target's reference")
+}

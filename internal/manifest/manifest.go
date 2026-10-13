@@ -16,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml/parser"
 
 	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/imageref"
 	"github.com/rhuss/sandcast/internal/redact"
 	"github.com/rhuss/sandcast/internal/version"
 )
@@ -164,6 +165,32 @@ func (m *Manifest) Harness(name string) *HarnessRef {
 		}
 	}
 	return nil
+}
+
+// Warnings returns findings that do not make the manifest invalid (R-16):
+// a target image that names a Docker Hub repository without a namespace
+// (a bare name or docker.io/<name>) resolves to docker.io/library/<name>,
+// the namespace of the official images, which is almost never what a
+// sandbox image means (FR-012).
+func (m *Manifest) Warnings() []Diagnostic {
+	var out []Diagnostic
+	for _, name := range m.TargetNames() {
+		t := m.Target(name)
+		if t == nil || t.Image == "" {
+			continue
+		}
+		ref, err := imageref.Normalize(t.Image)
+		if err != nil || !ref.DockerHubNoNamespace() {
+			continue
+		}
+		base := strings.TrimPrefix(ref.Repository, "library/")
+		out = append(out, Diagnostic{
+			Path: "$.targets." + name + ".image",
+			Message: fmt.Sprintf("%s resolves to %s; add your namespace (docker.io/<user>/%s)",
+				t.Image, ref.Name(), base),
+		})
+	}
+	return out
 }
 
 // Diagnostic is one validation finding with its location.
@@ -521,20 +548,42 @@ func SortedKeys(m map[string]string) []string {
 }
 
 // Skeleton returns the manifest sandcast init writes.
-func Skeleton(name, baseImage, target string) *Manifest {
+func Skeleton(name, baseImage, target string, opts ...SkeletonOptions) *Manifest {
+	var o SkeletonOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	m := &Manifest{
 		SchemaVersion: version.ManifestSchemaVersion,
 		Name:          name,
 		BaseImage:     baseImage,
+		Platform:      o.Platform,
 		Components:    []ComponentRef{},
 	}
-	image := "localhost/" + name
+	t := &Target{Image: "localhost/" + name, Tag: o.Tag, Push: o.Push}
+	if o.Image != "" {
+		t.Image = o.Image
+	}
 	if target == TargetContainer {
-		m.Targets.Container = &Target{Image: image}
+		m.Targets.Container = t
 	} else {
-		m.Targets.OpenShell = &Target{Image: image}
+		m.Targets.OpenShell = t
 	}
 	return m
+}
+
+// SkeletonOptions are the sandcast init flags that shape the skeleton
+// (R-17, FR-015). Zero values keep the defaults: localhost/<name>, tag
+// latest, no platform (the host at plan time) and no push.
+type SkeletonOptions struct {
+	// Image is the target image name without tag.
+	Image string
+	// Tag is the target image tag.
+	Tag string
+	// Platform is the manifest platform (linux/amd64 or linux/arm64).
+	Platform string
+	// Push sets targets.<target>.push.
+	Push bool
 }
 
 // Equal reports whether two manifests encode to the same bytes.

@@ -54,6 +54,10 @@ gaps exit 2 without writing anything.`,
 			} else {
 				printPlanSummary(a, p, env.Layout.RelToRoot(filepath.Join(planned.Dir, plan.PlanFile)), !conflicts)
 			}
+			// Engine host facts never enter the plan file (FR-016).
+			for _, n := range pipeline.RuntimeNotices(cmd.Context(), env, planned) {
+				a.logf("notice: %s", n)
+			}
 			if conflicts {
 				for _, c := range p.Conflicts {
 					a.logf("%s", plan.ConflictProblem(c))

@@ -123,6 +123,9 @@ type fakeGateway struct {
 	// failAfter makes every import after the first failAfter imports fail
 	// (0: never).
 	failAfter int
+	// gateways answers "gateway list -o json"; empty fails the call like a
+	// CLI without gateway metadata.
+	gateways string
 }
 
 func (g *fakeGateway) Run(_ context.Context, bin string, argv []string) ([]byte, []byte, error) {
@@ -135,6 +138,8 @@ func (g *fakeGateway) Run(_ context.Context, bin string, argv []string) ([]byte,
 	switch {
 	case joined == "--version":
 		return []byte("openshell " + g.version + "\n"), nil, nil
+	case joined == "gateway list -o json" && g.gateways != "":
+		return []byte(g.gateways), nil, nil
 	case strings.HasPrefix(joined, "profile list"):
 		var items []string
 		for _, id := range g.existing {

@@ -180,3 +180,15 @@ func TestShippedGoPinsToolchain(t *testing.T) {
 func TestShippedComponentsNoConflicts(t *testing.T) {
 	assert.Empty(t, Conflicts(loadShipped(t)))
 }
+
+func TestShippedEmulationUnsafe(t *testing.T) {
+	comps, err := LoadDir(sandcast.Components, TierShipped, sandcast.ComponentsPrefix)
+	require.NoError(t, err)
+	var unsafe []string
+	for _, c := range comps {
+		if c.EmulationUnsafe {
+			unsafe = append(unsafe, c.Key)
+		}
+	}
+	assert.Equal(t, []string{"rust"}, unsafe, "only rust is declared emulation unsafe")
+}

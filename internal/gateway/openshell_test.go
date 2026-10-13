@@ -92,3 +92,37 @@ func TestRunErrorIncludesStderr(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "boom")
 }
+
+func TestActiveGateway(t *testing.T) {
+	ctx := context.Background()
+	list := `[
+  {"active": false, "name": "local", "type": "local", "is_remote": false, "endpoint": "http://127.0.0.1:8080"},
+  {"active": true, "name": "cluster", "type": "remote", "is_remote": true, "endpoint": "https://gw.example.com"}
+]`
+	r := &fakeRunner{answers: map[string]string{"gateway list -o json": list}}
+	c := &Client{Runner: r, Extra: []string{"--gateway", "cluster"}}
+	g, err := c.ActiveGateway(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, g)
+	assert.Equal(t, "cluster", g.Name)
+	assert.True(t, g.Remote())
+	assert.Equal(t, []string{"openshell", "--gateway", "cluster", "gateway", "list", "-o", "json"}, r.calls[0])
+
+	local := &Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": `[{"active": true, "name": "local", "type": "local", "is_remote": false}]`}}}
+	g, err = local.ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.False(t, g.Remote())
+
+	none := &Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": `[{"active": false, "name": "x"}]`}}}
+	g, err = none.ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, g)
+	assert.False(t, g.Remote(), "a nil entry is not remote")
+
+	_, err = (&Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": `{not json`}}}).ActiveGateway(ctx)
+	assert.Error(t, err)
+	_, err = (&Client{Runner: &fakeRunner{err: errors.New("exit status 1")}}).ActiveGateway(ctx)
+	assert.Error(t, err)
+	_, err = (&Client{Runner: &fakeRunner{err: &exec.Error{Name: "openshell", Err: exec.ErrNotFound}}}).ActiveGateway(ctx)
+	assert.ErrorIs(t, err, ErrMissing)
+}

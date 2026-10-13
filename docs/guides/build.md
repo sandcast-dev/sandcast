@@ -278,7 +278,7 @@ A runtime that starts sandboxes from the image can read the label to learn which
 podman image inspect localhost/demo:latest --format '{{index .Labels "io.sandcast.profiles-index"}}'
 ```
 
-After pass 2, sandcast removes the per-run stage image. With `--keep-stage` it instead retags the stage to the stable `<image>:sandcast-stage` and keeps it. It then scans every file in the build directory for credential-shaped values and pushes the image when `--push` or the target field `push: true` asks for it.
+After pass 2, sandcast removes the per-run stage image. With `--keep-stage` it instead retags the stage to the stable `<image>:sandcast-stage` and keeps it. It then scans every file in the build directory for credential-shaped values and pushes the image when `--push` or the target field `push: true` asks for it. The push and its output go to `build.log` under a `### sandcast push: <ref>` heading, and the build report shows the fully qualified reference, whether the image was pushed, the registry digest and the `openshell sandbox create --from <ref>` command. A gateway on a cluster can pull only a pushed registry reference, often for another architecture than your machine's; the [cross-architecture guide](cross-arch.md) shows how to build and push such an image.
 
 ## Step 4: verify
 

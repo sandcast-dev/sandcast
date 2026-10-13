@@ -77,7 +77,7 @@ Then, in the project directory:
 
 6. Create providers from the imported profiles and start a sandbox from the image. The [profiles guide](docs/guides/profiles.md) walks through this step.
 
-Without an agent, start with `sandcast init` and edit the manifest by hand. Steps 2 to 6 stay the same.
+Without an agent, start with `sandcast init` and edit the manifest by hand. Steps 2 to 6 stay the same. For a gateway on a cluster, give init the registry reference, the cluster's platform and push, for example `sandcast init --image quay.io/<user>/<name> --platform linux/amd64 --push`; the default `localhost/<name>` works only with a local gateway that shares the build engine's image storage.
 
 ## An example manifest
 
@@ -139,6 +139,7 @@ Pins change only on purpose and always with a [CHANGELOG](CHANGELOG.md) entry. [
 - [Capture guide](docs/guides/capture.md): installing the skills, running a capture, shell curation and secrets.
 - [Build guide](docs/guides/build.md): from manifest to image, the Containerfile layout, failure handling, fragments, promotion and the container target.
 - [Profiles guide](docs/guides/profiles.md): profile tiers, lint, adaptation, the import step and starting a sandbox.
+- [Cross-architecture guide](docs/guides/cross-arch.md): building a `linux/amd64` image on an arm64 Mac through Rosetta, a remote podman host or CI, and the `emulation` notice.
 - [Refreshing pins](docs/pins.md): updating the OpenShell, mise and component registry pins.
 - [Shipped components](components/README.md): the component file format and the components that ship with the binary.
 - [Golden files](tests/golden/README.md): regenerating the golden test files.

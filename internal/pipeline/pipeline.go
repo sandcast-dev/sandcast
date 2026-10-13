@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rhuss/sandcast"
@@ -238,6 +239,10 @@ type Planned struct {
 	LockData []byte
 	Profiles profile.Set
 	Probe    *probe.Result
+	// EmulationUnsafe lists the planned components that install something
+	// and are known to fail under user-mode emulation. It is not part of the
+	// plan file; RuntimeNotices compares it with the engine host (FR-016).
+	EmulationUnsafe []string
 }
 
 // Plan gathers the inputs and builds the plan. It does not write anything
@@ -305,6 +310,7 @@ func Plan(ctx context.Context, env Env, opts PlanOptions) (*Planned, error) {
 		StoredFragments: stored,
 		Harnesses:       harnesses,
 		Notices:         notices,
+		KindedNotices:   referenceNotices(m, target),
 	})
 	if err != nil {
 		var le *plan.LockError
@@ -323,12 +329,23 @@ func Plan(ctx context.Context, env Env, opts PlanOptions) (*Planned, error) {
 			p.Notices = append(p.Notices, fmt.Sprintf("profile %s: %s overrides %s", ov.ID, ov.Winner, ov.Loser))
 		}
 	}
+	var unsafe []string
+	for _, w := range wanted {
+		if w.Def == nil || !w.Def.EmulationUnsafe {
+			continue
+		}
+		if c := p.Component(w.Key); c != nil && c.Action != plan.ActionSkip {
+			unsafe = append(unsafe, w.Key)
+		}
+	}
+	slices.Sort(unsafe)
 	return &Planned{
-		Plan:     p,
-		Dir:      env.Layout.BuildDir(target),
-		LockData: lockData,
-		Profiles: profiles,
-		Probe:    result,
+		EmulationUnsafe: unsafe,
+		Plan:            p,
+		Dir:             env.Layout.BuildDir(target),
+		LockData:        lockData,
+		Profiles:        profiles,
+		Probe:           result,
 	}, nil
 }
 
@@ -416,4 +433,49 @@ func readStoredFragments(l fsutil.Layout) (map[string]plan.StoredFragment, []str
 		}
 	}
 	return out, problems, nil
+}
+
+// referenceNotices repeats the manifest warnings of target as plan notices
+// of kind reference (FR-012).
+func referenceNotices(m *manifest.Manifest, target string) []string {
+	var out []string
+	prefix := "$.targets." + target + "."
+	for _, w := range m.Warnings() {
+		if strings.HasPrefix(w.Path, prefix) {
+			out = append(out, plan.Notice(plan.NoticeReference, strings.TrimPrefix(w.Path, "$."), w.Message))
+		}
+	}
+	return out
+}
+
+// CrossArchGuide is the guide the emulation notice points to.
+const CrossArchGuide = "docs/guides/cross-arch.md"
+
+// RuntimeNotices returns the notices that depend on the engine host rather
+// than on plan inputs, so they never enter the plan file (FR-016, R-13):
+// an emulation notice for every emulation-unsafe planned component when the
+// build platform's architecture differs from the architecture of the
+// machine the engine runs on (the remote host of a remote connection). An
+// engine that cannot report its architecture yields no notice.
+func RuntimeNotices(ctx context.Context, env Env, planned *Planned) []string {
+	if planned == nil || planned.Plan == nil || len(planned.EmulationUnsafe) == 0 || env.Engine == nil {
+		return nil
+	}
+	platform := planned.Plan.Platform.Value
+	_, want, ok := strings.Cut(platform, "/")
+	if !ok {
+		return nil
+	}
+	want, _, _ = strings.Cut(want, "/")
+	host, err := env.Engine.HostArch(ctx)
+	if err != nil || host == "" || host == want {
+		return nil
+	}
+	out := make([]string, 0, len(planned.EmulationUnsafe))
+	for _, key := range planned.EmulationUnsafe {
+		out = append(out, plan.Notice(plan.NoticeEmulation, key, fmt.Sprintf(
+			"building %s on an %s engine host; %s is known to fail under QEMU user emulation, see %s",
+			platform, host, key, CrossArchGuide)))
+	}
+	return out
 }

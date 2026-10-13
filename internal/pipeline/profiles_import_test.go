@@ -316,3 +316,25 @@ func dirNames(t *testing.T, dir string) []string {
 	}
 	return names
 }
+
+type gwListRunner struct{ out string }
+
+func (r gwListRunner) Run(_ context.Context, _ string, args []string) ([]byte, []byte, error) {
+	if strings.Join(args, " ") == "gateway list -o json" && r.out != "" {
+		return []byte(r.out), nil, nil
+	}
+	return nil, []byte("unsupported"), errors.New("exit status 2")
+}
+
+func TestGatewayWarning(t *testing.T) {
+	ctx := context.Background()
+	remote := &gateway.Client{Runner: gwListRunner{out: `[{"active":true,"name":"c","type":"remote","is_remote":true}]`}}
+	cloud := &gateway.Client{Runner: gwListRunner{out: `[{"active":true,"name":"c","type":"cloud","is_remote":false}]`}}
+	local := &gateway.Client{Runner: gwListRunner{out: `[{"active":true,"name":"l","type":"local","is_remote":false}]`}}
+	failing := &gateway.Client{Runner: gwListRunner{}}
+	assert.Contains(t, GatewayWarning(ctx, remote, "localhost/demo:latest"), "gateway: image: the active gateway c is remote")
+	assert.NotEmpty(t, GatewayWarning(ctx, cloud, "localhost:5000/demo"))
+	assert.Empty(t, GatewayWarning(ctx, remote, "quay.io/x/demo:latest"), "a registry reference is fine")
+	assert.Empty(t, GatewayWarning(ctx, local, "localhost/demo:latest"), "a local gateway shares the storage")
+	assert.Empty(t, GatewayWarning(ctx, failing, "localhost/demo:latest"), "a failed lookup is unknown")
+}

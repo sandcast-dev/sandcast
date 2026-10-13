@@ -228,7 +228,7 @@ func TestBuildReportRepeatsPlanNotices(t *testing.T) {
 	notice := plan.Notice(plan.NoticeLockfileShadow, "gh", "base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0")
 	planned := &pipeline.Planned{Plan: &plan.Plan{Notices: []string{notice}}}
 	built := &pipeline.Built{Build: &build.Result{Image: "localhost/demo:latest", Containerfile: filepath.Join(ta.dir, ".sandcast", "build", "openshell", "Containerfile")}}
-	rep := buildReportOf(env, planned, built)
+	rep := buildReportOf(env, planned, built, nil)
 	assert.Equal(t, []string{notice}, rep.Notices)
 
 	data, err := json.Marshal(rep)
@@ -238,7 +238,7 @@ func TestBuildReportRepeatsPlanNotices(t *testing.T) {
 	printBuildReport(ta.App, rep)
 	assert.Contains(t, ta.stdout.String(), "notice: "+notice+"\n")
 
-	empty := buildReportOf(env, nil, nil)
+	empty := buildReportOf(env, nil, nil, nil)
 	data, err = json.Marshal(empty)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"notices":[]`)
@@ -287,4 +287,205 @@ func TestVerifySessionStartupFailureExit1(t *testing.T) {
 	ta.stdout.Reset()
 	assert.Equal(t, 0, ta.run("verify"))
 	assert.Contains(t, ta.stdout.String(), " 0 failed")
+}
+
+// TestBuildReportImageRefAndPush covers FR-011, FR-013 and SC-006 for both
+// targets and both push states.
+func TestBuildReportImageRefAndPush(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("cd", 32)
+	t.Run("openshell without push", func(t *testing.T) {
+		ta := newTestApp(t)
+		ta.project(t)
+		require.Equal(t, 0, ta.run("build", "--json"), ta.stderr.String())
+		var rep map[string]any
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		assert.Equal(t, "localhost/demo:latest", rep["image_ref"])
+		assert.Equal(t, "openshell sandbox create --from localhost/demo:latest", rep["sandbox_create"])
+		assert.Equal(t, false, rep["pushed"], "pushed is always present")
+		assert.NotContains(t, rep, "digest")
+
+		ta.stdout.Reset()
+		require.Equal(t, 0, ta.run("build"))
+		out := ta.stdout.String()
+		assert.Regexp(t, `image ref:\s+localhost/demo:latest`, out)
+		assert.Regexp(t, `pushed:\s+no`, out)
+		assert.Contains(t, out, "sandbox create: openshell sandbox create --from localhost/demo:latest\n")
+	})
+	t.Run("openshell pushed to docker hub", func(t *testing.T) {
+		ta := newTestApp(t)
+		ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo\n", "image: docker.io/rhuss/demo\n    push: true\n", 1))
+		ta.write(t, ".sandcast/mise.lock", testLock)
+		ta.eng.PushDigests = map[string]string{"docker.io/rhuss/demo:latest": digest}
+		require.Equal(t, 0, ta.run("build", "--json"), ta.stderr.String())
+		var rep buildReport
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		assert.True(t, rep.Pushed)
+		assert.Equal(t, digest, rep.Digest)
+		assert.Equal(t, "docker.io/rhuss/demo:latest", rep.ImageRef)
+		assert.Equal(t, "openshell sandbox create --from docker.io/rhuss/demo:latest", rep.SandboxCreate)
+		found := false
+		for _, n := range rep.Notices {
+			if strings.HasPrefix(n, "docker-hub: image: anonymous pulls from cluster nodes are rate limited") {
+				found = true
+			}
+		}
+		assert.True(t, found, "docker-hub notice: %v", rep.Notices)
+	})
+	t.Run("container target pushed elsewhere", func(t *testing.T) {
+		ta := newTestApp(t)
+		ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo-plain\n", "image: quay.io/rhuss/demo-plain\n    push: true\n", 1))
+		ta.write(t, ".sandcast/mise.lock", testLock)
+		ta.eng.PushDigests = map[string]string{"quay.io/rhuss/demo-plain:latest": digest}
+		require.Equal(t, 0, ta.run("build", "--target", "container", "--json"), ta.stderr.String())
+		var rep buildReport
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		assert.True(t, rep.Pushed)
+		assert.Equal(t, "quay.io/rhuss/demo-plain:latest", rep.ImageRef)
+		assert.Empty(t, rep.SandboxCreate, "no sandbox command for the container target")
+		for _, n := range rep.Notices {
+			assert.NotContains(t, n, "docker-hub")
+		}
+	})
+	t.Run("push fails", func(t *testing.T) {
+		ta := newTestApp(t)
+		ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo\n", "image: quay.io/rhuss/demo\n    push: true\n", 1))
+		ta.write(t, ".sandcast/mise.lock", testLock)
+		ta.eng.PushErr = map[string]error{"quay.io/rhuss/demo:latest": errors.New("unauthorized")}
+		assert.Equal(t, ExitFailure, ta.run("build", "--json"))
+		var rep buildReport
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		assert.False(t, rep.Pushed)
+		assert.Contains(t, rep.Error, "unauthorized")
+		assert.Empty(t, rep.SandboxCreate, "no start command for a failed build")
+		assert.Equal(t, "quay.io/rhuss/demo:latest", rep.ImageRef)
+	})
+}
+
+const rustManifest = `schema_version: 1
+name: demo
+base_image: nvidia-community-base
+components:
+  - key: rust
+targets:
+  openshell:
+    image: localhost/demo
+`
+
+const rustLock = `lockfile_version = 3
+
+[[tools.rust]]
+version = "1.95.0"
+backend = "core:rust"
+specifiers = ["latest"]
+`
+
+// TestEmulationNotice covers FR-016: an emulation-unsafe component in a
+// cross-architecture build prints a notice on plan and build and lands in
+// the build report, while the plan file stays byte-identical; a matching
+// engine host or an engine that cannot report its architecture yields none.
+func TestEmulationNotice(t *testing.T) {
+	planJSON := func(arch string) (string, string) {
+		ta := newTestApp(t)
+		ta.write(t, ".sandcast/manifest.yaml", rustManifest)
+		ta.write(t, ".sandcast/mise.lock", rustLock)
+		ta.eng.HostArchitecture = arch
+		require.Equal(t, 0, ta.run("plan", "--platform", "linux/amd64", "--json"), ta.stderr.String())
+		return ta.stdout.String(), ta.stderr.String()
+	}
+	crossOut, crossErr := planJSON("arm64")
+	assert.Contains(t, crossErr, "notice: emulation: rust: building linux/amd64 on an arm64 engine host; rust is known to fail under QEMU user emulation, see docs/guides/cross-arch.md")
+	nativeOut, nativeErr := planJSON("amd64")
+	assert.NotContains(t, nativeErr, "emulation")
+	unknownOut, unknownErr := planJSON("")
+	assert.NotContains(t, unknownErr, "emulation", "a HostArch error yields no notice")
+	assert.Equal(t, nativeOut, crossOut, "plan --json is byte-identical with and without the notice")
+	assert.Equal(t, nativeOut, unknownOut)
+	assert.NotContains(t, crossOut, "emulation")
+
+	ta := newTestApp(t)
+	ta.write(t, ".sandcast/manifest.yaml", rustManifest)
+	ta.write(t, ".sandcast/mise.lock", rustLock)
+	ta.eng.HostArchitecture = "arm64"
+	require.Equal(t, 0, ta.run("build", "--platform", "linux/amd64", "--json"), ta.stderr.String())
+	var rep buildReport
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+	found := false
+	for _, n := range rep.Notices {
+		found = found || strings.HasPrefix(n, "emulation: rust: ")
+	}
+	assert.True(t, found, "build report carries the emulation notice: %v", rep.Notices)
+	plan, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "plan.yaml"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(plan), "emulation", "the plan file never carries engine facts")
+}
+
+const remoteGateways = `[{"active": true, "name": "cluster", "type": "remote", "is_remote": true}]`
+
+// TestBuildGatewayWarning covers FR-014 for build: a localhost/ image with a
+// remote active gateway is warned about when the openshell CLI is present;
+// a failed lookup or an absent CLI never fails the build.
+func TestBuildGatewayWarning(t *testing.T) {
+	withCLI := func(ta *testApp) {
+		ta.LookPath = func(file string) (string, error) {
+			if file == "podman" || file == "openshell" {
+				return "/usr/bin/" + file, nil
+			}
+			return "", errors.New("not found")
+		}
+	}
+	notices := func(t *testing.T, ta *testApp) []string {
+		t.Helper()
+		require.Equal(t, 0, ta.run("build", "--json"), ta.stderr.String())
+		var rep buildReport
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		return rep.Notices
+	}
+	hasGateway := func(ns []string) bool {
+		for _, n := range ns {
+			if strings.HasPrefix(n, "gateway: image: the active gateway cluster is remote and cannot pull localhost/demo:latest") {
+				return true
+			}
+		}
+		return false
+	}
+
+	ta := newTestApp(t)
+	ta.project(t)
+	withCLI(ta)
+	ta.gw.gateways = remoteGateways
+	ns := notices(t, ta)
+	assert.True(t, hasGateway(ns), "%v", ns)
+
+	ta = newTestApp(t)
+	ta.project(t)
+	withCLI(ta)
+	ta.gw.gateways = `[{"active": true, "name": "local", "type": "local", "is_remote": false}]`
+	assert.False(t, hasGateway(notices(t, ta)), "a local gateway shares the engine storage")
+
+	ta = newTestApp(t)
+	ta.project(t)
+	withCLI(ta)
+	assert.False(t, hasGateway(notices(t, ta)), "a failed lookup yields no warning and the build succeeds")
+
+	ta = newTestApp(t)
+	ta.project(t)
+	ta.gw.gateways = remoteGateways
+	assert.False(t, hasGateway(notices(t, ta)), "without the openshell CLI there is no lookup")
+	for _, c := range ta.gw.calls {
+		assert.NotContains(t, strings.Join(c, " "), "gateway list")
+	}
+}
+
+func TestBuildReportNoticeOrder(t *testing.T) {
+	ta := newTestApp(t)
+	ta.project(t)
+	env, err := ta.pipelineEnv()
+	require.NoError(t, err)
+	planned := &pipeline.Planned{Plan: &plan.Plan{Target: "openshell", Notices: []string{"lockfile-shadow: gh: x"}}}
+	built := &pipeline.Built{Build: &build.Result{Image: "docker.io/rhuss/demo:latest", Pushed: true}}
+	rep := buildReportOf(env, planned, built, []string{"emulation: rust: y"})
+	require.Len(t, rep.Notices, 3)
+	assert.True(t, strings.HasPrefix(rep.Notices[0], "lockfile-shadow: "))
+	assert.True(t, strings.HasPrefix(rep.Notices[1], "emulation: "))
+	assert.True(t, strings.HasPrefix(rep.Notices[2], "docker-hub: "))
 }

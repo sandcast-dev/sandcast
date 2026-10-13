@@ -225,6 +225,7 @@ profiles: [go-proxy]
 | `profiles` | no | OpenShell provider profile ids the component needs. |
 | `targets` | no | `openshell`, `container`, or both (the default when omitted). |
 | `promoted_from` | no | Set by `sandcast promote` on recipes. |
+| `emulation_unsafe` | no | `true` when the tool is known to fail under user-mode emulation (QEMU). `plan` and `build` print an `emulation` notice when the target platform's architecture differs from the container engine host's. The shipped `rust` component sets it. See the [cross-architecture guide](guides/cross-arch.md). |
 
 A component never carries network endpoints. A top-level `endpoints` key is rejected by name, with a message that points to `profiles`. Network access belongs in an OpenShell provider profile.
 
@@ -403,3 +404,6 @@ Probe results are keyed by the image digest together with the platform, because 
 | `XDG_CONFIG_HOME` | the same | When set and `SANDCAST_CONFIG_DIR` is not, the configuration directory is `$XDG_CONFIG_HOME/sandcast`. |
 | `SANDCAST_COMPONENT_REGISTRY_URL` | `components refresh` | Overrides the base URL of the remote component registry. |
 | `OPENSHELL_GATEWAY`, `OPENSHELL_GATEWAY_ENDPOINT` | `profiles import` | Not read by sandcast. The `openshell` CLI inherits them and uses them to select the gateway. |
+| `CONTAINER_CONNECTION`, `CONTAINER_HOST` | every command that runs podman | Not read by sandcast. podman inherits them and builds, runs and pushes on the selected connection, for example a remote amd64 host. The `emulation` notice compares the target platform with that host's architecture. See the [cross-architecture guide](guides/cross-arch.md). |
+| `DOCKER_HOST` | every command that runs docker | Not read by sandcast. docker inherits it, with the same effect as the podman variables. |
+| `SANDCAST_NO_SHELL_SWITCH` | images with `shell.program: zsh` | Not read by sandcast. Set in a sandbox's environment, it keeps an interactive OpenShell session in bash instead of switching to zsh. |

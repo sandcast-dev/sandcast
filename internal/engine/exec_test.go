@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -304,4 +305,115 @@ func TestExecErrorsCarryStderrOnce(t *testing.T) {
 
 	e = &Exec{Bin: "podman", Kind: Podman, Cmd: &recordCmd{err: errors.New("exit status 125")}}
 	assert.EqualError(t, e.Pull(context.Background(), "img", ""), "podman pull: exit status 125", "no dangling separator without stderr")
+}
+
+// digestCmd answers podman push by writing the digest file, docker push by
+// printing its output, and image inspect with RepoDigests.
+type digestCmd struct {
+	digest   string
+	output   string
+	inspect  string
+	fail     bool
+	argsSeen [][]string
+}
+
+func (c *digestCmd) Command(_ context.Context, _ string, args []string, out io.Writer) ([]byte, []byte, error) {
+	c.argsSeen = append(c.argsSeen, args)
+	if args[0] == "push" {
+		if out != nil {
+			_, _ = io.WriteString(out, c.output)
+		}
+		if c.fail {
+			return nil, nil, exitCode(125)
+		}
+		for i, a := range args {
+			if a == "--digestfile" && c.digest != "" {
+				if err := os.WriteFile(args[i+1], []byte(c.digest+"\n"), 0o600); err != nil {
+					return nil, nil, err
+				}
+			}
+		}
+		return nil, nil, nil
+	}
+	return []byte(c.inspect), nil, nil
+}
+
+func TestExecPush(t *testing.T) {
+	dig := "sha256:" + strings.Repeat("b9", 32)
+	other := "sha256:" + strings.Repeat("aa", 32)
+	tests := []struct {
+		name     string
+		kind     string
+		cmd      *digestCmd
+		ref      string
+		want     string
+		wantArgs []string
+		wantErr  string
+	}{
+		{name: "podman digest file", kind: Podman, ref: "localhost:5000/demo/push:1", cmd: &digestCmd{digest: dig, output: "Writing manifest to image destination\n"}, want: dig, wantArgs: []string{"push", "--digestfile"}},
+		{name: "podman without digest", kind: Podman, ref: "quay.io/x/y", cmd: &digestCmd{}, want: ""},
+		{name: "docker push output", kind: Docker, ref: "docker.io/rhuss/demo:latest", cmd: &digestCmd{output: "latest: digest: " + dig + " size: 1234\n"}, want: dig, wantArgs: []string{"push", "docker.io/rhuss/demo:latest"}},
+		{name: "docker repo digests fallback", kind: Docker, ref: "rhuss/demo:latest", cmd: &digestCmd{output: "pushed\n", inspect: `["quay.io/x/demo@` + other + `","rhuss/demo@` + dig + `"]`}, want: dig},
+		{name: "docker no digest", kind: Docker, ref: "rhuss/demo", cmd: &digestCmd{output: "pushed\n", inspect: `[]`}, want: ""},
+		{name: "push fails", kind: Podman, ref: "quay.io/x/y", cmd: &digestCmd{fail: true, output: "Error: unauthorized: access denied\n"}, wantErr: "unauthorized"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &Exec{Bin: tt.kind, Kind: tt.kind, Cmd: tt.cmd}
+			var log strings.Builder
+			got, err := e.Push(context.Background(), tt.ref, &log)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.cmd.output, log.String(), "the push output reaches the log")
+			if tt.wantArgs != nil {
+				assert.Equal(t, tt.wantArgs, tt.cmd.argsSeen[0][:len(tt.wantArgs)])
+			}
+		})
+	}
+}
+
+func TestFakePush(t *testing.T) {
+	f := &Fake{PushDigests: map[string]string{"a": "sha256:x"}, PushErr: map[string]error{"b": errors.New("denied")}}
+	var log strings.Builder
+	d, err := f.Push(context.Background(), "a", &log)
+	require.NoError(t, err)
+	assert.Equal(t, "sha256:x", d)
+	assert.Contains(t, log.String(), "Pushing a")
+	_, err = f.Push(context.Background(), "b", nil)
+	assert.EqualError(t, err, "denied")
+}
+
+func TestExecHostArch(t *testing.T) {
+	tests := []struct {
+		kind, out, want, format string
+	}{
+		{Podman, "arm64\n", "arm64", "{{.Host.Arch}}"},
+		{Podman, "amd64\n", "amd64", "{{.Host.Arch}}"},
+		{Docker, "x86_64\n", "amd64", "{{.Architecture}}"},
+		{Docker, "aarch64\n", "arm64", "{{.Architecture}}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind+"/"+tt.want, func(t *testing.T) {
+			cmd := &recordCmd{stdout: tt.out}
+			e := &Exec{Bin: tt.kind, Kind: tt.kind, Cmd: cmd}
+			got, err := e.HostArch(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, []string{"info", "--format", tt.format}, cmd.args[0])
+		})
+	}
+	_, err := (&Exec{Bin: Podman, Kind: Podman, Cmd: &recordCmd{stdout: "\n"}}).HostArch(context.Background())
+	assert.Error(t, err)
+	_, err = (&Exec{Bin: Podman, Kind: Podman, Cmd: &recordCmd{err: errors.New("cannot connect")}}).HostArch(context.Background())
+	assert.Error(t, err)
+	_, err = (&Fake{}).HostArch(context.Background())
+	assert.Error(t, err, "a fake without an architecture fails like an engine that cannot report it")
+	got, err := (&Fake{HostArchitecture: "amd64"}).HostArch(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "amd64", got)
 }

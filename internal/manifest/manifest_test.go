@@ -285,3 +285,40 @@ func TestParseRefusesCredentialBeforeDecodeError(t *testing.T) {
 		assert.ErrorContains(t, err, "credential-shaped")
 	})
 }
+
+func TestWarningsDockerHubNamespace(t *testing.T) {
+	tests := []struct {
+		image string
+		want  string
+	}{
+		{"docker.io/openshell-demo", "docker.io/openshell-demo resolves to docker.io/library/openshell-demo; add your namespace (docker.io/<user>/openshell-demo)"},
+		{"openshell-demo", "openshell-demo resolves to docker.io/library/openshell-demo; add your namespace (docker.io/<user>/openshell-demo)"},
+		{"docker.io/rhuss/openshell-demo", ""},
+		{"localhost/demo", ""},
+		{"quay.io/demo", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			m := &Manifest{SchemaVersion: 1, Name: "demo", BaseImage: "nvidia-community-base",
+				Targets: Targets{OpenShell: &Target{Image: tt.image}, Container: &Target{Image: "localhost/plain"}}}
+			w := m.Warnings()
+			if tt.want == "" {
+				assert.Empty(t, w)
+				return
+			}
+			require.Len(t, w, 1)
+			assert.Equal(t, Diagnostic{Path: "$.targets.openshell.image", Message: tt.want}, w[0])
+			assert.Empty(t, m.Validate(), "a warning does not make the manifest invalid")
+		})
+	}
+}
+
+func TestSkeletonOptions(t *testing.T) {
+	m := Skeleton("demo", "base", TargetOpenShell, SkeletonOptions{Image: "quay.io/rhuss/demo", Tag: "v1", Platform: "linux/amd64", Push: true})
+	assert.Equal(t, "linux/amd64", m.Platform)
+	assert.Equal(t, &Target{Image: "quay.io/rhuss/demo", Tag: "v1", Push: true}, m.Targets.OpenShell)
+	assert.Empty(t, m.Validate())
+	d := Skeleton("demo", "base", TargetContainer)
+	assert.Equal(t, &Target{Image: "localhost/demo"}, d.Targets.Container)
+	assert.Empty(t, d.Platform)
+}

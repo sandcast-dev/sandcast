@@ -271,7 +271,7 @@ openshell sandbox create --name demo --from localhost/demo:latest \
   --provider demo-claude --provider demo-go --provider demo-docs -- zsh -l
 ```
 
-`--from localhost/demo:latest` works when the gateway uses the same container engine that built the image, for example a gateway with the podman driver on the build host. Otherwise push the image (`sandcast build --push` or `push: true` in the target) and pass the registry reference.
+`--from localhost/demo:latest` works when the gateway uses the same container engine that built the image, for example a gateway with the podman driver on the build host. For any other gateway, push the image (`sandcast build --push` or `push: true` in the target) and copy the `sandbox create:` line that `sandcast build` prints: it carries the fully qualified registry reference of the pushed image. `sandcast build` and `sandcast profiles import` warn when the active gateway is remote and the image is a `localhost/` reference.
 
 ### Smoke test
 

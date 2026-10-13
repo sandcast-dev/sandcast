@@ -156,6 +156,44 @@ func scopeArgs(scope, workspace string) []string {
 	return nil
 }
 
+// GatewayEntry is the part of one "openshell gateway list -o json" entry
+// sandcast reads (R-14).
+type GatewayEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	IsRemote bool   `json:"is_remote"`
+	Active   bool   `json:"active"`
+}
+
+// Remote reports whether the gateway's sandbox driver cannot share the local
+// engine's image storage: a remote or cloud gateway.
+func (g *GatewayEntry) Remote() bool {
+	return g != nil && (g.IsRemote || g.Type == "remote" || g.Type == "cloud")
+}
+
+// ActiveGateway returns the active gateway from the local gateway metadata
+// (openshell gateway list, no admin rights needed). It returns nil without
+// an error when no gateway is active. Callers treat every error as
+// "unknown": the lookup is best effort and never a requirement.
+func (c *Client) ActiveGateway(ctx context.Context) (*GatewayEntry, error) {
+	out, err := c.run(ctx, "gateway", "list", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list []GatewayEntry
+	if text := strings.TrimSpace(string(out)); text != "" && text != "null" {
+		if err := json.Unmarshal([]byte(text), &list); err != nil {
+			return nil, fmt.Errorf("parse openshell gateway list: %w", err)
+		}
+	}
+	for i := range list {
+		if list[i].Active {
+			return &list[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // ListProfiles returns the sorted profile ids visible at scope.
 func (c *Client) ListProfiles(ctx context.Context, scope, workspace string) ([]RemoteProfile, error) {
 	args := append([]string{"profile", "list", "-o", "json"}, scopeArgs(scope, workspace)...)

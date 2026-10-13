@@ -45,6 +45,13 @@ type Fake struct {
 	Platforms map[string]string
 	// ImageLabels maps a reference to its labels.
 	ImageLabels map[string]map[string]string
+	// PushDigests maps a pushed reference to the digest Push returns.
+	PushDigests map[string]string
+	// PushErr fails Push for the listed references.
+	PushErr map[string]error
+	// HostArchitecture is what HostArch returns; empty makes HostArch fail,
+	// as an engine that cannot report it would.
+	HostArchitecture string
 
 	calls []Call
 }
@@ -244,13 +251,33 @@ func (f *Fake) Labels(ctx context.Context, ref string) (map[string]string, error
 	return out, nil
 }
 
-// Push implements Engine.
-func (f *Fake) Push(ctx context.Context, ref string) error {
+// Push implements Engine. It writes one line per push to log.
+func (f *Fake) Push(ctx context.Context, ref string, log io.Writer) (string, error) {
 	f.record(Call{Op: "push", Args: []string{ref}})
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	if log != nil {
+		_, _ = fmt.Fprintf(log, "Pushing %s\n", ref)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.PushErr[ref]; err != nil {
+		return "", err
+	}
+	return f.PushDigests[ref], nil
+}
+
+// HostArch implements Engine.
+func (f *Fake) HostArch(ctx context.Context) (string, error) {
+	f.record(Call{Op: "hostarch"})
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if f.HostArchitecture == "" {
+		return "", fmt.Errorf("fake engine: no host architecture")
+	}
+	return f.HostArchitecture, nil
 }
 
 // ImageNames returns the sorted image names the fake knows.

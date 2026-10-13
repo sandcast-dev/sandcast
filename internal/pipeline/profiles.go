@@ -12,7 +12,9 @@ import (
 	"github.com/rhuss/sandcast/internal/build"
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/gateway"
+	"github.com/rhuss/sandcast/internal/imageref"
 	"github.com/rhuss/sandcast/internal/manifest"
+	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/profile"
 )
 
@@ -235,6 +237,9 @@ type ImportReport struct {
 	// Index is the index.yaml that now records the imported ids and scope;
 	// empty when the import changed nothing (dry run, conflicts, error).
 	Index string `json:"index,omitempty"`
+	// Warnings are gateway notices, for example a localhost/ image with a
+	// remote active gateway (FR-014). They never fail the import.
+	Warnings []string `json:"warnings"`
 	// Error is set when the import stopped part way; the lists above then
 	// hold what the gateway already accepted.
 	Error string `json:"error,omitempty"`
@@ -263,6 +268,16 @@ func Import(ctx context.Context, gw *gateway.Client, dir string, o ImportOptions
 	}
 	if err := gw.CheckVersion(ctx); err != nil {
 		return nil, err
+	}
+	warnings := []string{}
+	if idx, err := profile.ReadIndex(filepath.Join(dir, IndexFile)); err == nil && idx.Image.Name != "" {
+		image := idx.Image.Name
+		if idx.Image.Tag != "" {
+			image += ":" + idx.Image.Tag
+		}
+		if w := GatewayWarning(ctx, gw, image); w != "" {
+			warnings = append(warnings, w)
+		}
 	}
 	if o.Scope == "" {
 		o.Scope = gateway.ScopeWorkspace
@@ -296,7 +311,7 @@ func Import(ctx context.Context, gw *gateway.Client, dir string, o ImportOptions
 	for _, e := range existing {
 		have[e.ID] = true
 	}
-	rep := &ImportReport{Scope: o.Scope, DryRun: o.DryRun, Imported: []string{}, Updated: []string{}, Conflicts: []string{}, Mapping: []IDMap{}}
+	rep := &ImportReport{Scope: o.Scope, DryRun: o.DryRun, Imported: []string{}, Updated: []string{}, Conflicts: []string{}, Mapping: []IDMap{}, Warnings: warnings}
 	var fresh []profile.AdaptedProfile
 	for _, ap := range set.Profiles {
 		rep.Mapping = append(rep.Mapping, IDMap{UpstreamID: ap.UpstreamID, AdaptedID: ap.AdaptedID})
@@ -394,4 +409,22 @@ func updateProfile(ctx context.Context, gw *gateway.Client, staging string, ap p
 		return err
 	}
 	return gw.Update(ctx, ap.AdaptedID, file, o.Scope, o.Workspace)
+}
+
+// GatewayWarning returns a gateway notice when the active gateway is remote
+// and image is a localhost/ reference, which only the build engine's own
+// storage can resolve (FR-014). The lookup is best effort: a missing CLI, a
+// failed lookup or an unknown gateway type yield "", and nothing fails.
+func GatewayWarning(ctx context.Context, gw *gateway.Client, image string) string {
+	ref, err := imageref.Normalize(image)
+	if err != nil || !ref.IsLocalhost() {
+		return ""
+	}
+	active, err := gw.ActiveGateway(ctx)
+	if err != nil || !active.Remote() {
+		return ""
+	}
+	return plan.Notice(plan.NoticeGateway, plan.NoticeSubjectImage, fmt.Sprintf(
+		"the active gateway %s is remote and cannot pull %s from this engine's local storage; set targets.openshell.image to a registry reference the cluster can reach and targets.openshell.push to true",
+		active.Name, ref.String()))
 }

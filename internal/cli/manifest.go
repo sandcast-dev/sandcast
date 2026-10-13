@@ -27,6 +27,8 @@ type validateReport struct {
 	Valid       bool                  `json:"valid"`
 	Manifest    string                `json:"manifest"`
 	Diagnostics []manifest.Diagnostic `json:"diagnostics"`
+	// Warnings never change Valid or the exit status (R-16).
+	Warnings []manifest.Diagnostic `json:"warnings"`
 }
 
 func (a *App) manifestValidateCommand() *cobra.Command {
@@ -40,7 +42,7 @@ func (a *App) manifestValidateCommand() *cobra.Command {
 				return err
 			}
 			path := l.ManifestPath()
-			report := validateReport{Manifest: l.RelToRoot(path), Diagnostics: []manifest.Diagnostic{}}
+			report := validateReport{Manifest: l.RelToRoot(path), Diagnostics: []manifest.Diagnostic{}, Warnings: []manifest.Diagnostic{}}
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return withCode(ExitUsage, fmt.Errorf("read manifest: %w", err))
@@ -58,6 +60,7 @@ func (a *App) manifestValidateCommand() *cobra.Command {
 					return err
 				}
 				report.Diagnostics = append(report.Diagnostics, refs...)
+				report.Warnings = append(report.Warnings, m.Warnings()...)
 			}
 			report.Diagnostics = append(report.Diagnostics, secretDiagnostics(data)...)
 			report.Valid = len(report.Diagnostics) == 0
@@ -77,6 +80,11 @@ func (a *App) manifestValidateCommand() *cobra.Command {
 }
 
 func printDiagnostics(w io.Writer, r validateReport) {
+	defer func() {
+		for _, d := range r.Warnings {
+			_, _ = fmt.Fprintf(w, "warning: %s: %s\n", d.Path, d.Message)
+		}
+	}()
 	if r.Valid {
 		_, _ = fmt.Fprintf(w, "%s: valid\n", r.Manifest)
 		return

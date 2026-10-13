@@ -48,7 +48,7 @@ Errors are printed as `sandcast: <message>` on stderr. A command that has alread
 
 Commands that work on one target take `--target openshell` or `--target container`. The default is `openshell` when the manifest declares it, otherwise `container`. A target the manifest does not declare exits 2.
 
-Commands that pull or build images take `--platform linux/amd64` or `--platform linux/arm64`. The platform is selected in this order: the `--platform` flag, the manifest field `platform`, then the host architecture as `linux/<arch>`. The plan records the value and its source (`flag`, `manifest` or `host`).
+Commands that pull or build images take `--platform linux/amd64` or `--platform linux/arm64`. The platform is selected in this order: the `--platform` flag, the manifest field `platform`, then the host architecture as `linux/<arch>`. The plan records the value and its source (`flag`, `manifest` or `host`). The platform need not match the machine the container engine runs on; the [cross-architecture guide](guides/cross-arch.md) covers Rosetta, remote podman connections (`CONTAINER_CONNECTION`) and CI, and the `emulation` notice for components that fail under emulation.
 
 ## Core build
 
@@ -66,14 +66,28 @@ sandcast init [flags]
 | `--base-image <name-or-ref>` | the registry default for the target | Registry entry name or image reference. |
 | `--target <openshell\|container>` | `openshell` | The target the skeleton declares. |
 | `--force` | off | Overwrite an existing manifest. |
+| `--image <name[:tag]>` | `localhost/<name>` | Target image. A tag is written to `targets.<target>.tag`; a digest is refused. |
+| `--platform <linux/amd64\|linux/arm64>` | unset (the host at plan time) | Writes the manifest's `platform`. |
+| `--push` | off | Writes `targets.<target>.push: true`, so every build pushes the image. |
 
-`init` works in `--project` or the current directory and never searches ancestors. The skeleton declares the image `localhost/<name>` for the chosen target and an empty component list. An existing manifest without `--force` exits 2.
+`init` works in `--project` or the current directory, never searches ancestors and never asks questions. The skeleton declares the image for the chosen target and an empty component list. An existing manifest without `--force` exits 2, and so does an unsupported `--platform` or an invalid `--image`.
+
+Without `--image`, the OpenShell target gets `localhost/<name>`, and init says what that means:
 
 ```console
 $ sandcast init --name demo
 created .sandcast/manifest.yaml (base image nvidia-community-base, target openshell)
 created .sandcast/.gitignore
+note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --image <registry>/demo --platform <os/arch> --push.
 ```
+
+For a gateway on a cluster, name a registry the cluster can pull from, the cluster's architecture and push:
+
+```sh
+sandcast init --name demo --image quay.io/<user>/demo --platform linux/amd64 --push
+```
+
+See the [cross-architecture guide](guides/cross-arch.md) for building a `linux/amd64` image on an arm64 machine.
 
 ### sandcast manifest validate
 
@@ -90,7 +104,17 @@ $ sandcast manifest validate
 .sandcast/manifest.yaml:9: $.components[4].key: component "nosuchtool" is not defined in any tier (shipped, registry, .sandcast/components, .sandcast/recipes) and has no stored fragment
 ```
 
-The JSON report has `valid`, `manifest` and `diagnostics` (each with `path`, `line` and `message`).
+Warnings follow the diagnostics as `warning: <path>: <message>` lines and change neither `valid` nor the exit status. A target image that names a Docker Hub repository without a namespace (a bare `<name>` or `docker.io/<name>`) resolves to the official images' namespace `docker.io/library/<name>`:
+
+```console
+$ sandcast manifest validate
+.sandcast/manifest.yaml: valid
+warning: $.targets.openshell.image: docker.io/demo resolves to docker.io/library/demo; add your namespace (docker.io/<user>/demo)
+```
+
+`sandcast plan` repeats the warning of the planned target as a `reference` notice.
+
+The JSON report has `valid`, `manifest`, `diagnostics` (each with `path`, `line` and `message`) and `warnings` (same shape).
 
 ### sandcast base-images list
 
@@ -296,7 +320,17 @@ COMPONENT        RESULT  VERSION  OUTPUT
 verify localhost/demo:latest: 9 passed, 0 failed
 ```
 
-The JSON report has `image`, `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method), `notices` and `error`. `notices` repeats the plan notices (see [sandcast plan](#sandcast-plan)); the console prints each one as a `notice:` line before the verify report. With `--verify`, the verify report includes the session checks and their `condition`.
+The JSON report has `image`, `image_ref` (the fully qualified reference, for example `docker.io/rhuss/demo:latest` for `rhuss/demo`), `sandbox_create` (`openshell sandbox create --from <image_ref>`, OpenShell target), `pushed` (always present), `digest` (the registry digest, when pushed), `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method), `notices` and `error`. The console shows `image ref`, `pushed`, `digest` and a `sandbox create:` line. A push writes a `### sandcast push: <ref>` section with the engine's output to `build.log`; a failed push fails the build and the report says `pushed: false`.
+
+Besides the plan notices, `notices` carries notices that depend on the engine host or the gateway and never enter the plan file:
+
+| Kind | When |
+|------|------|
+| `emulation` | A component with `emulation_unsafe: true` is installed and the target platform's architecture differs from the engine host's (`podman info` or `docker info`). See the [cross-architecture guide](guides/cross-arch.md). `sandcast plan` prints it to stderr too. |
+| `gateway` | The `openshell` CLI is installed, its active gateway is remote and the OpenShell image is a `localhost/` reference. |
+| `docker-hub` | The image was pushed to `docker.io`: anonymous pulls from cluster nodes are rate limited, so give the gateway's sandbox service account a pull secret or use a registry the cluster already authenticates to. |
+
+An engine host or gateway that cannot be queried produces no notice and never fails the build. `notices` repeats the plan notices (see [sandcast plan](#sandcast-plan)); the console prints each one as a `notice:` line before the verify report. With `--verify`, the verify report includes the session checks and their `condition`.
 
 ### sandcast verify
 
@@ -390,7 +424,9 @@ imported: claude-code (workspace scope)
 imported: go-proxy (workspace scope)
 ```
 
-The JSON report has `scope`, `imported`, `updated`, `conflicts`, `dry_run`, `mapping` (`upstream_id` and `adapted_id` per profile) and `index` (the path of the rewritten `index.yaml`, omitted when the import changed nothing). When an `openshell` call fails part way, the command still prints the profiles the gateway already accepted, sets `error` in the JSON report, and exits 1.
+When the `openshell` CLI reports the active gateway as remote (`openshell gateway list`) and the adapted set belongs to a `localhost/` image, the report starts with a `warning: gateway: image: ...` line: such a gateway cannot pull an image from this engine's local storage, so set `targets.openshell.image` to a registry reference and `targets.openshell.push` to `true`. A failed lookup produces no warning and never fails the import.
+
+The JSON report has `scope`, `imported`, `updated`, `conflicts`, `dry_run`, `mapping` (`upstream_id` and `adapted_id` per profile), `warnings` and `index` (the path of the rewritten `index.yaml`, omitted when the import changed nothing). When an `openshell` call fails part way, the command still prints the profiles the gateway already accepted, sets `error` in the JSON report, and exits 1.
 
 ### sandcast version
 

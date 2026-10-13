@@ -59,6 +59,10 @@ type Inputs struct {
 	StoredFragments map[string]StoredFragment
 	Harnesses       []Harness
 	Notices         []string
+	// KindedNotices are notices with a kind prefix (R-15) gathered outside
+	// the plan, such as reference warnings; they are sorted together with
+	// the plan's own kinded notices.
+	KindedNotices []string
 }
 
 // LockError reports lockfile gaps for the selected platform; plan exits 2.
@@ -133,7 +137,7 @@ func Build(in Inputs) (*Plan, error) {
 		return nil, err
 	}
 	workspace := WorkspacePath(facts, in.Target)
-	var deltaNotices []string
+	deltaNotices := slices.Clone(in.KindedNotices)
 
 	var (
 		packages   []string

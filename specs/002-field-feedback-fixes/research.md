@@ -92,6 +92,7 @@ Research covered the current code paths for every requirement and the upstream O
 
 - **Decision**: Engine interface method `HostArch(ctx) (string, error)`: `podman info --format '{{.Host.Arch}}'` (already GOARCH form) or `docker info --format '{{.Architecture}}'` mapped from `x86_64`/`aarch64`. podman and docker inherit `CONTAINER_CONNECTION`, `CONTAINER_HOST` and `DOCKER_HOST`, so a remote connection reports the remote host. Component schema field `emulation_unsafe: true`, set on `components/rust.yaml`. The plan step collects the keys into `pipeline.Planned` (not serialized), and a `RuntimeNotices` function produces the notice for plan and build output and for the build report.
 - **Rationale**: Keeps the plan file free of host facts (FR-016, determinism).
+- **Implementation note (checkpoint 2)**: Only emulation-unsafe components the plan installs or shadows count. A component the base image already provides at the locked version (`skip`) runs no install step under emulation, so it gets no notice; the sandbox itself runs on the gateway's own architecture. The notice is printed once, in the build report (console `notice:` lines and JSON `notices`), and `sandcast plan` prints it to stderr.
 
 ## R-14 Remote gateway detection (FR-014)
 
