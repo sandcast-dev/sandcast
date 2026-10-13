@@ -31,7 +31,12 @@ const CheckTimeout = 120 * time.Second
 // characters and prints one check line. When the image has a timeout(1)
 // that accepts "timeout SECS CMD" (coreutils, current busybox), every check
 // runs under it with $_tmax seconds; exit 124 (coreutils) or 143 (busybox
-// kills with SIGTERM) then marks the line "timeout":true.
+// kills with SIGTERM) then marks the line "timeout":true. busybox timeout
+// signals only the check's own shell, so a process the check started keeps
+// the output pipe open until it ends on its own. When timeout(1) is not
+// coreutils and setsid(1) exists, the check therefore runs in its own
+// session instead, and a watchdog sends SIGTERM to the whole process group
+// after $_tmax seconds (exit 143).
 //
 // When the image has head(1) with -c and cat(1), the output passes through
 // "head -c $_max" before it reaches a shell variable, so a check that prints
@@ -48,10 +53,27 @@ const scriptHelpers = shell.JSONHelpers + `_cut='?'
 while [ ${#_cut} -lt "$_max" ]; do _cut=$_cut$_cut; done
 _to=
 if timeout 10 /bin/sh -c : >/dev/null 2>&1; then _to=1; fi
+_sg=
+if [ -n "$_to" ] && ! timeout --version >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then _sg=1; fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
 _run() {
-	if [ -n "$_to" ]; then
+	if [ -n "$_sg" ]; then
+		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		(
+			sleep "$_tmax" &
+			_sp=$!
+			trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
+			wait "$_sp" && kill -TERM -"$_cp" 2>/dev/null
+		) </dev/null >/dev/null 2>&1 3>&- 4>&- &
+		_wp=$!
+		wait "$_cp"
+		_rc=$?
+		kill "$_wp" 2>/dev/null
+		wait "$_wp" 2>/dev/null
+		return "$_rc"
+	elif [ -n "$_to" ]; then
 		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
 	else
 		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
