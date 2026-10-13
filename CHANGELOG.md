@@ -7,23 +7,45 @@ Changing a pin below requires an entry in this file.
 
 ### Field feedback fixes (feature 002-field-feedback-fixes)
 
-- #1: the lockfile decides tool versions; a base image tool at a different version than `mise.lock` is shadowed with the locked version.
-- #2: binaries that resolve only under the workspace path are ignored for the OpenShell target and installed.
-- #3: `sandcast components match` reports pinned versions from project files, and the capture skill proposes them.
-- #4: manifest component entries can declare `bins` for components no tier defines.
-- #5: harness discovery proposes a source for local marketplaces that are git checkouts with a remote.
-- #6: skill bundle snippets run in sh, bash and zsh and always remove their temporary files.
-- #7: harness discovery marks every skill and plugin source as portable or not portable.
-- #8: `sandcast init` accepts `--image`, `--platform` and `--push`; reference and remote gateway warnings.
-- #9: emulation notice for emulation-sensitive components and a cross-architecture build guide.
-- #10: the build report carries the fully qualified image reference, the push result and the digest.
-- #11: interactive and exec sessions get the mise tools, the `MISE_*` settings and the curated shell; verify checks the session environment.
+Fixes for the eleven issues from the first real builds ([#1](https://github.com/sandcast-dev/sandcast/issues/1) to [#11](https://github.com/sandcast-dev/sandcast/issues/11)).
 
-### Compatibility
+#### The image matches its inputs (#1, #2, #3)
+
+- The lockfile decides tool versions: a mise component that the base image provides at a version other than the one `mise.lock` locks for the target platform, or at a version the probe cannot read, is planned as `shadow` and installed at the locked version; an equal version stays `skip`. There is no per-component opt-out. The delta records `locked_version`.
+- The probe records every `PATH` hit of a component's binary. For the OpenShell target, a binary that lies only under the workspace path (the final user's home, `/sandbox` on the community base) counts as missing and is installed; when only the first hit lies there, another copy decides and its version counts as unknown. The delta records `ignored_paths`. The container target is unchanged.
+- New plan notices with a stable `<kind>: <subject>: <message>` form, sorted after the other notices: `lockfile-shadow`, `unknown-version`, `workspace-path`, `home-rc-path` (a home rc file of the base image resets `PATH`) and `reference`. `sandcast build` repeats them in its report (`notices`).
+- `sandcast components match` reports `pinned_versions` (value, file, `exact`, `range` or `channel`) from `go.mod`, `go.work`, `rust-toolchain.toml`, `rust-toolchain`, `.python-version`, `pyproject.toml`, `.nvmrc`, `.node-version`, `package.json`, `.tool-versions` and `mise.toml`, a `PINNED` table column, and `notes` for pin files it cannot parse. `.tool-versions` and `mise.toml` entries count as evidence.
+
+#### Sessions get the curated shell (#11)
+
+- `/etc/profile.d/sandcast-env.sh` replaces `/etc/profile.d/sandcast-mise.sh`. It exports every `MISE_*` setting and the component and harness environment (for example `RUSTUP_HOME`, `GOPATH`, `CLAUDE_CONFIG_DIR`) and puts the mise shims first on `PATH`; in bash it re-applies the shims through `PROMPT_COMMAND` and, for `bash -lc`, a self-removing `DEBUG` trap, so home rc files that reset `PATH` no longer hide the tools. The system bash rc of OpenShell images and the system zshenv source it.
+- With `shell.program: zsh`, an interactive terminal session that OpenShell starts in bash switches to a zsh login shell (`SANDCAST_NO_SHELL_SWITCH=1` keeps bash), the final user's login shell is `/bin/zsh` for created and kept users, and the zsh new-user wizard is disabled.
+- The curated rc starts with two lines that re-apply the shims and mark the file as read.
+- `sandcast verify` (and `build --verify`) always adds session checks for the OpenShell target: every component check runs again under OpenShell's cleared environment through `bash -lc`, `bash -i` and, with zsh, `zsh -i -c`, plus a startup check of the selected shell. Results carry a `condition` and count toward the exit status; the console shows them in a `session checks` group.
+
+#### The image reaches the gateway (#8, #9, #10)
+
+- The build report adds `image_ref`, `sandbox_create` (`openshell sandbox create --from <ref>`), `pushed` and `digest`; `build.log` records the push. The engine reads the registry digest with `podman push --digestfile` or from docker's push output.
+- `sandcast init` takes `--image name[:tag]`, `--platform` and `--push`, and explains that the default `localhost/<name>` works only with a local gateway that shares the engine's image storage.
+- `sandcast manifest validate` reports `warnings` (console `warning:` lines) for a Docker Hub reference without a namespace; `valid` and the exit status are unchanged, and plan repeats it as a `reference` notice.
+- Runtime notices that never enter the plan file: `emulation` (a component with the new `emulation_unsafe` field, set on `rust`, in a build whose platform differs from the engine host's architecture), `gateway` (a `localhost/` image while the active `openshell` gateway is remote; also in the `profiles import` report as `warnings`) and `docker-hub` (anonymous pull rate limits after a push to `docker.io`).
+- New guide `docs/guides/cross-arch.md`: Rosetta in the podman machine, a remote amd64 podman connection (`CONTAINER_CONNECTION`, SSH identity limits, the socket-forward workaround, the macOS socket path limit) and CI.
+
+#### Capture works from facts the binary reports (#3, #4, #5, #6, #7, #11)
+
+- Manifest component entries can declare `bins` for components that no tier defines: verify checks them, the conflict check includes them, `sandcast promote` defaults `--bins` to them, and validation and plan reject `bins` on a tier-defined key.
+- `sandcast harness discover` marks every skill and plugin `portable` (with a `reason` when not) and proposes plugins whose local marketplace directory is a git checkout with a remote, with a `remote` object (`url` without credentials, `unpushed_commits`, `uncommitted_changes`, `name_match`). Discovery reads local git state only and never fetches.
+- Skill snippets run unchanged in sh, bash and zsh, remove their temporary file on every path and propagate the exit status of `sandcast`; a test runs every snippet under the three shells.
+- The capture skill proposes exact pinned versions, asks where the image runs and passes `--image`, `--platform` and `--push` to init for a remote gateway, bases its copy offer on the portability marker, presents remote notes for proposed marketplace plugins, and loads a tool's own zsh completion before a kept `compdef` line whose plugin was removed. The build skill declares `bins` instead of adding symlinks.
+
+#### Compatibility
 
 - Probe cache format 2: the first plan after the upgrade runs one full re-probe per base image.
-- Skill bundle 0.2.0: `sandcast skills check` reports installed skills as outdated.
+- Skill bundle 0.2.0: `sandcast skills check` reports installed skills as outdated; run `sandcast skills install`.
 - Images with `shell.program: zsh` now switch interactive terminal sessions from bash to zsh. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment to stay in bash.
+- Images with a base tool at another version than `mise.lock` now install the locked version and grow accordingly.
+- The `engine.Engine` interface gains `HostArch`, and `Push` returns the registry digest.
+- Pins unchanged: OpenShell v0.1.3, mise v2026.10.4, manifest schema 1, plan schema 1.
 
 ### Standalone build (feature 001-sandcast-standalone-build)
 

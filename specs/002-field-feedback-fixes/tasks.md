@@ -141,9 +141,14 @@ Single Go module. `internal/<pkg>/` packages, root-level embedded assets (`compo
 
 **Purpose**: Release notes, full verification, upstream follow-up draft
 
-- [ ] T056 Finalize `CHANGELOG.md` "Unreleased" with every user-visible change from Phases 3 to 6, cross-checked against `docs/cli.md` and `docs/configuration.md` for missing entries (constitution I)
-- [ ] T057 Draft the upstream OpenShell issue from R-20 (interactive sessions should honor the login shell from `/etc/passwd` or `$SHELL` from the sandbox spec, with the v0.1.3 code references) in `specs/002-field-feedback-fixes/upstream-openshell-login-shell.md`; do not file it (filing needs the user's approval of the text)
-- [ ] T058 Run `make verify`, `make test-integration` and `make test-gateway`; regenerate goldens only where a phase changed rendering on purpose, and walk through `specs/002-field-feedback-fixes/quickstart.md`, recording any deviation as a follow-up task; for SC-005, build an image from a manifest with the pinned versions of `tests/fixtures/pinned-project`, run `rustc --version`, `python --version` and `go version` inside the project directory in a session, and confirm no toolchain download appears in the output
+- [X] T056 Finalize `CHANGELOG.md` "Unreleased" with every user-visible change from Phases 3 to 6, cross-checked against `docs/cli.md` and `docs/configuration.md` for missing entries (constitution I)
+- [X] T057 Draft the upstream OpenShell issue from R-20 (interactive sessions should honor the login shell from `/etc/passwd` or `$SHELL` from the sandbox spec, with the v0.1.3 code references) in `specs/002-field-feedback-fixes/upstream-openshell-login-shell.md`; do not file it (filing needs the user's approval of the text)
+- [X] T058 Run `make verify`, `make test-integration` and `make test-gateway`; regenerate goldens only where a phase changed rendering on purpose, and walk through `specs/002-field-feedback-fixes/quickstart.md`, recording any deviation as a follow-up task; for SC-005, build an image from a manifest with the pinned versions of `tests/fixtures/pinned-project`, run `rustc --version`, `python --version` and `go version` inside the project directory in a session, and confirm no toolchain download appears in the output
+
+### Follow-up from T058 (quickstart walk-through, 2026-10-13)
+
+- [ ] T059 mise shims read project configuration: in a session inside a project that has `.tool-versions` or `mise.toml`, every shim call prints `mise WARN ... node@20.11.1 is not in the lockfile` for a tool the image lockfile lacks (seen on `tests/fixtures/pinned-project`), and a project pin of another version than the image's could make a shim fail. SC-005 itself holds (no toolchain download with the network disabled). Research a mise setting that keeps image shims on the image configuration only, and add a session check for it.
+- Not executed in T058: the successful push path of quickstart "Reference, push and digest" against a local registry. The throwaway registry speaks HTTP and the podman machine requires TLS unless its `registries.conf` marks the registry insecure, which this run did not change. The failed-push path (`pushed: false`, error, push section in `build.log`) was observed, and the digest file mechanism was checked by hand against the registry's `Docker-Content-Digest`.
 
 ---
 
