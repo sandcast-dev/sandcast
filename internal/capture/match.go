@@ -187,17 +187,30 @@ func miseTool(c *component.Component) string {
 }
 
 // PinnedSummary is the pinned column of the match table: the first exact
-// value, else the first value with its kind, else "".
+// value, else the first value with its kind, else "". For go the first value
+// is the highest directive across a go.work's modules and is the proposal
+// even when it is not exact, so a lower exact pin never wins.
 func (p Proposal) PinnedSummary() string {
+	if len(p.PinnedVersions) == 0 {
+		return ""
+	}
+	first := p.PinnedVersions[0]
+	if p.Key == "go" {
+		return pinLabel(first)
+	}
 	for _, v := range p.PinnedVersions {
 		if v.Kind == PinExact {
 			return v.Value
 		}
 	}
-	if len(p.PinnedVersions) > 0 {
-		return p.PinnedVersions[0].Value + " (" + p.PinnedVersions[0].Kind + ")"
+	return pinLabel(first)
+}
+
+func pinLabel(v PinnedVersion) string {
+	if v.Kind == PinExact {
+		return v.Value
 	}
-	return ""
+	return v.Value + " (" + v.Kind + ")"
 }
 
 // globMatch matches a component glob against a project-relative path. A

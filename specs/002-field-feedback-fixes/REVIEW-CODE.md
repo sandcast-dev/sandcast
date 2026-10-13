@@ -73,7 +73,7 @@ Verified, no change: podman remote `--digestfile` writes the registry digest (po
 
 | # | Item | Severity | Status | Options |
 |---|------|----------|--------|---------|
-| O5 | go.work proposal can be lower than the highest directive | Minor | AMBIGUOUS | Treat a two-part go directive as exact, or always propose the highest pin for go. |
+| O5 | go.work proposal can be lower than the highest directive | Minor | FIXED (verify gate: for go the first, highest entry is the proposal) | Treat a two-part go directive as exact, or always propose the highest pin for go. |
 | O6 | Profile override notices follow the kinded notices; docs say the reverse | Minor | AMBIGUOUS | Reorder in code or adjust docs. |
 | O7 | Fedora-style images read `/etc/bashrc` only through `~/.bashrc`; an empty home gets neither the session block nor the hook | Minor | AMBIGUOUS | Also append to `/etc/profile.d`, or document the limit. |
 | O8 | DEBUG trap stays active in `bash -l script.sh` | Minor | AMBIGUOUS | Needs a different approach than R-05. |

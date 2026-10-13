@@ -182,4 +182,8 @@ func TestPinnedSummary(t *testing.T) {
 	assert.Equal(t, "", Proposal{}.PinnedSummary())
 	assert.Equal(t, "^20 (range)", Proposal{PinnedVersions: []PinnedVersion{{Value: "^20", Kind: PinRange}}}.PinnedSummary())
 	assert.Equal(t, "20.1.0", Proposal{PinnedVersions: []PinnedVersion{{Value: "lts/*", Kind: PinChannel}, {Value: "20.1.0", Kind: PinExact}}}.PinnedSummary())
+	// go: the highest directive is the proposal even when a lower one is exact.
+	goPins := []PinnedVersion{{Value: "1.27", File: "b/go.mod", Kind: PinRange}, {Value: "1.26.7", File: "a/go.mod", Kind: PinExact}}
+	assert.Equal(t, "1.27 (range)", Proposal{Key: "go", PinnedVersions: goPins}.PinnedSummary())
+	assert.Equal(t, "1.26.7", Proposal{Key: "go", PinnedVersions: goPins[1:]}.PinnedSummary())
 }
