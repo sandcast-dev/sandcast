@@ -143,7 +143,7 @@ func TestDiscover(t *testing.T) {
 		`MCP server socket in ~/.claude.json skipped: transport "ws" cannot be baked`,
 		"plugin disabled-one@claude-plugins-official is disabled",
 		`plugin mystery@unknown-market skipped: the source of marketplace "unknown-market" is unknown`,
-		`plugin local-tool@dev-marketplace skipped: local marketplace "dev-marketplace" cannot be copied into the image and has no git remote: source ~/dev/dev-marketplace resolves to`,
+		`plugin local-tool@dev-marketplace skipped: local marketplace "dev-marketplace" cannot be copied into the image, and git is not available to propose its remote: source ~/dev/dev-marketplace resolves to`,
 		`plugin secret-kit@private-tools: credentials removed from the URL of marketplace "private-tools"`,
 		`plugin token-kit@token-query skipped: the URL of marketplace "token-query" carries a credential`,
 		"skill review in ~/.claude/skills is shadowed by the project skill",
@@ -301,6 +301,16 @@ func TestDiscoverGitMarketplaces(t *testing.T) {
 
 	gitRepo(t, addMarket("noremote-market"), "noremote-market")
 
+	// Only an upstream branch, no refs/remotes/origin/HEAD, and a local
+	// commit that renames the marketplace: the name match reads the
+	// remote-tracking ref, not the working tree.
+	up := gitRepo(t, addMarket("upstream-market"), "upstream-market")
+	up("remote", "add", "origin", "https://git.example.com/org/upstream-market.git")
+	up("update-ref", "refs/remotes/origin/main", "HEAD")
+	up("branch", "--set-upstream-to=origin/main", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(dev, "upstream-market", ".claude-plugin", "marketplace.json"), []byte(`{"name":"renamed-locally","plugins":[]}`), 0o644))
+	up("commit", "-q", "-am", "rename locally")
+
 	cred := gitRepo(t, addMarket("cred-market"), "cred-market")
 	cred("remote", "add", "origin", "https://git.example.com/org/cred-market.git?token=${MARKET_TOKEN}")
 
@@ -356,6 +366,9 @@ func TestDiscoverGitMarketplaces(t *testing.T) {
 	assert.Equal(t, &harness.RemoteInfo{URL: "https://gitlab.example.com/team/noref-market", NameMatch: harness.NameUnknown}, byName["tool@noref-market"].Remote,
 		"without a remote-tracking ref the unpushed count is unknown (nil), not 0")
 
+	assert.Equal(t, &harness.RemoteInfo{URL: "https://git.example.com/org/upstream-market.git", UnpushedCommits: intPtr(1), NameMatch: harness.NameMatch}, byName["tool@upstream-market"].Remote,
+		"the upstream branch is the fallback tracking ref, and the name comes from it")
+
 	assert.NotContains(t, byName, "tool@noremote-market")
 	assert.NotContains(t, byName, "tool@plain-dir")
 	assert.NotContains(t, byName, "tool@cred-market")
@@ -365,7 +378,8 @@ func TestDiscoverGitMarketplaces(t *testing.T) {
 	assert.Contains(t, notes, `plugin tool@plain-dir skipped: local marketplace "plain-dir" cannot be copied into the image and has no git remote`)
 	assert.Contains(t, notes, `plugin tool@cred-market skipped: the git remote URL of local marketplace "cred-market" carries a credential that cannot be removed`)
 	assert.NotContains(t, notes, `"cred-market" cannot be copied into the image and has no git remote`)
-	assert.Contains(t, notes, `plugin tool@nested-market skipped: local marketplace "nested-market" cannot be copied into the image and has no git remote`)
+	assert.Contains(t, notes, `plugin tool@nested-market skipped: local marketplace "nested-market" cannot be copied into the image, and `)
+	assert.Contains(t, notes, `nested-market is not the top level of a git repository, so no remote is proposed`)
 	assert.Contains(t, notes, `plugin tool@other-market: credentials removed from the git remote URL of local marketplace "other-market"`)
 	for _, n := range d.Notes {
 		assert.NotContains(t, n, "skipped: local marketplace \"gh-market\"")
@@ -408,6 +422,7 @@ func TestPortability(t *testing.T) {
 		"~/.claude/plugins/marketplaces/team": "source under ~/.claude/plugins is read on the machine that runs the plan",
 		"~/dev/market":                        "source under the home directory is read on the machine that runs the plan",
 		"/opt/shared/market":                  "source outside the project is read on the machine that runs the plan",
+		"file:///srv/git/market.git":          "file: URL is read on the machine that runs the plan",
 	} {
 		portable, reason := portability(source)
 		assert.Equal(t, want == "", portable, source)

@@ -15,6 +15,7 @@ import (
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/pipeline"
 	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/verify"
 )
 
@@ -168,7 +169,7 @@ func buildReportOf(env pipeline.Env, planned *pipeline.Planned, built *pipeline.
 	if ref, err := imageref.Normalize(b.Image); err == nil {
 		r.ImageRef = ref.String()
 		if planned != nil && planned.Plan != nil && planned.Plan.Target == manifest.TargetOpenShell {
-			r.SandboxCreate = "openshell sandbox create --from " + r.ImageRef
+			r.SandboxCreate = "openshell sandbox create --from " + shell.QuoteIfNeeded(r.ImageRef)
 		}
 		if b.Pushed && ref.Registry == imageref.DockerHub {
 			r.Notices = append(r.Notices, plan.Notice(plan.NoticeDockerHub, plan.NoticeSubjectImage,

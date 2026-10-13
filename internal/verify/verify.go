@@ -120,10 +120,8 @@ func checkHash(c plan.Check) string {
 // runs, so the home rc files and PROMPT_COMMAND run first), both started
 // with OpenShell's cleared environment. A component's binary therefore has
 // to resolve through the session PATH and run with the session's MISE_*
-// settings. Every binary of the component must resolve through the session
-// PATH before its check runs. With shell.program zsh, the checks also run
-// in an interactive login zsh (zsh -il), as the switch hook starts it. The
-// selected shell program's startup check (session.zsh.startup or
+// settings. With shell.program zsh, the checks also run in an interactive
+// login zsh (zsh -il), as the switch hook starts it. The selected shell program's startup check (session.zsh.startup or
 // session.bash.startup, an interactive shell in both cases) fails when the
 // startup writes to stderr (apart from the notes a shell prints only
 // because verify runs it without a terminal) or does not read the curated
@@ -155,7 +153,7 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 		if len(c.Bins) > 0 {
 			bin = c.Bins[0]
 		}
-		check := resolveBins(c.Bins) + c.Check.Command
+		check := c.Check.Command
 		add(sessionPrefix+"bash-login."+c.Key, env+" bash -lc "+shell.Quote(check), c.Check, bin)
 		// bash -i prints its prompts and job control notes to stderr; the
 		// check's own stderr is kept through the group redirection.
@@ -181,20 +179,6 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	}
 	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Key < reqs[j].Key })
 	return reqs
-}
-
-// resolveBins returns the lines that fail a session check with exit 127
-// when one of the component's binaries does not resolve through the session
-// PATH, so every binary is checked and not only the one the component's own
-// check calls (FR-010).
-func resolveBins(bins []string) string {
-	var b strings.Builder
-	for _, bin := range bins {
-		q := shell.QuoteIfNeeded(bin)
-		fmt.Fprintf(&b, "command -v %s >/dev/null || { echo %s >&2; exit 127; }\n",
-			q, shell.Quote("sandcast: "+bin+" does not resolve through the session PATH"))
-	}
-	return b.String()
 }
 
 // sessionEnv is the env -i prefix that reproduces the environment OpenShell

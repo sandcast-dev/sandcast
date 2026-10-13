@@ -95,6 +95,8 @@ func TestRunErrorIncludesStderr(t *testing.T) {
 
 func TestActiveGateway(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("OPENSHELL_GATEWAY", "")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 	list := `[
   {"active": false, "name": "local", "type": "local", "is_remote": false, "endpoint": "http://127.0.0.1:8080"},
   {"active": true, "name": "cluster", "type": "remote", "is_remote": true, "endpoint": "https://gw.example.com"}
@@ -107,6 +109,27 @@ func TestActiveGateway(t *testing.T) {
 	assert.Equal(t, "cluster", g.Name)
 	assert.True(t, g.Remote())
 	assert.Equal(t, []string{"openshell", "--gateway", "cluster", "gateway", "list", "-o", "json"}, r.calls[0])
+
+	// The gateway the client selects decides, not the active flag.
+	selected := `[{"active": true, "name": "local", "type": "local"}, {"active": false, "name": "prod", "type": "remote", "is_remote": true}]`
+	g, err = (&Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": selected}}, Extra: []string{"--gateway", "prod"}}).ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "prod", g.Name, "--gateway selects the gateway")
+	t.Setenv("OPENSHELL_GATEWAY", "prod")
+	g, err = (&Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": selected}}}).ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "prod", g.Name, "OPENSHELL_GATEWAY selects the gateway")
+	t.Setenv("OPENSHELL_GATEWAY", "")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
+	g, err = (&Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": selected}}, Extra: []string{"--gateway", "missing"}}).ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, g, "a selected gateway that is not listed is unknown, not the active one")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://prod.example.com")
+	withEndpoint := `[{"active": true, "name": "local", "type": "local"}, {"active": false, "name": "prod", "type": "remote", "is_remote": true, "endpoint": "https://prod.example.com"}]`
+	g, err = (&Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": withEndpoint}}}).ActiveGateway(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "prod", g.Name, "OPENSHELL_GATEWAY_ENDPOINT selects the gateway")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 
 	local := &Client{Runner: &fakeRunner{answers: map[string]string{"gateway list": `[{"active": true, "name": "local", "type": "local", "is_remote": false}]`}}}
 	g, err = local.ActiveGateway(ctx)

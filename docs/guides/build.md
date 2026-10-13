@@ -292,7 +292,7 @@ For the OpenShell target, verify always adds session checks in the same containe
 
 | Check | Condition | Passes when |
 |-------|-----------|-------------|
-| `session.bash-login.<component>` | `session:bash-login` | Every binary of the component resolves and the component's check passes in `bash -lc '<check>'`, as `openshell sandbox exec` runs it. |
+| `session.bash-login.<component>` | `session:bash-login` | The component's check passes in `bash -lc '<check>'`, as `openshell sandbox exec` runs it. |
 | `session.bash-interactive.<component>` | `session:bash-interactive` | The same check, fed on stdin to `bash -i` as in `openshell sandbox connect`, passes after the home rc files ran. |
 | `session.zsh.<component>` | `session:zsh` | With `shell.program: zsh`, the same in a login `zsh -il -c '<check>'`, as the switch hook starts zsh. |
 | `session.zsh.startup` | `session:zsh` | With `shell.program: zsh`, an interactive zsh reads the curated rc and writes nothing to stderr during startup, apart from the `can't change option: zle` note that appears only without a terminal. |

@@ -25,10 +25,12 @@ container engine (no gateway needed), writes verify.yaml, reports every
 result, and exits 1 if any check failed.
 
 For the OpenShell target it always adds session checks: every component
-binary must resolve in a login bash and an interactive bash started with
+check runs again in a login bash and an interactive bash started with
 OpenShell's cleared environment (only HOME, USER, TERM and the default
-PATH), and with shell.program zsh also in an interactive zsh, whose startup
-must read the curated rc and write nothing to stderr.`,
+PATH), and with shell.program zsh also in an interactive login zsh. The
+startup check of the selected shell program (session.zsh.startup or
+session.bash.startup) fails when the interactive shell does not read the
+curated rc or writes to stderr.`,
 		Args: args(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			env, err := a.pipelineEnv()

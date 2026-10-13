@@ -311,6 +311,18 @@ func TestBuildReportImageRefAndPush(t *testing.T) {
 		assert.Regexp(t, `pushed:\s+no`, out)
 		assert.Contains(t, out, "sandbox create: openshell sandbox create --from localhost/demo:latest\n")
 	})
+	t.Run("openshell docker hub without push", func(t *testing.T) {
+		ta := newTestApp(t)
+		ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo\n", "image: docker.io/rhuss/demo\n", 1))
+		ta.write(t, ".sandcast/mise.lock", testLock)
+		require.Equal(t, 0, ta.run("build", "--json"), ta.stderr.String())
+		var rep buildReport
+		require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+		assert.False(t, rep.Pushed)
+		for _, n := range rep.Notices {
+			assert.NotContains(t, n, "docker-hub", "the rate-limit notice needs a push (FR-013)")
+		}
+	})
 	t.Run("openshell pushed to docker hub", func(t *testing.T) {
 		ta := newTestApp(t)
 		ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "image: localhost/demo\n", "image: docker.io/rhuss/demo\n    push: true\n", 1))
@@ -327,6 +339,7 @@ func TestBuildReportImageRefAndPush(t *testing.T) {
 		for _, n := range rep.Notices {
 			if strings.HasPrefix(n, "docker-hub: image: anonymous pulls from cluster nodes are rate limited") {
 				found = true
+				assert.Contains(t, n, "pull secret", "FR-013 names the pull secret")
 			}
 		}
 		assert.True(t, found, "docker-hub notice: %v", rep.Notices)
@@ -447,6 +460,8 @@ func TestBuildGatewayWarning(t *testing.T) {
 	hasGateway := func(ns []string) bool {
 		for _, n := range ns {
 			if strings.HasPrefix(n, "gateway: image: the active gateway cluster is remote and cannot pull localhost/demo:latest") {
+				assert.Contains(t, n, "targets.openshell.image", "the warning names the manifest fields (US3 scenario 5)")
+				assert.Contains(t, n, "targets.openshell.push")
 				return true
 			}
 		}

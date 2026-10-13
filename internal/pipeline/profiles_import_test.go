@@ -327,6 +327,8 @@ func (r gwListRunner) Run(_ context.Context, _ string, args []string) ([]byte, [
 }
 
 func TestGatewayWarning(t *testing.T) {
+	t.Setenv("OPENSHELL_GATEWAY", "")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 	ctx := context.Background()
 	remote := &gateway.Client{Runner: gwListRunner{out: `[{"active":true,"name":"c","type":"remote","is_remote":true}]`}}
 	cloud := &gateway.Client{Runner: gwListRunner{out: `[{"active":true,"name":"c","type":"cloud","is_remote":false}]`}}
@@ -337,4 +339,24 @@ func TestGatewayWarning(t *testing.T) {
 	assert.Empty(t, GatewayWarning(ctx, remote, "quay.io/x/demo:latest"), "a registry reference is fine")
 	assert.Empty(t, GatewayWarning(ctx, local, "localhost/demo:latest"), "a local gateway shares the storage")
 	assert.Empty(t, GatewayWarning(ctx, failing, "localhost/demo:latest"), "a failed lookup is unknown")
+}
+
+// hangingRunner blocks until its context ends, like an openshell CLI that
+// hangs.
+type hangingRunner struct{}
+
+func (hangingRunner) Run(ctx context.Context, _ string, _ []string) ([]byte, []byte, error) {
+	<-ctx.Done()
+	return nil, nil, ctx.Err()
+}
+
+// TestGatewayWarningBoundsLookup: a hanging openshell CLI yields no warning
+// after GatewayLookupTimeout instead of blocking the build (FR-014).
+func TestGatewayWarningBoundsLookup(t *testing.T) {
+	old := GatewayLookupTimeout
+	GatewayLookupTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { GatewayLookupTimeout = old })
+	start := time.Now()
+	assert.Empty(t, GatewayWarning(context.Background(), &gateway.Client{Runner: hangingRunner{}}, "localhost/demo:latest"))
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

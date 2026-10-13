@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
@@ -196,6 +197,12 @@ func TestDeltaForLockAndWorkspace(t *testing.T) {
 	assert.Equal(t, []string{"lockfile-shadow: gh: base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0"}, e.Notices)
 	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3.14"), DeltaOptions{LockedVersion: "3.14.5", WorkspacePath: ws})
 	assert.Equal(t, []string{"workspace-path: python: found only under /sandbox (workspace path): /sandbox/.uv/python/bin/python3.14; installing it"}, e.Notices)
+	e, _ = DeltaFor(miseComp("codex"), "latest", check(probe.StatusPresent, "", "/usr/local/bin/codex"), DeltaOptions{LockedVersion: "0.162.1", WorkspacePath: ws})
+	assert.Equal(t, []string{"unknown-version: codex: base image version could not be read; installing locked 0.162.1"}, e.Notices)
+	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.5", "/sandbox/.venv/bin/python3", "/usr/bin/python3"), DeltaOptions{LockedVersion: "3.14.5", WorkspacePath: ws})
+	require.Len(t, e.Notices, 2)
+	assert.Contains(t, e.Notices[0], "/sandbox/.venv/bin/python3", "the mixed-path notice names the ignored copy")
+	assert.Equal(t, "unknown-version: python: the probed version came from the ignored copy under the workspace path; installing locked 3.14.5", e.Notices[1])
 }
 
 func TestWorkspacePath(t *testing.T) {

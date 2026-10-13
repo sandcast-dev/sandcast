@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rhuss/sandcast/internal/build"
 	"github.com/rhuss/sandcast/internal/engine"
@@ -411,6 +412,9 @@ func updateProfile(ctx context.Context, gw *gateway.Client, staging string, ap p
 	return gw.Update(ctx, ap.AdaptedID, file, o.Scope, o.Workspace)
 }
 
+// GatewayLookupTimeout bounds the best-effort active gateway lookup.
+var GatewayLookupTimeout = 5 * time.Second
+
 // GatewayWarning returns a gateway notice when the active gateway is remote
 // and image is a localhost/ reference, which only the build engine's own
 // storage can resolve (FR-014). The lookup is best effort: a missing CLI, a
@@ -420,7 +424,10 @@ func GatewayWarning(ctx context.Context, gw *gateway.Client, image string) strin
 	if err != nil || !ref.IsLocalhost() {
 		return ""
 	}
-	active, err := gw.ActiveGateway(ctx)
+	// A hanging openshell CLI must not block a build or an import.
+	lookupCtx, cancel := context.WithTimeout(ctx, GatewayLookupTimeout)
+	defer cancel()
+	active, err := gw.ActiveGateway(lookupCtx)
 	if err != nil || !active.Remote() {
 		return ""
 	}

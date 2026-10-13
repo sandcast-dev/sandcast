@@ -135,6 +135,9 @@ func TestSnippets(t *testing.T) {
 						"SANDCAST_STUB_RC=" + itoa(rc),
 					}
 					if rc == 130 {
+						// The stub itself exits 0, so 130 can only come from
+						// the interrupt path.
+						cmd.Env[len(cmd.Env)-1] = "SANDCAST_STUB_RC=0"
 						cmd.Env = append(cmd.Env, "SANDCAST_STUB_SIGNAL=INT")
 					}
 					out, err := cmd.CombinedOutput()

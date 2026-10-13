@@ -199,3 +199,39 @@ Ideas captured from code reviews for future brainstorming.
 - **Summary**: The v0.1.3 refresh ported the stable profile validation but deferred two pieces. (1) The experimental `ProviderFileProfile` (`files`) feature: a `files` list on a provider profile with `path`/`content`/`env_var` and a `{{config.KEY}}` template, which upstream marks "may change or be removed". Porting means a new struct in `internal/profile/types.go`, lint rules (at most 16 files, path/content/env_var checks, the `files.env_var`-vs-credential conflict, the `{{config.KEY}}` validator and render, `valid_file_config_key`), and `files.*` in the null-object path list. (2) The token_grant audience-override to endpoint binding-conflict checks (the rest of `validate_token_grant_audience_overrides`): detect two overrides that bind to the same endpoint host and port with the same match score. Porting means typing the `token_grant` pass-through block and reimplementing the scoring and binding logic.
 
 > Neither feature is used by any vendored or overlay profile, token_grant is a pass-through block that the gateway re-validates on import (R-07), and `files` is upstream-unstable, so both were left out of the stable-parity refresh. Pick this up when a profile actually uses `files` or `token_grant`, or when upstream marks `files` stable.
+
+### skeleton-options-signature
+
+- **Source**: deep-review
+- **Date**: 2026-10-13
+- **Reference**: 002-field-feedback-fixes
+- **Summary**: `manifest.Skeleton` takes a variadic options struct and silently ignores extra arguments.
+
+> A plain `opts SkeletonOptions` parameter makes the decision explicit; harmless today.
+
+### root-shell-mise-shims
+
+- **Source**: deep-review
+- **Date**: 2026-10-13
+- **Reference**: 002-field-feedback-fixes
+- **Summary**: Root shells in the image also prepend `/opt/mise/shims`, a directory the final user owns.
+
+> Not new (the image ENV PATH did the same), but the startup files make it sticky; revisit if images are used with root sessions.
+
+### streaming-push-log
+
+- **Source**: deep-review
+- **Date**: 2026-10-13
+- **Reference**: 002-field-feedback-fixes
+- **Summary**: Push output reaches build.log only after the push finishes, so long pushes look stuck.
+
+> A line-buffered redacting writer could stream the push into the log and the progress output.
+
+### lockfile-test-moving-latest
+
+- **Source**: deep-review
+- **Date**: 2026-10-13
+- **Reference**: 002-field-feedback-fixes
+- **Summary**: `TestLockfileDecidesVersions` relies on `latest` differing from the base image's tool versions.
+
+> A base image refresh can make the correct `skip` decision fail the test; pin selectors or accept skip when versions match.

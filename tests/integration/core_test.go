@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -258,9 +259,12 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.Contains(t, r.stdout, "session checks")
 	assert.Contains(t, r.stdout, "session.zsh.startup")
 
+	// podmanArgs are extra run flags; the empty-home pass sets a tmpfs over
+	// the final user's home, as the OpenShell workspace volume hides it.
+	var podmanArgs []string
 	run := func(stdin string, tty bool, args ...string) (string, string, error) {
 		t.Helper()
-		full := []string{"run", "--rm"}
+		full := append([]string{"run", "--rm"}, podmanArgs...)
 		if stdin != "" {
 			full = append(full, "-i")
 		}
@@ -331,6 +335,52 @@ func TestSessionEnvironment(t *testing.T) {
 	out, _, err = run("", true, "/bin/bash", "-lc", "echo RAN=$0")
 	require.NoError(t, err)
 	assert.Contains(t, out, "RAN=/bin/bash")
+
+	// FR-006 and US1 scenario 1: every MISE_* variable of the image is set
+	// in a login bash, a plain zsh and a login zsh of the session.
+	envOut, err := exec.Command(engine, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", img).Output()
+	require.NoError(t, err)
+	var wantMise []string
+	for _, line := range strings.Split(string(envOut), "\n") {
+		if strings.HasPrefix(line, "MISE_") {
+			wantMise = append(wantMise, line)
+		}
+	}
+	sort.Strings(wantMise)
+	require.NotEmpty(t, wantMise)
+	for _, sh := range [][]string{{"/bin/bash", "-lc"}, {"/bin/zsh", "-c"}, {"/bin/zsh", "-il", "-c"}} {
+		out, _, err = run("", false, append(sh, "env | grep '^MISE_' | sort")...)
+		require.NoError(t, err)
+		assert.Equal(t, strings.Join(wantMise, "\n")+"\n", out, "MISE_* in %v", sh)
+	}
+	out, _, err = run("", false, "/bin/zsh", "-c", check.String())
+	require.NoError(t, err)
+	assert.NotContains(t, out, "MISSING", "a plain zsh -c resolves every binary through zshenv")
+
+	// US1 scenarios 3 and 5 with an empty workspace home, as OpenShell
+	// mounts it: the switch still lands in a login zsh with the curated rc,
+	// and neither the new-user wizard nor stderr output appears.
+	// podman copies the image's directory content into a tmpfs unless
+	// told not to; docker never does.
+	tmpfs := "/sandbox:rw,mode=1777"
+	if filepath.Base(engine) == "podman" {
+		tmpfs += ",notmpcopyup"
+	}
+	podmanArgs = []string{"--tmpfs", tmpfs}
+	out, _, err = run("ls -A ~ | wc -l\n", false, "/bin/sh")
+	require.NoError(t, err)
+	assert.Equal(t, "0", strings.TrimSpace(out), "the home directory is empty")
+	out, _, err = run("echo SWITCHED=$ZSH_VERSION LOGIN=$([[ -o login ]] && echo y) RC=${SANDCAST_RC_LOADED:-no}\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
+	require.NoError(t, err)
+	assert.Regexp(t, `SWITCHED=5\.\S* LOGIN=y RC=1`, out, "the switched shell is a login zsh that read the curated rc")
+	assert.NotContains(t, out, "zsh-newuser-install")
+	assert.NotContains(t, out, "This is the Z Shell configuration function")
+	assert.NotContains(t, out, "command not found")
+	out, stderr, err = run("", false, "/bin/zsh", "-il", "-c", check.String())
+	require.NoError(t, err)
+	assert.NotContains(t, out, "MISSING", "an empty home still resolves every binary")
+	assert.Empty(t, stderr)
+	podmanArgs = nil
 
 	// The final user's login shell is zsh.
 	out, _, err = run("", false, "/bin/sh", "-c", "getent passwd sandbox | cut -d: -f7")

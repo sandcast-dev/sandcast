@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -421,8 +422,13 @@ func marketplaceSource(ctx context.Context, plugin, name string, markets map[str
 				if gerr == nil {
 					return remoteSource, remote
 				}
-				if errors.Is(gerr, errRemoteCredential) {
+				switch {
+				case errors.Is(gerr, errRemoteCredential):
 					return skip("the git remote URL of local marketplace %q carries a credential that cannot be removed", name)
+				case errors.Is(gerr, errNotRepoTop):
+					return skip("local marketplace %q cannot be copied into the image, and %s is not the top level of a git repository, so no remote is proposed: %v", name, source, err)
+				case errors.Is(gerr, errGitUnavailable):
+					return skip("local marketplace %q cannot be copied into the image, and git is not available to propose its remote: %v", name, err)
 				}
 			}
 			return skip("local marketplace %q cannot be copied into the image and has no git remote: %v", name, err)
@@ -447,9 +453,10 @@ func githubRepo(url string) (string, bool) {
 	return "", false
 }
 
-// errNoGitRemote and errRemoteCredential are the reasons gitMarketplace
-// proposes no source.
+// The reasons gitMarketplace proposes no source.
 var (
+	errGitUnavailable   = errors.New("git is not available")
+	errNotRepoTop       = errors.New("not the top level of a git repository")
 	errNoGitRemote      = errors.New("no git remote")
 	errRemoteCredential = errors.New("the git remote URL carries a credential")
 )
@@ -461,18 +468,24 @@ var (
 // <remote>/HEAD (else the upstream branch), uncommitted changes, and the
 // marketplace name in the remote's .claude-plugin/marketplace.json compared
 // with the locally registered name. Without a remote-tracking ref the
-// unpushed count stays nil (unknown). It returns errNoGitRemote without
-// git, when dir is not the top level of a git repository (a directory
-// inside an enclosing repository is not that repository's marketplace), or
-// without a remote, and errRemoteCredential when the remote URL keeps a
-// credential after the user information is removed.
+// unpushed count stays nil (unknown). It returns errGitUnavailable without
+// git, errNotRepoTop when dir lies inside a repository without being its
+// top level (that repository is not the marketplace), errNoGitRemote
+// outside a repository or without a remote, and errRemoteCredential when
+// the remote URL keeps a credential after the user information is removed.
 func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin string, notes *[]string) (string, *harness.RemoteInfo, error) {
 	if git == nil {
-		return "", nil, errNoGitRemote
+		return "", nil, errGitUnavailable
 	}
 	top, err := git.Run(ctx, dir, "rev-parse", "--show-toplevel")
-	if err != nil || !sameDir(top, dir) {
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", nil, errGitUnavailable
+		}
 		return "", nil, errNoGitRemote
+	}
+	if !sameDir(top, dir) {
+		return "", nil, errNotRepoTop
 	}
 	out, err := git.Run(ctx, dir, "remote")
 	if err != nil || strings.TrimSpace(out) == "" {
@@ -557,6 +570,8 @@ func sameDir(a, b string) bool {
 func portability(source string) (bool, string) {
 	const why = " is read on the machine that runs the plan"
 	switch {
+	case strings.HasPrefix(source, "file:"):
+		return false, "file: URL" + why
 	case strings.HasPrefix(source, "./"), !isPathSource(source):
 		return true, ""
 	case strings.HasPrefix(source, "~/"+skillsSubdir+"/"):

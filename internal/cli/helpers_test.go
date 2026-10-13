@@ -204,6 +204,9 @@ type testApp struct {
 }
 
 func newTestApp(t *testing.T) *testApp {
+	// The gateway lookup reads these; a developer's shell must not decide.
+	t.Setenv("OPENSHELL_GATEWAY", "")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 	t.Helper()
 	t.Setenv("SANDCAST_CACHE_DIR", t.TempDir())
 	t.Setenv("SANDCAST_CONFIG_DIR", t.TempDir())
