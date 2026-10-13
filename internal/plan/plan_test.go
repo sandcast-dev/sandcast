@@ -621,3 +621,32 @@ func TestFactsOfCopiesHomeRCResetsPath(t *testing.T) {
 	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)
 	assert.Nil(t, factsOf(probe.Facts{}).HomeRCResetsPath)
 }
+
+// TestDeclaredBins covers FR-018 in the plan: an undefined component with a
+// stored fragment uses its declared binaries for the check, and declared
+// binaries take part in the conflict check.
+func TestDeclaredBins(t *testing.T) {
+	stored := map[string]StoredFragment{"helix": {Key: "helix", Source: ".sandcast/fragments/helix.containerfile", Body: "RUN true\n"}}
+	m := testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "helix", Optional: true, Bins: []string{"hx", "hx-lsp"}})
+	p, err := Build(testInputs(t, m, stored))
+	require.NoError(t, err)
+	c := p.Component("helix")
+	require.NotNil(t, c)
+	assert.Equal(t, []string{"hx", "hx-lsp"}, c.Bins)
+	assert.Equal(t, "command -v hx && command -v hx-lsp", c.Check.Command)
+	assert.Empty(t, p.Conflicts)
+
+	m = testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "helix", Optional: true})
+	p, err = Build(testInputs(t, m, stored))
+	require.NoError(t, err)
+	assert.Equal(t, "command -v helix", p.Component("helix").Check.Command, "without bins the key is checked")
+
+	m = testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "my-git", Optional: true, Bins: []string{"git"}})
+	p, err = Build(testInputs(t, m, map[string]StoredFragment{"my-git": {Key: "my-git", Source: "x", Body: "RUN true\n"}}))
+	require.NoError(t, err)
+	require.Len(t, p.Conflicts, 1)
+	assert.Equal(t, component.Conflict{Binary: "git", Components: []string{"git", "my-git"}}, p.Conflicts[0])
+}

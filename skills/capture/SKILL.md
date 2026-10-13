@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.0
+sandcast_version: 0.2.0
 ---
 
 # sandcast capture
@@ -53,17 +53,19 @@ sandcast harness discover <harness> --json
 
 Run it once per selected harness and handle each result with the steps below. If the user selected no harness, skip discovery and continue with Step 3.
 
-The JSON has `harness`, `mcp_servers` (each with `name`, `command` or `url`, `env`, `origin`), `plugins` and `skills` (each with `name`, `source`, `origin`), `redacted` (each with `path`, `kind`, `placeholder`, `env_var`) and `notes`.
+The JSON has `harness`, `mcp_servers` (each with `name`, `command` or `url`, `env`, `origin`), `plugins` and `skills` (each with `name`, `source`, `origin`, `portable`, and `reason` when `portable` is false), `redacted` (each with `path`, `kind`, `placeholder`, `env_var`) and `notes`. A plugin whose local marketplace directory is a git checkout with a remote comes with a `remote` object (`url`, `unpushed_commits`, `uncommitted_changes`, `name_match`) and a `source` taken from that remote (`owner/repo` for GitHub, else the remote URL).
 
 1. Present the MCP servers, plugins and skills as three short lists with their origin file. For MCP servers show the environment variable names, not their values.
 2. Let the user choose which ones to bake into the image. Nothing is baked by default; the user opts in item by item or with "all".
-3. Check the `source` of every chosen skill and of every chosen plugin whose marketplace source is a path (`./`, `~/` or `/`). The binary copies such sources into the image only from inside the project, `~/.claude/skills` or `~/.claude/plugins`, and reads them on the machine that runs the plan. A source outside the project, such as `~/.claude/skills/review`, makes the manifest host-specific: `sandcast plan` and `sandcast build` fail in CI and on every other machine that lacks the path. For each such skill, explain this and offer to copy it into the project:
+3. Check the `portable` marker of every chosen skill and plugin; do not decide by looking at the path yourself. An entry with `portable: false` makes the manifest host-specific: the binary reads its source on the machine that runs the plan, so `sandcast plan` and `sandcast build` fail in CI and on every other machine that lacks the path. Show its `reason`. For each such skill, explain this and offer to copy it into the project:
    - Ask first. If the user declines, keep the discovered source and say that only this host can build the image.
    - Copy only the skill directory, to `.claude/skills/<name>` in the project, and never overwrite an existing directory. List its files first and leave out every file that holds a credential (`.env` files, private keys such as `*.pem` or `*.key`, files named like token, secret or credentials); if the skill needs such a file, stop and ask. Show symbolic links and ask before copying them.
    - The name filter misses a token inside an ordinary file, such as a script or a `config.json`, and no sandcast command scans the copied files before a commit. So after copying, show the user the list of copied files (paths only, never their contents) and ask them to confirm that none of them holds a credential. Remove every file they are unsure about, or stop and ask.
    - Record `source: .claude/skills/<name>` for the skill. Only after the user has confirmed the file list, remind them to commit the directory; check that `.gitignore` does not exclude it.
 
-   For a local marketplace outside the project, explain the same limit and offer two remedies: copy the marketplace directory into the project (same rules) and use its `./` path as the plugin source, or publish it as a git repository and use `owner/repo` or its URL.
+   For a non-portable local marketplace, explain the same limit and offer two remedies: copy the marketplace directory into the project (same rules) and use its `./` path as the plugin source, or publish it as a git repository and use `owner/repo` or its URL.
+
+   A plugin with a `remote` object was proposed through the git remote of its local marketplace, so you need no manual remote lookup. It stays opt-in like every other plugin. Before the user decides, present its remote notes: the remote `url`; `unpushed_commits` greater than 0 or `uncommitted_changes: true` means the image gets the remote's state, not the local one, so the user should push first; `name_match: mismatch` means the remote's marketplace file declares another name than the locally registered one, and `name_match: unknown` means it could not be checked because no remote-tracking ref exists locally (discovery never fetches).
 4. For every entry in `redacted`, explain: the value at `path` looked like a credential (`kind`), the binary replaced it with `placeholder`, and the user supplies the real value at runtime as a provider credential under the environment variable named in `env_var` (the `env` key when the whole env value was the secret, `SANDCAST_SECRET_N` for a secret inside a longer value, an argument or a URL, including an access key in a URL path). Never offer to fill in the value.
    MCP servers reached by `url` carry their bearer credential as one `env` entry, either a placeholder such as `MCP_<NAME>_TOKEN: "${SANDCAST_SECRET_N}"` or a reference such as `VAR: "${VAR}"`. Keep both forms unchanged.
 5. Show every `notes` entry.
@@ -80,11 +82,21 @@ sandcast base-images list --target <openshell|container> --json
 
 Each entry has `target`, `name`, `ref`, `default` and `notes`. Show the notes; they say which user and tools the image has.
 
-Then create the skeleton:
+Ask where the image will run, because `sandcast init` never asks:
 
-```sh
-sandcast init --name <name> --base-image <registry-entry-or-image-ref> --target <openshell|container>
-```
+- **A local OpenShell gateway** that uses the same container engine on this machine (for example a gateway with the podman driver): the default `localhost/<name>` works. Create the skeleton:
+
+  ```sh
+  sandcast init --name <name> --base-image <registry-entry-or-image-ref> --target <openshell|container>
+  ```
+
+- **A remote gateway** (a cluster, a cloud gateway, or any gateway that cannot read this engine's image storage): ask for the registry reference the cluster can pull (for example `quay.io/<user>/<name>`, never `docker.io/<name>` without a namespace) and the cluster's architecture (`linux/amd64` for most clusters), and pass them with push enabled:
+
+  ```sh
+  sandcast init --name <name> --base-image <registry-entry-or-image-ref> --target openshell --image <registry/name> --platform <linux/amd64|linux/arm64> --push
+  ```
+
+  When the platform differs from this machine's architecture, point the user to `docs/guides/cross-arch.md`.
 
 If the manifest already exists, read it, tell the user you will update it, and keep its existing entries unless the user removes them.
 
@@ -98,9 +110,13 @@ The JSON shape is:
 
 ```json
 {"project": "<dir>",
- "proposals": [{"key": "go", "name": "Go", "source": "project", "evidence": ["go.mod"], "detected_version": "1.25.1"}],
- "available": [{"key": "rust", "name": "Rust", "tier": "shipped"}]}
+ "proposals": [{"key": "go", "name": "Go", "source": "project", "evidence": ["go.mod"], "detected_version": "1.25.1",
+                "pinned_versions": [{"value": "1.26.7", "file": "go.mod", "kind": "exact"}]}],
+ "available": [{"key": "rust", "name": "Rust", "tier": "shipped"}],
+ "notes": []}
 ```
+
+`pinned_versions` lists every version the project pins for the component, with its `file` and its `kind`: `exact` (a full version such as `1.95.0`), `range` (`>=3.12`, `^20`, `1.26`) or `channel` (`stable`, `nightly`, `lts/*`). Show every `notes` entry; a note names a pin file that could not be read.
 
 `source` is one of `project` (ecosystem files), `host` (a tool found on the host `PATH`), `harness` (a selected harness) or `always` (base system components).
 
@@ -109,7 +125,7 @@ The JSON shape is:
 3. Offer the `available` components as optional additions.
 4. Let the user confirm, drop or add components. Keep `always` proposals unless the user explicitly removes them.
 5. Additions must be keys from `proposals`, `available`, or `sandcast components list --json`. If the user wants a tool that no tier defines, explain the two choices: add it with `optional: true` so that `/sandcast-build` offers to write an install fragment for it, or let the user define it in `.sandcast/components/<key>.yaml` first. The user writes that file; you may show the shape from `sandcast components show <similar-key>`, but do not write it yourself.
-6. Set `version` on a component only when the user asks for a specific version or the project pins one (for example the `go` directive in `go.mod`, `.python-version`, `.nvmrc`). Otherwise leave it out; the lockfile pins exact versions.
+6. Set `version` on a component only when the user asks for a specific version or the project pins one. When a proposal has `pinned_versions`, propose the first `exact` value as the component's `version:` (for go the list starts with the highest version across a `go.work`'s modules), name the file it came from, and let the user accept or change it. Never turn a `range` or `channel` value into an exact pin; mention it, and leave `version` out unless the user chooses a version. Without a pin, leave `version` out; the lockfile pins exact versions.
 
 Keep the confirmed list in mind; you write it in Step 5.
 
@@ -167,7 +183,15 @@ Apply each rule whenever its trigger is present after stripping:
 
    Use `starship init bash` for bash.
 
-3. **fzf key bindings**: replace `source <(fzf --zsh)` (and `eval "$(fzf --zsh)"` or `[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh`) with this version-aware block. `fzf --zsh` needs fzf 0.48 or newer, and distribution packages can be older:
+3. **Completions of removed plugins**: a stripped plugin often provided the completion that a kept `compdef` line refers to (for example `compdef kubecolor=kubectl` after an oh-my-zsh `kubectl` plugin). Before a kept `compdef` line whose completion a removed plugin provided, add a guarded load of the tool's own zsh completion, so the shell starts without errors whether or not the tool is in the image:
+
+   ```zsh
+   command -v <tool> >/dev/null && source <(<tool> completion zsh)
+   ```
+
+   Use the tool's own command for its completion script (`kubectl completion zsh`, `gh completion -s zsh`); when the tool has none, drop the `compdef` line instead.
+
+4. **fzf key bindings**: replace `source <(fzf --zsh)` (and `eval "$(fzf --zsh)"` or `[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh`) with this version-aware block. `fzf --zsh` needs fzf 0.48 or newer, and distribution packages can be older:
 
    ```zsh
    if fzf --zsh &>/dev/null; then
@@ -201,16 +225,20 @@ Show the user the final curated configuration and the list of referenced compone
 
 ### 4d: Write it
 
-Write the curated text to a private temporary file created with `mktemp`, store it in the manifest, and delete the file. Run it as one shell command so that `$tmp` survives, and set `--program` to the shell you curated (`zsh` or `bash`):
+Write the curated text to a private temporary file created with `mktemp`, store it in the manifest, and delete the file. Run it as one shell command so that `$tmp` survives, and set `--program` to the shell you curated (`zsh` or `bash`). The snippet runs unchanged in sh, bash and zsh, removes the file on every path and ends with the exit status of `sandcast`, so an exit 2 reaches you:
 
 ```sh
-tmp="$(mktemp)"
+if tmp="$(mktemp)"; then
 cat > "$tmp" <<'SANDCAST_RC'
 <the curated configuration>
 SANDCAST_RC
-sandcast manifest set-shell --program <zsh|bash> --file "$tmp"; status=$?
+sandcast manifest set-shell --program <zsh|bash> --file "$tmp"
+rc=$?
 rm -f "$tmp"
-[ "$status" -eq 0 ]
+(exit "$rc")
+else
+false
+fi
 ```
 
 The command also accepts the configuration on standard input. If it exits 2 because of a credential-shaped value, remove that line and write again; never weaken the value to get past the check.

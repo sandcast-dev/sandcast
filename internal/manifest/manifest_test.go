@@ -322,3 +322,28 @@ func TestSkeletonOptions(t *testing.T) {
 	assert.Equal(t, &Target{Image: "localhost/demo"}, d.Targets.Container)
 	assert.Empty(t, d.Platform)
 }
+
+func TestComponentBins(t *testing.T) {
+	m := Skeleton("demo", "base", TargetOpenShell)
+	m.Components = []ComponentRef{{Key: "helix", Optional: true, Bins: []string{"hx"}}}
+	assert.Empty(t, m.Validate())
+	data, err := Marshal(m)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "bins:\n")
+	back, err := Parse(data, "m.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hx"}, back.Components[0].Bins)
+	assert.Equal(t, 1, back.SchemaVersion, "schema version stays 1")
+
+	m.Components = []ComponentRef{{Key: "helix", Bins: []string{"hx", "bad name", "hx", "..", "a/b"}}}
+	var paths []string
+	for _, d := range m.Validate() {
+		paths = append(paths, d.Path+": "+d.Message)
+	}
+	assert.Equal(t, []string{
+		`$.components[0].bins[1]: invalid binary name "bad name"`,
+		`$.components[0].bins[2]: duplicate binary name "hx"`,
+		`$.components[0].bins[3]: invalid binary name ".."`,
+		`$.components[0].bins[4]: invalid binary name "a/b"`,
+	}, paths)
+}

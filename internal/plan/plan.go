@@ -129,6 +129,15 @@ func Build(in Inputs) (*Plan, error) {
 		p.BaseImage.Notes = []string{}
 	}
 
+	var binsProblems []string
+	for _, w := range in.Wanted {
+		if p := BinsProblem(w); p != "" {
+			binsProblems = append(binsProblems, p)
+		}
+	}
+	if len(binsProblems) > 0 {
+		return nil, &BinsError{Problems: binsProblems}
+	}
 	// A mise tool whose lock entry lacks the target platform fails the plan
 	// before any comparison (001 edge case): the lockfile cannot decide its
 	// version. Tools without any lock entry keep today's rules and fail
@@ -154,7 +163,7 @@ func Build(in Inputs) (*Plan, error) {
 		hasStored := anyStored && !stored.Superseded
 		if w.Def == nil {
 			if hasStored {
-				p.Components = append(p.Components, fragmentComponent(w.Key, stored))
+				p.Components = append(p.Components, fragmentComponent(w, stored))
 				fragmentDirs = append(fragmentDirs, OptDir(w.Key))
 				continue
 			}
@@ -179,7 +188,7 @@ func Build(in Inputs) (*Plan, error) {
 		p.ProbeDelta = append(p.ProbeDelta, entry)
 		if entry.Action == ActionUnresolvable {
 			if hasStored {
-				c := fragmentComponent(w.Key, stored)
+				c := fragmentComponent(w, stored)
 				describe(&c, w.Def, w.Selector())
 				p.Components = append(p.Components, c)
 				installed = append(installed, w.Def)
@@ -231,7 +240,7 @@ func Build(in Inputs) (*Plan, error) {
 		p.Components = append(p.Components, c)
 	}
 
-	if conflicts := component.Conflicts(defs); len(conflicts) > 0 {
+	if conflicts := component.Conflicts(append(defs, SyntheticDefinitions(in.Wanted)...)); len(conflicts) > 0 {
 		p.Conflicts = conflicts
 	}
 
@@ -317,7 +326,11 @@ func homeRCNotices(facts probe.Facts, target string, usesMise bool) []string {
 	return out
 }
 
-func fragmentComponent(key string, f StoredFragment) Component {
+// fragmentComponent is the planned component of a stored fragment. Its
+// binaries are the manifest entry's declared bins, else the key (FR-018).
+func fragmentComponent(w Wanted, f StoredFragment) Component {
+	key := w.Key
+	bins := DeclaredBins(w.Ref)
 	return Component{
 		Key:           key,
 		Tier:          string(component.TierProject),
@@ -326,13 +339,42 @@ func fragmentComponent(key string, f StoredFragment) Component {
 		Action:        ActionInstall,
 		FragmentName:  SectionFragments + "/" + key,
 		Fragment:      StoredFragmentText(key, f.Source, f.Body),
-		Bins:          []string{key},
-		Check:         Check{Command: DefaultCheck(key)},
+		Bins:          bins,
+		Check:         Check{Command: DefaultCheck(bins...)},
 	}
 }
 
-// DefaultCheck is the check used for components without a definition.
-func DefaultCheck(bin string) string { return "command -v " + bin }
+// DeclaredBins returns the binaries a manifest entry declares, else its
+// key.
+func DeclaredBins(ref manifest.ComponentRef) []string {
+	if len(ref.Bins) > 0 {
+		return slices.Clone(ref.Bins)
+	}
+	return []string{ref.Key}
+}
+
+// DefaultCheck is the check used for components without a definition: every
+// binary must resolve, "command -v a && command -v b".
+func DefaultCheck(bins ...string) string {
+	parts := make([]string, len(bins))
+	for i, b := range bins {
+		parts[i] = "command -v " + b
+	}
+	return strings.Join(parts, " && ")
+}
+
+// SyntheticDefinitions turns the manifest entries no tier defines but that
+// declare bins into definitions for the conflict check, so declared
+// binaries conflict with other components like defined ones (FR-018).
+func SyntheticDefinitions(wanted []Wanted) []*component.Component {
+	var out []*component.Component
+	for _, w := range wanted {
+		if w.Def == nil && len(w.Ref.Bins) > 0 {
+			out = append(out, &component.Component{Key: w.Key, Provides: slices.Clone(w.Ref.Bins)})
+		}
+	}
+	return out
+}
 
 // describe copies what build and verify need from the definition.
 func describe(c *Component, def *component.Component, selector string) {

@@ -27,6 +27,9 @@ type Env struct {
 	Project string
 	// LookPath finds executables on the host.
 	LookPath func(string) (string, error)
+	// Git runs git on the host for discovery (R-18); nil means git is not
+	// available, and local marketplaces are skipped as before.
+	Git Git
 }
 
 // Adapter is one agent harness (FR-038, data-model "Harness adapter").
@@ -100,6 +103,37 @@ type Extension struct {
 	Name   string `json:"name" yaml:"name"`
 	Source string `json:"source" yaml:"source"`
 	Origin string `json:"origin" yaml:"origin"`
+	// Portable is true when Source resolves the same on any machine that
+	// runs plan and build: a git remote, a published marketplace or a path
+	// inside the project (FR-020).
+	Portable bool `json:"portable" yaml:"portable"`
+	// Reason says why a source is not portable; empty when it is.
+	Reason string `json:"reason,omitempty" yaml:"reason,omitempty"`
+	// Remote describes the git checkout behind a proposed local marketplace
+	// (FR-019).
+	Remote *RemoteInfo `json:"remote,omitempty" yaml:"remote,omitempty"`
+}
+
+// Name match results of a local marketplace against its remote.
+const (
+	NameMatch    = "match"
+	NameMismatch = "mismatch"
+	NameUnknown  = "unknown"
+)
+
+// RemoteInfo is the git state of a local marketplace directory proposed
+// through its remote. Discovery reads local git state only and never
+// fetches.
+type RemoteInfo struct {
+	// URL is the remote URL with credentials stripped.
+	URL string `json:"url" yaml:"url"`
+	// UnpushedCommits counts local commits the remote-tracking ref lacks.
+	UnpushedCommits int `json:"unpushed_commits" yaml:"unpushed_commits"`
+	// UncommittedChanges is true when the working tree has changes.
+	UncommittedChanges bool `json:"uncommitted_changes" yaml:"uncommitted_changes"`
+	// NameMatch compares the marketplace name in the remote's marketplace
+	// file with the locally registered one: match, mismatch or unknown.
+	NameMatch string `json:"name_match" yaml:"name_match"`
 }
 
 // Redaction records a secret replaced by a placeholder.

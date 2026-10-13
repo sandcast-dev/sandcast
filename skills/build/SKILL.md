@@ -1,7 +1,7 @@
 ---
 name: sandcast-build
 description: Build and verify the sandbox image from .sandcast/manifest.yaml, writing and repairing install fragments for components sandcast cannot resolve, then offer promotion to recipes and the OpenShell profile import.
-sandcast_version: 0.1.0
+sandcast_version: 0.2.0
 ---
 
 # sandcast build
@@ -96,7 +96,7 @@ Handle one component at a time.
    ```
 
    Note `check.command` (verify runs it in the built image as the final user), the binaries (`installer.<kind>.bins`, else `provides`, else the key), and why it is unresolved (`reason` from the plan, for example the base image has no package manager the definition supports).
-2. If no tier defines it, verify runs `command -v <key>`, so the fragment must put an executable named exactly `<key>` on the final user's `PATH`. Ask the user which upstream project the tool comes from when it is not obvious.
+2. If no tier defines it, verify checks the binaries the manifest entry declares in `bins` (the plan's `components[].bins` and `check.command` show them, for example `command -v hx` for `helix`), else `command -v <key>`. The fragment must put each of them on the final user's `PATH`. When the tool's executable is not named like the key, do not add a symlink just to satisfy verify: declare the real names with `bins` on the manifest entry instead (`- key: helix`, `optional: true`, `bins: [hx]`). You never edit the manifest, so tell the user the exact entry and suggest `/sandcast-capture` or a manual edit, then plan again. Ask the user which upstream project the tool comes from when it is not obvious.
 3. Read `.sandcast/learnings.yaml` if it exists and look for earlier entries for this key. A change followed by a `fixed` entry worked; reuse it. A change followed by a later failure for the same key (a higher attempt) did not work; never repeat it.
 4. Run `sandcast fragments list --json` to see whether a fragment for this key already exists.
 
@@ -182,16 +182,20 @@ USER sandbox
 
 ### 3d: Store the fragment
 
-Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
+Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives; it runs unchanged in sh, bash and zsh, removes the file on every path and ends with the exit status of `sandcast`. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
 
 ```sh
-tmp="$(mktemp)"
+if tmp="$(mktemp)"; then
 cat > "$tmp" <<'SANDCAST_FRAGMENT'
 <the fragment>
 SANDCAST_FRAGMENT
-sandcast fragments write <key> --file "$tmp"; status=$?
+sandcast fragments write <key> --file "$tmp"
+rc=$?
 rm -f "$tmp"
-[ "$status" -eq 0 ]
+(exit "$rc")
+else
+false
+fi
 ```
 
 The command also reads the fragment from standard input. If it exits 2, fix what the validation message names and write again. If the message reports a credential-shaped value, remove it; never weaken, split or encode it to get past the check.
@@ -247,7 +251,7 @@ For each component whose fragment you wrote or repaired in this session and that
 
 > The fragment for `<key>` works. Promote it into the project-local recipe `.sandcast/recipes/<key>.yaml`? Future builds then install it deterministically without this skill.
 
-Run the promotion only after the user says yes, and pass the executables the fragment installs:
+Run the promotion only after the user says yes, and pass the executables the fragment installs. Without `--bins`, `sandcast promote` uses the manifest entry's declared `bins`, else the key, so you can leave the flag out when the entry declares them:
 
 ```sh
 sandcast promote <key> --bins <bin1,bin2> --yes

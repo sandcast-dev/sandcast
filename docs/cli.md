@@ -438,7 +438,7 @@ sandcast:            1f31df9-dirty
 openshell:           v0.1.3 (e1f3c82c)
 mise:                v2026.10.4
 component registry:  v0.1.0
-skill bundle:        0.1.0
+skill bundle:        0.2.0
 manifest schema:     1
 plan schema:         1
 ```
@@ -497,6 +497,8 @@ sandcast harness discover <name>
 ```
 
 Each replaced value is reported as `redacted: <path> (<kind>) -> <placeholder>; supply it as a provider credential at runtime`, and entries that cannot be baked are reported as `note:` lines. An unknown harness name exits 2. The [capture guide](guides/capture.md#what-discovery-finds) lists the files the Claude Code adapter reads.
+
+Every plugin and skill carries `portable` and, when it is not portable, a `reason`: a source under `~/.claude/skills`, `~/.claude/plugins` or anywhere else on the host is read on the machine that runs the plan, so a manifest that uses it builds only there. `owner/repo`, URLs and paths inside the project are portable. A plugin whose local marketplace directory cannot be copied into the image but is a git checkout with a remote is listed with a proposed `source` (`owner/repo` for GitHub, else the remote URL without credentials) and a `remote` object: `url`, `unpushed_commits`, `uncommitted_changes` and `name_match` (`match`, `mismatch` or `unknown`). Discovery reads local git state only and never fetches. A marketplace directory without a remote, or a host without `git`, still produces a skip note. The console appends both facts to each `plugin:` and `skill:` line.
 
 ### sandcast skills install
 
@@ -592,7 +594,7 @@ sandcast promote <key> [flags]
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--name <name>` | the existing component name, else the key | Display name of the recipe. |
-| `--bins <bin,...>` | the existing definition's binaries, else the key | Binaries the recipe installs. |
+| `--bins <bin,...>` | the existing definition's binaries, else the manifest entry's `bins`, else the key | Binaries the recipe installs. |
 | `--yes` | off | Promote without asking. |
 
 Without `--yes`, the command prints the recipe and asks for confirmation on standard input. Any answer other than `y` or `yes` prints `not promoted` and exits 1. A fragment that cannot be expressed as a recipe exits 2.

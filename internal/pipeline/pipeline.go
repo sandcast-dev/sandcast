@@ -315,7 +315,8 @@ func Plan(ctx context.Context, env Env, opts PlanOptions) (*Planned, error) {
 	if err != nil {
 		var le *plan.LockError
 		var re *plan.ReferenceError
-		if errors.As(err, &le) || errors.As(err, &re) {
+		var be *plan.BinsError
+		if errors.As(err, &le) || errors.As(err, &re) || errors.As(err, &be) {
 			return nil, &UsageError{Err: err}
 		}
 		return nil, err

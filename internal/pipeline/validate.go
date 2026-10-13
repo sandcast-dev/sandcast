@@ -50,6 +50,9 @@ func ValidateReferences(l fsutil.Layout, cacheDir string, m *manifest.Manifest) 
 		var defs []*component.Component
 		for _, w := range wanted {
 			path := wantedPath(m, w, harnesses)
+			if msg := plan.BinsProblem(w); msg != "" {
+				v.add(strings.TrimSuffix(path, ".key")+".bins", msg)
+			}
 			if w.Def == nil {
 				f, ok := stored[w.Key]
 				if !w.Ref.Optional && (!ok || f.Superseded) {
@@ -65,7 +68,7 @@ func ValidateReferences(l fsutil.Layout, cacheDir string, m *manifest.Manifest) 
 				v.add(path, msg)
 			}
 		}
-		for _, c := range component.Conflicts(defs) {
+		for _, c := range component.Conflicts(append(defs, plan.SyntheticDefinitions(wanted)...)) {
 			v.add("$.components", plan.ConflictProblem(c))
 		}
 	}

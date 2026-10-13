@@ -51,7 +51,15 @@ type ComponentRef struct {
 	Key      string `yaml:"key" json:"key"`
 	Version  string `yaml:"version,omitempty" json:"version,omitempty"`
 	Optional bool   `yaml:"optional,omitempty" json:"optional,omitempty"`
+	// Bins declares the executables of a component no tier defines (for
+	// example hx for helix). verify checks them and promote defaults its
+	// binaries to them; a tier-defined key must not set them (R-10,
+	// FR-018).
+	Bins []string `yaml:"bins,omitempty" json:"bins,omitempty"`
 }
+
+// binPattern is the binary name pattern of contracts/manifest-component.md.
+var binPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 
 // HarnessRef selects an agent harness and the extensions baked with it.
 type HarnessRef struct {
@@ -301,6 +309,17 @@ func (m *Manifest) Validate() []Diagnostic {
 			add(path, "duplicate component key %s (also at components[%d])", safeValue(c.Key), j)
 		}
 		seen[c.Key] = i
+		bins := map[string]bool{}
+		for j, b := range c.Bins {
+			bp := fmt.Sprintf("$.components[%d].bins[%d]", i, j)
+			switch {
+			case !binPattern.MatchString(b) || b == "." || b == "..":
+				add(bp, "invalid binary name %s", safeValue(b))
+			case bins[b]:
+				add(bp, "duplicate binary name %s", safeValue(b))
+			}
+			bins[b] = true
+		}
 	}
 	for i, h := range m.Harnesses {
 		base := fmt.Sprintf("$.harnesses[%d]", i)

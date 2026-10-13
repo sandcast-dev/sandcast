@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -100,6 +101,18 @@ func (a *App) promoteCommand() *cobra.Command {
 				return err
 			}
 			existing, _ := set.Get(key)
+			if len(bins) == 0 && existing == nil {
+				// The manifest entry of a component no tier defines may
+				// declare its binaries (FR-018); a missing or unreadable
+				// manifest leaves the key as the default.
+				if m, err := manifest.Load(l.ManifestPath()); err == nil {
+					for _, ref := range m.Components {
+						if ref.Key == key {
+							bins = slices.Clone(ref.Bins)
+						}
+					}
+				}
+			}
 			finalUser := ""
 			if planned, err := lastPlanUser(l); err == nil {
 				finalUser = planned
@@ -131,7 +144,7 @@ func (a *App) promoteCommand() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&name, "name", "", "display name of the recipe (default: the existing name or the key)")
-	f.StringSliceVar(&bins, "bins", nil, "binaries the recipe installs (default: the existing definition's, else the key)")
+	f.StringSliceVar(&bins, "bins", nil, "binaries the recipe installs (default: the existing definition's, else the manifest entry's bins, else the key)")
 	f.BoolVar(&yes, "yes", false, "promote without asking")
 	return cmd
 }

@@ -115,3 +115,11 @@ func TestComponentsMatchPinnedColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestExtensionDetail(t *testing.T) {
+	assert.Empty(t, extensionDetail(harness.Extension{Name: "x", Source: "owner/repo", Portable: true}))
+	assert.Equal(t, "  (not portable: source under ~/.claude/skills is read on the machine that runs the plan)",
+		extensionDetail(harness.Extension{Source: "~/.claude/skills/x", Reason: "source under ~/.claude/skills is read on the machine that runs the plan"}))
+	assert.Equal(t, "  (from git remote https://github.com/a/b.git, 2 unpushed commit(s), uncommitted changes: true, marketplace name: match)",
+		extensionDetail(harness.Extension{Source: "a/b", Portable: true, Remote: &harness.RemoteInfo{URL: "https://github.com/a/b.git", UnpushedCommits: 2, UncommittedChanges: true, NameMatch: "match"}}))
+}

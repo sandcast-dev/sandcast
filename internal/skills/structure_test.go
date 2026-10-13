@@ -48,6 +48,16 @@ var mandatoryPhrases = map[string][]string{
 		"the `env` key when the whole env value was the secret, `SANDCAST_SECRET_N` for a secret inside a longer value",
 		// sandcast lock without a usable mise.
 		"Exit 3 means the host has no `mise` or one older than the minimum release named in the error message.",
+		// Field feedback 002: facts the binary reports.
+		"pinned_versions",
+		"propose the first `exact` value as the component's `version:`",
+		"Never turn a `range` or `channel` value into an exact pin",
+		"Ask where the image will run",
+		"--image <registry/name> --platform <linux/amd64|linux/arm64> --push",
+		"Check the `portable` marker of every chosen skill and plugin",
+		"A plugin with a `remote` object was proposed through the git remote",
+		"It stays opt-in like every other plugin.",
+		"command -v <tool> >/dev/null && source <(<tool> completion zsh)",
 	},
 	"build": {
 		"sandcast skills check",
@@ -90,6 +100,10 @@ var mandatoryPhrases = map[string][]string{
 		`kill -INT "$pid"`,
 		// A verify check that ran out of time.
 		"A `status` of `timeout` means the check did not finish within its time limit",
+		// Field feedback 002: declared binaries instead of symlinks.
+		"do not add a symlink just to satisfy verify",
+		"`bins: [hx]`",
+		"Without `--bins`, `sandcast promote` uses the manifest entry's declared `bins`",
 	},
 }
 
@@ -98,7 +112,11 @@ var mandatoryPhrases = map[string][]string{
 // test only checks that the new wording is present; without this, a partial
 // revert that left the old instruction beside the new one would still pass.
 var forbiddenPhrases = map[string][]string{
+	// status is a read-only special parameter in zsh, so "status=$?" fails
+	// there (FR-022); snippets capture the exit status in rc instead.
+	"capture": {"status=$?"},
 	"build": {
+		"status=$?",
 		// The stall rule must signal the recorded pid, never find the build
 		// process by pattern. This is the exact old command; the current file
 		// mentions pgrep only inside the prohibition ("do not use pgrep -f").

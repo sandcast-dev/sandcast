@@ -63,6 +63,7 @@ Each entry selects one component by key.
 | `key` | string | | Kebab-case. Keys must be unique in the list. The key must resolve in a [component tier](#component-tiers) or have an active stored fragment, unless the entry is optional. |
 | `version` | string | the component's own selector | Version selector that overrides the component default, for example `"1.25"`, `">=3.12"`, `"^1.2"` or `"~1.2"`. The lockfile pins the exact version. |
 | `optional` | boolean | `false` | An optional component that does not resolve is reported but does not block the build. |
+| `bins` | list of names | the key | The executables of a component that no tier defines, for example `bins: [hx]` for `helix`. Each name matches `[A-Za-z0-9._+-]+` and appears once. `verify` checks each with `command -v`, the binary conflict check includes them, and `sandcast promote` uses them as the recipe's binaries when `--bins` is not given. A key that a component tier defines must not set `bins`: its binaries come from the definition, and validation and plan exit 2. The field is additive, so the manifest schema version stays 1. |
 
 You do not need to list components that sandcast adds by itself: the shell program, the components in `shell.components`, the agent component of each harness, `git` when a harness lists plugins, `iproute2` and `nftables` for the OpenShell target, and `curl` and `ca-certificates` whenever a mise tool is installed. The [build guide](guides/build.md#implicit-components) explains these additions.
 
