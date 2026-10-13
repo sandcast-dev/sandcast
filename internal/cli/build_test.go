@@ -18,6 +18,7 @@ import (
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/pipeline"
 	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/verify"
 )
 
 func TestBuildVerifyEndToEnd(t *testing.T) {
@@ -507,4 +508,18 @@ func TestBuildReportNoticeOrder(t *testing.T) {
 	assert.True(t, strings.HasPrefix(rep.Notices[0], "lockfile-shadow: "))
 	assert.True(t, strings.HasPrefix(rep.Notices[1], "emulation: "))
 	assert.True(t, strings.HasPrefix(rep.Notices[2], "docker-hub: "))
+}
+
+// TestPrintVerifyNotes: a session note is printed once per component, not
+// once per session condition.
+func TestPrintVerifyNotes(t *testing.T) {
+	ta := newTestApp(t)
+	note := "nft does not resolve in the image environment; not checked in the session"
+	printVerify(ta.App, &verify.Report{Image: verify.ImageRef{Reference: "localhost/demo:latest"}, Results: []verify.Result{
+		{ComponentKey: "nftables", Condition: verify.ConditionImage, OK: true, Status: "present"},
+		{ComponentKey: "session.bash-login.nftables", Condition: verify.ConditionSessionBashLogin, OK: true, Status: "present", Notes: []string{note}},
+		{ComponentKey: "session.zsh.nftables", Condition: verify.ConditionSessionZsh, OK: true, Status: "present", Notes: []string{note}},
+	}, Passed: 3})
+	out := ta.stdout.String()
+	assert.Equal(t, 1, strings.Count(out, "note: nftables: "+note+"\n"), out)
 }

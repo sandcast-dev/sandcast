@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -295,6 +296,31 @@ func TestSessionEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, "MISSING", "bash -lc resolves every binary")
 	assert.Contains(t, out, "/opt/mise/shims/starship")
+	// I-1: the image's PATH directories beyond the OpenShell default PATH
+	// and the shims (the base image's, as the probe recorded them) follow
+	// the shims in a session, in the image's order.
+	pathOut, err := exec.Command(engine, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", img).Output()
+	require.NoError(t, err)
+	var extra []string
+	for _, line := range strings.Split(string(pathOut), "\n") {
+		if v, ok := strings.CutPrefix(line, "PATH="); ok {
+			for _, d := range strings.Split(v, ":") {
+				if d != "" && d != "/opt/mise/shims" && d != "/usr/local/bin" && d != "/usr/bin" && d != "/bin" && !slices.Contains(extra, d) {
+					extra = append(extra, d)
+				}
+			}
+		}
+	}
+	out, _, err = run("", false, "/bin/bash", "-lc", "echo $PATH")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Join(append(append([]string{"/opt/mise/shims"}, extra...), "/usr/local/bin", "/usr/bin", "/bin"), ":")+"\n", out,
+		"the session PATH carries the image's extra directories after the shims")
+	// FR-010: a declared binary that does not resolve in the image
+	// environment (nft in /usr/sbin, outside this base image's PATH) is
+	// skipped with a note instead of failing the session checks.
+	if !slices.ContainsFunc(extra, func(d string) bool { return strings.HasSuffix(d, "sbin") }) {
+		assert.Contains(t, r.stdout, "note: nftables: nft does not resolve in the image environment; not checked in the session")
+	}
 	out, _, err = run("", false, "/bin/bash", "-lc", `printf '%s\n' "$MISE_DATA_DIR" "$MISE_CONFIG_DIR"`)
 	require.NoError(t, err)
 	assert.Equal(t, "/opt/mise\n/etc/mise\n", out, "MISE_* settings in the session")

@@ -79,6 +79,8 @@ type ImageFacts struct {
 	// HomeRCResetsPath lists the files in the default user's home that
 	// assign PATH without referencing $PATH (R-05).
 	HomeRCResetsPath []string `yaml:"home_rc_resets_path,omitempty" json:"home_rc_resets_path,omitempty"`
+	// Path lists the directories of the base image's PATH, in order.
+	Path []string `yaml:"path,omitempty" json:"path,omitempty"`
 }
 
 // OS identifies the base image operating system.

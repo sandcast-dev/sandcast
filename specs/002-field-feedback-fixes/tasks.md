@@ -148,6 +148,10 @@ Single Go module. `internal/<pkg>/` packages, root-level embedded assets (`compo
 ### Follow-up from T058 (quickstart walk-through, 2026-10-13)
 
 - [ ] T059 mise shims read project configuration: in a session inside a project that has `.tool-versions` or `mise.toml`, every shim call prints `mise WARN ... node@20.11.1 is not in the lockfile` for a tool the image lockfile lacks (seen on `tests/fixtures/pinned-project`), and a project pin of another version than the image's could make a shim fail. SC-005 itself holds (no toolchain download with the network disabled). Research a mise setting that keeps image shims on the image configuration only, and add a session check for it.
+
+### Follow-up from code review (2026-10-13)
+
+- [ ] T060 Workspace rule over every binary with resolved paths (FR-003, deferred by the user in code review): the probe records only the `PATH` hits of a component's primary (first) binary and does not resolve symlinks, so a component whose primary binary lies outside the workspace path counts as present even when another of its binaries, or the target of a symlink such as `/usr/local/bin/foo -> /sandbox/.local/bin/foo`, lies under it. Extend the probe protocol to record the hits of every binary and the `readlink -f` target when available (bump the probe cache format), judge a component by all of them in `internal/plan/delta.go`, and add delta and integration tests.
 - Not executed in T058: the successful push path of quickstart "Reference, push and digest" against a local registry. The throwaway registry speaks HTTP and the podman machine requires TLS unless its `registries.conf` marks the registry insecure, which this run did not change. The failed-push path (`pushed: false`, error, push section in `build.log`) was observed, and the digest file mechanism was checked by hand against the registry's `Docker-Content-Digest`.
 
 ---

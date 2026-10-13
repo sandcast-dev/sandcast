@@ -138,9 +138,10 @@ func usesMise(p *plan.Plan) bool {
 // script: whenever mise tools are installed (a login shell whose system
 // profile resets PATH needs the shims back, on either target), and for the
 // OpenShell target whenever the components or harnesses set image
-// environment variables, which an OpenShell session would otherwise lose.
+// environment variables or the base image has PATH directories beyond the
+// OpenShell default PATH, which an OpenShell session would otherwise lose.
 func NeedsSessionEnv(p *plan.Plan) bool {
-	return usesMise(p) || (p.Target == manifest.TargetOpenShell && len(p.Image.Env) > 0)
+	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path)) > 0))
 }
 
 // hasZsh reports whether zsh is in the base image or planned.

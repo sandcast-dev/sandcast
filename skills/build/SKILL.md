@@ -257,7 +257,7 @@ Run the promotion only after the user says yes, and pass the executables the fra
 sandcast promote <key> --bins <bin1,bin2> --yes
 ```
 
-`--yes` confirms the user's answer you already have; never pass it without that answer. Explain the result: the recipe lives in `.sandcast/recipes/<key>.yaml`, the fragment `.sandcast/fragments/<key>.containerfile` is marked superseded and no longer used, and the next `sandcast plan` resolves the component through the recipe. Suggest committing the recipe, the fragment and `.sandcast/learnings.yaml`.
+`--yes` confirms the user's answer you already have; never pass it without that answer. Explain the result: the recipe lives in `.sandcast/recipes/<key>.yaml`, the fragment `.sandcast/fragments/<key>.containerfile` is marked superseded and no longer used, and the next `sandcast plan` resolves the component through the recipe. When the manifest entry declared `bins`, the binary removed them (the recipe defines the binaries now); this is the one manifest change the binary makes on your behalf, so mention it to the user. Suggest committing the recipe, the fragment and `.sandcast/learnings.yaml`.
 
 Confirm that the recipe path works, because the recipe runs as a script in the recipes section instead of the fragment's `RUN`, and its `ENV` moves to the user section:
 

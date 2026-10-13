@@ -153,9 +153,10 @@ func TestSessionRequests(t *testing.T) {
 		"session.bash-login.broken", "session.bash-login.go", "session.bash-login.zsh",
 		"session.bash.startup",
 	}, keys(bash))
-	assert.Equal(t, "env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc 'go version'", bash[4].Command)
+	assert.Contains(t, bash[4].Command, "env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc ")
+	assert.Contains(t, bash[4].Command, "go version' sandcast-session $_sb;", "the binaries that resolve in the image environment are the session shell's arguments")
 	assert.Equal(t, "1.25", bash[4].Selector, "the session check keeps the component's expectations")
-	assert.Equal(t, "printf '%s\\n' '{ go version\n} 2>&1' | env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -i 2>/dev/null", bash[1].Command)
+	assert.Contains(t, bash[1].Command, "| env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -i -s -- $_sb 2>/dev/null")
 
 	zsh := SessionRequests(openshellPlan("zsh"))
 	assert.Contains(t, keys(zsh), "session.zsh.go")
@@ -191,6 +192,60 @@ func TestSessionRequestsRunLocally(t *testing.T) {
 		require.NoError(t, err, "%s: %s", r.Key, out)
 		assert.Contains(t, string(out), "/sh", r.Key)
 		assert.Contains(t, string(out), "it's", "%s keeps the check's stderr", r.Key)
+	}
+}
+
+// TestSessionChecksDeclaredBins runs the session commands with the host's
+// shells (FR-010): a binary that resolves in the image environment but not
+// through the session PATH fails every session check with exit 127; a
+// binary that does not resolve in the image environment either is skipped
+// with a note, which Run moves out of the output into Result.Notes.
+func TestSessionChecksDeclaredBins(t *testing.T) {
+	for _, sh := range []string{"bash", "zsh"} {
+		if _, err := exec.LookPath(sh); err != nil {
+			t.Skipf("no %s", sh)
+		}
+	}
+	imageOnly := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(imageOnly, "sandcast-image-only"), []byte("#!/bin/sh\n"), 0o755))
+	imageEnv := append(os.Environ(), "PATH="+imageOnly+":"+os.Getenv("PATH"))
+	run := func(c plan.Component) map[string]string {
+		p := openshellPlan("zsh")
+		p.FinalUser.Home = t.TempDir()
+		p.Components = []plan.Component{c}
+		out := map[string]string{}
+		for _, r := range SessionRequests(p) {
+			if r.Key == "session.zsh.startup" {
+				continue
+			}
+			cmd := exec.Command("/bin/sh", "-c", r.Command)
+			cmd.Env = imageEnv
+			b, err := cmd.CombinedOutput()
+			code := 0
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else {
+				require.NoError(t, err)
+			}
+			out[r.Key] = fmt.Sprintf("%d\n%s", code, b)
+		}
+		require.Len(t, out, 3)
+		return out
+	}
+	for key, res := range run(plan.Component{Key: "tool", Bins: []string{"sh", "sandcast-image-only"}, Check: plan.Check{Command: "command -v sh"}}) {
+		assert.True(t, strings.HasPrefix(res, "127\n"), "%s: %s", key, res)
+		assert.Contains(t, res, "sandcast-image-only does not resolve through the session PATH", key)
+	}
+	for key, res := range run(plan.Component{Key: "tool", Bins: []string{"sh", "sandcast-nowhere"}, Check: plan.Check{Command: "command -v sh"}}) {
+		assert.True(t, strings.HasPrefix(res, "0\n"), "%s: %s", key, res)
+		assert.Contains(t, res, NotCheckedPrefix+"sandcast-nowhere does not resolve in the image environment", key)
+		out, notes := splitNotes(strings.TrimPrefix(res, "0\n"))
+		assert.NotContains(t, out, NotCheckedPrefix)
+		assert.Equal(t, []string{"sandcast-nowhere does not resolve in the image environment; not checked in the session"}, notes)
+	}
+	for key, res := range run(plan.Component{Key: "certs", Bins: []string{"certs"}, Check: plan.Check{Command: "true"}}) {
+		assert.Equal(t, "0\n", res, "%s: a component without executables is checked by its own check, without a note", key)
 	}
 }
 

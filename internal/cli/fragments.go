@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -139,6 +141,13 @@ func (a *App) promoteCommand() *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintf(a.Stdout, "promoted %s to %s; the fragment is marked superseded\n", key, l.RelToRoot(p.Path))
+			removed, err := dropDeclaredBins(l.ManifestPath(), key)
+			if err != nil {
+				return fmt.Errorf("promoted %s, but removing bins from its manifest entry failed (remove them by hand, the recipe now defines the binaries): %w", key, err)
+			}
+			if removed {
+				_, _ = fmt.Fprintf(a.Stdout, "removed bins from the manifest entry %s; the recipe now defines its binaries\n", key)
+			}
 			return nil
 		},
 	}
@@ -147,6 +156,32 @@ func (a *App) promoteCommand() *cobra.Command {
 	f.StringSliceVar(&bins, "bins", nil, "binaries the recipe installs (default: the existing definition's, else the manifest entry's bins, else the key)")
 	f.BoolVar(&yes, "yes", false, "promote without asking")
 	return cmd
+}
+
+// dropDeclaredBins removes the declared bins of the manifest entry key
+// after promotion: the project recipe now defines the component, and a
+// declared list on a tier-defined component fails validation (FR-018, one
+// source of truth). The manifest goes through the regular save path, which
+// re-encodes it. A missing manifest or an entry without bins is left alone.
+func dropDeclaredBins(path, key string) (bool, error) {
+	m, err := manifest.Load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	removed := false
+	for i := range m.Components {
+		if m.Components[i].Key == key && len(m.Components[i].Bins) > 0 {
+			m.Components[i].Bins = nil
+			removed = true
+		}
+	}
+	if !removed {
+		return false, nil
+	}
+	return true, manifest.Save(path, m)
 }
 
 func (a *App) learningsCommand() *cobra.Command {

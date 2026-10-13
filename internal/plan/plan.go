@@ -600,6 +600,7 @@ func factsOf(f probe.Facts) ImageFacts {
 		},
 		Shells:           shells,
 		HomeRCResetsPath: slices.Clone(f.HomeRCResetsPath),
+		Path:             slices.Clone(f.Path),
 	}
 }
 

@@ -74,6 +74,9 @@ type Result struct {
 	Status    string `yaml:"status" json:"status"`
 	Version   string `yaml:"version,omitempty" json:"version,omitempty"`
 	Output    string `yaml:"output" json:"output"`
+	// Notes name the binaries a session check skipped because they do not
+	// resolve in the image environment either.
+	Notes []string `yaml:"notes,omitempty" json:"notes,omitempty"`
 }
 
 // Requests turns the plan's components into check requests, sorted by key.
@@ -120,8 +123,11 @@ func checkHash(c plan.Check) string {
 // runs, so the home rc files and PROMPT_COMMAND run first), both started
 // with OpenShell's cleared environment. A component's binary therefore has
 // to resolve through the session PATH and run with the session's MISE_*
-// settings. With shell.program zsh, the checks also run in an interactive
-// login zsh (zsh -il), as the switch hook starts it. The selected shell program's startup check (session.zsh.startup or
+// settings. Before the check, every binary of the component that resolves
+// in the image environment must resolve through the session PATH too
+// (binsPrelude). With shell.program zsh, the checks also run in an
+// interactive login zsh (zsh -il), as the switch hook starts it. The
+// selected shell program's startup check (session.zsh.startup or
 // session.bash.startup, an interactive shell in both cases) fails when the
 // startup writes to stderr (apart from the notes a shell prints only
 // because verify runs it without a terminal) or does not read the curated
@@ -153,14 +159,16 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 		if len(c.Bins) > 0 {
 			bin = c.Bins[0]
 		}
-		check := c.Check.Command
-		add(sessionPrefix+"bash-login."+c.Key, env+" bash -lc "+shell.Quote(check), c.Check, bin)
+		check := sessionBinsCheck + c.Check.Command
+		pre, post := binsPrelude(c)
+		add(sessionPrefix+"bash-login."+c.Key, pre+env+" bash -lc "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
 		// bash -i prints its prompts and job control notes to stderr; the
-		// check's own stderr is kept through the group redirection.
+		// check's own stderr is kept through the group redirection. -s
+		// passes the binaries as positional parameters.
 		add(sessionPrefix+"bash-interactive."+c.Key,
-			"printf '%s\\n' "+shell.Quote("{ "+check+"\n} 2>&1")+" | "+env+" bash -i 2>/dev/null", c.Check, bin)
+			pre+"printf '%s\\n' "+shell.Quote("{ "+check+"\n} 2>&1")+" | "+env+" bash -i -s -- $_sb 2>/dev/null"+post, c.Check, bin)
 		if zsh {
-			add(sessionPrefix+"zsh."+c.Key, env+" zsh -il -c "+shell.Quote(check), c.Check, bin)
+			add(sessionPrefix+"zsh."+c.Key, pre+env+" zsh -il -c "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
 		}
 	}
 	probeRC := ":"
@@ -179,6 +187,41 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	}
 	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Key < reqs[j].Key })
 	return reqs
+}
+
+// NotCheckedPrefix starts the output line of a session check for a binary
+// that does not resolve in the image environment and is therefore not
+// required in the session; Run moves these lines into Result.Notes.
+const NotCheckedPrefix = "sandcast: not checked in the session: "
+
+// sessionBinsCheck runs in the session shell before the component check:
+// every binary passed as a positional parameter must resolve through the
+// session PATH, else the check fails with exit 127 (FR-010).
+const sessionBinsCheck = `for _b in "$@"; do command -v "$_b" >/dev/null || { echo "sandcast: $_b does not resolve through the session PATH" >&2; exit 127; }; done
+`
+
+// binsPrelude returns the shell code around a session check command. The
+// prelude runs in the verify container's image environment and collects in
+// $_sb the component's binaries that resolve there (the build-time image
+// PATH, /usr/sbin included); the session shell must resolve exactly those.
+// The postlude keeps the session shell's exit status and prints a note line
+// for every binary that does not resolve in the image environment either. A
+// component whose only binary is its key and does not resolve (a component
+// without executables, such as ca-certificates) is checked by its own check
+// alone, without a note.
+func binsPrelude(c plan.Component) (string, string) {
+	words := make([]string, len(c.Bins))
+	for i, b := range c.Bins {
+		words[i] = shell.Quote(b)
+	}
+	pre := "_sb= _sk=; for _b in " + strings.Join(words, " ") +
+		`; do if command -v "$_b" >/dev/null 2>&1; then _sb="$_sb $_b"; else _sk="$_sk $_b"; fi; done; `
+	post := "; _rc=$?"
+	if len(c.Bins) != 1 || c.Bins[0] != c.Key {
+		post += `; for _b in $_sk; do echo "` + NotCheckedPrefix + `$_b does not resolve in the image environment"; done`
+	}
+	post += `; exit "$_rc"`
+	return pre, post
 }
 
 // sessionEnv is the env -i prefix that reproduces the environment OpenShell
@@ -236,6 +279,7 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 		if r.Status == "" {
 			r.Status = string(probe.StatusMissing)
 		}
+		r.Output, r.Notes = splitNotes(r.Output)
 		report.Results = append(report.Results, r)
 		if r.OK {
 			report.Passed++
@@ -248,6 +292,22 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 		return report, fmt.Errorf("%w: %s", ErrChecksFailed, strings.Join(failed, ", "))
 	}
 	return report, nil
+}
+
+// splitNotes moves the NotCheckedPrefix lines of a check output into notes.
+func splitNotes(output string) (string, []string) {
+	if !strings.Contains(output, NotCheckedPrefix) {
+		return output, nil
+	}
+	var keep, notes []string
+	for _, line := range strings.Split(output, "\n") {
+		if note, ok := strings.CutPrefix(line, NotCheckedPrefix); ok {
+			notes = append(notes, note+"; not checked in the session")
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimRight(strings.Join(keep, "\n"), "\n"), notes
 }
 
 // Write stores the report as YAML.

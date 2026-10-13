@@ -175,5 +175,16 @@ if [ -n "$_home" ]; then
 	done
 fi
 printf '{"type":"homerc","resets_path":[%s]}\n' "${_rcs%,}"
+_pdirs=
+_cifs=$IFS
+IFS=:
+set -f
+for _d in $PATH; do
+	case $_d in '') continue ;; esac
+	_pdirs="$_pdirs\"$(_jsafe "$_d")\","
+done
+set +f
+IFS=$_cifs
+printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
 _check 'go' 'go' 'go version'
 exit 0

@@ -91,6 +91,15 @@ func TestPromoteDefaultsToDeclaredBins(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "bins:\n      - hx\n")
 	assert.NotContains(t, string(data), "- helix\n")
+	// The recipe now defines helix, so promote drops the redundant bins
+	// from the manifest entry and the next plan accepts the manifest.
+	assert.Contains(t, ta.stdout.String(), "removed bins from the manifest entry helix")
+	m, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "manifest.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(m), "key: helix")
+	assert.NotContains(t, string(m), "bins:")
+	require.Equal(t, 0, ta.run("manifest", "validate"), ta.stderr.String()+ta.stdout.String())
+	require.Equal(t, 0, ta.run("plan"), ta.stderr.String())
 
 	ta = newTestApp(t)
 	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "  - key: zsh\n", "  - key: zsh\n  - key: helix\n    optional: true\n    bins: [hx]\n", 1))

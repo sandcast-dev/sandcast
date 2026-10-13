@@ -105,7 +105,8 @@ _check() {
 }
 `
 
-// scriptFacts prints the os, pkgmgr, user, shells and homerc lines. The
+// scriptFacts prints the os, pkgmgr, user, shells, homerc and path lines.
+// The path line lists the directories of PATH in order. The
 // homerc line lists the files among .bashrc, .profile and .bash_profile in
 // the default user's home that assign PATH without referencing $PATH, which
 // would drop directories set before them (R-05). The passwd entry
@@ -198,6 +199,17 @@ if [ -n "$_home" ]; then
 	done
 fi
 printf '{"type":"homerc","resets_path":[%s]}\n' "${_rcs%,}"
+_pdirs=
+_cifs=$IFS
+IFS=:
+set -f
+for _d in $PATH; do
+	case $_d in '') continue ;; esac
+	_pdirs="$_pdirs\"$(_jsafe "$_d")\","
+done
+set +f
+IFS=$_cifs
+printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
 `
 
 // Script returns the POSIX sh probe script for reqs. It prints one JSON

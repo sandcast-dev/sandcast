@@ -7,13 +7,13 @@
 
 ## Compliance Summary
 
-**Overall score: 92.9% (39 of 42 checks fully compliant)**
+**Overall score: 97.6% (41 of 42 checks fully compliant)**
 
-- Functional requirements: 23/25 (FR-003 and FR-010 partial)
+- Functional requirements: 25/25
 - Edge cases: 16/17 (go.work highest directive partial)
 - Spec-declared constants: none (no `## Constants` section)
 
-Before the review fixes, 34 of 42 checks were fully compliant (81%). Commit eaa967e closed FR-018 (diagnostic path, promote check), FR-019 (enclosing repository, unknown divergence, credential skip reason), FR-022 (temporary file on every exit path), FR-024 (documentation gaps) and the credential edge case. All three remaining partial items need a decision the spec does not make, so the deep review ran with them open (see below).
+Before the review fixes, 34 of 42 checks were fully compliant (81%). Commit eaa967e closed FR-018 (diagnostic path, promote check), FR-019 (enclosing repository, unknown divergence, credential skip reason), FR-022 (temporary file on every exit path), FR-024 (documentation gaps) and the credential edge case. After the deep review the score stood at 92.9% (39/42), with FR-003 and FR-010 partial and four Important items needing a decision. The user decided all four (spec Clarifications, session "code review"); the resolution commit implements them, which brings the score to 41/42. The go.work edge case stays partial (O5, still AMBIGUOUS).
 
 ## Compliance Matrix
 
@@ -21,14 +21,14 @@ Before the review fixes, 34 of 42 checks were fully compliant (81%). Commit eaa9
 |------|----------------|--------|-------|
 | FR-001 lockfile decides | internal/plan/delta.go, plan.go | Compliant | equal skips, differing or unknown shadows |
 | FR-002 notices | delta.go, plan.go, cli/build.go | Compliant | repeated in the build report |
-| FR-003 probe paths, workspace rule | probe/script.go, plan/delta.go, plan/user.go | Partial | only the first binary's PATH hits are recorded; symlinks are not resolved (AMBIGUOUS) |
+| FR-003 probe paths, workspace rule | probe/script.go, plan/delta.go, plan/user.go | Compliant | spec now states the current rule (PATH hits of the primary binary, paths not resolved); every binary with resolved targets deferred to T060 |
 | FR-004 pinned versions | capture/pins.go, match.go | Compliant | unreadable pin files now produce a note |
 | FR-005 skill proposes exact pin | skills/capture/SKILL.md | Compliant | |
-| FR-006 session env via startup files | plan/encode.go, build/sections.go | Compliant | MISE_* now asserted in bash -lc, zsh -c and zsh -il |
+| FR-006 session env via startup files | plan/encode.go, build/sections.go, probe/script.go | Compliant | MISE_* asserted in bash -lc, zsh -c and zsh -il; base image PATH directories beyond the OpenShell default re-exported from the probe's new `path` fact |
 | FR-007 PATH survives home rc | encode.go, probe/script.go, plan.go | Compliant | home rc notices only when the base user is the final user |
 | FR-008 zsh switch hook, login shell | build/sections.go, assemble.go | Compliant | switched zsh carries SANDCAST_NO_SHELL_SWITCH=1, so nested bash stays bash |
 | FR-009 no new-user wizard | sections.go zshenv block | Compliant | now tested with an empty home |
-| FR-010 session checks on every verify | verify/verify.go | Partial | checks run each component check, not `command -v` for every binary (AMBIGUOUS, see below); zsh checks now use `zsh -il` |
+| FR-010 session checks on every verify | verify/verify.go, cli/verify.go | Compliant | every declared binary that resolves in the image environment must resolve in the session; others are skipped with `notes`; components without executables keep their check; zsh checks use `zsh -il` |
 | FR-011 image ref, push, digest | cli/build.go, build/build.go, engine/exec.go | Compliant | `--digestfile` with podman 6.1.3 remote verified against a local registry |
 | FR-012 Docker Hub namespace warning | manifest.go, pipeline.go | Compliant | |
 | FR-013 Docker Hub rate-limit notice | cli/build.go | Compliant | |
@@ -36,7 +36,7 @@ Before the review fixes, 34 of 42 checks were fully compliant (81%). Commit eaa9
 | FR-015 init flags | cli/init.go, manifest.go | Compliant | note now suggests `--force` |
 | FR-016 emulation notice | component/types.go, rust.yaml, pipeline.go | Compliant | printed before the build as well |
 | FR-017 cross-arch guide | docs/guides/cross-arch.md | Compliant | |
-| FR-018 declared bins | manifest.go, plan.go, validate.go, fragments.go | Compliant | conflict path `$.components[i].bins[j]`; promoted recipe checks every binary |
+| FR-018 declared bins | manifest.go, plan.go, validate.go, cli/fragments.go | Compliant | conflict path `$.components[i].bins[j]`; promoted recipe checks every binary; promote removes the redundant `bins` and the next plan accepts the manifest |
 | FR-019 git remote marketplaces | harness/claudecode/discover.go, harness/git.go | Compliant | top-level check, null unknown divergence, hardened git env |
 | FR-020 portability marker | discover.go | Compliant | `file:` URLs not portable |
 | FR-021 copy offer on marker | skills/capture/SKILL.md | Compliant | |
@@ -60,14 +60,19 @@ Fixed in eaa967e:
 
 Verified, no change: podman remote `--digestfile` writes the registry digest (podman 6.1.3, local registry).
 
+## Resolved by user decision
+
+| # | Item | Severity | Resolution |
+|---|------|----------|------------|
+| O1 | FR-010: session checks did not test every binary | Important | Every declared binary that resolves in the image environment (build-time image PATH) must resolve in the session, else exit 127; binaries that do not resolve there are skipped with a note (`notes` in verify.yaml and JSON, one `note:` console line per component); a component whose only binary name is its key and has no executable (ca-certificates) keeps its component check. Contract, docs and FR-010 updated. |
+| O2 | Base image tools outside the default PATH never reached a session | Important | The probe records the base image PATH (`path` fact, cache format 3); `_sandcast_path` re-adds the directories beyond `/usr/local/bin:/usr/bin:/bin` in the base image's order after the shims (OpenShell target, plain absolute paths only). Unit tests under sh, dash, bash and zsh; integration test checks `nft` from `/usr/sbin` in a session. |
+| O3 | FR-003: first binary only, no symlink resolution | Important | Deferred: T060 added to tasks.md; FR-003, the edge case, the data model and the key entity now state the current rule and reference T060. Probe protocol for check paths unchanged. |
+| O4 | Promote left `bins`, so the next plan rejected the entry | Important | `sandcast promote` removes the redundant `bins` from the promoted entry through the regular manifest save path (re-encodes, comments not kept); test runs `manifest validate` and `plan` after promote. FR-018, docs and the build skill updated. |
+
 ## Open Items (not fixed)
 
 | # | Item | Severity | Status | Options |
 |---|------|----------|--------|---------|
-| O1 | FR-010: session checks do not test every binary of a component | Important | AMBIGUOUS | A naive `command -v` per declared binary failed the integration suite: `ca-certificates` has no executable and `nft` lives in `/usr/sbin`, outside the session PATH. Options: check only binaries that resolve in the image environment, mark root-only or non-executable components, or relax FR-010 to "every component check". |
-| O2 | Base image tools in PATH directories outside the default PATH never reach a session | Important | AMBIGUOUS | Re-export the base image's extra PATH directories in the session script, or treat such components as missing for the OpenShell target. |
-| O3 | FR-003: workspace rule judges the first binary's PATH hit without resolving symlinks | Important | AMBIGUOUS | Resolve with `readlink -f` when present and judge link and target; walk every binary. Changes the probe protocol and cache. |
-| O4 | `sandcast promote` keeps the manifest `bins`, so the next plan rejects the entry (FR-018 one source of truth) | Important | AMBIGUOUS | Promote prints an instruction to remove `bins`; validation tolerates bins equal to the project recipe's; or promote edits the manifest (against the skill contract). |
 | O5 | go.work proposal can be lower than the highest directive | Minor | AMBIGUOUS | Treat a two-part go directive as exact, or always propose the highest pin for go. |
 | O6 | Profile override notices follow the kinded notices; docs say the reverse | Minor | AMBIGUOUS | Reorder in code or adjust docs. |
 | O7 | Fedora-style images read `/etc/bashrc` only through `~/.bashrc`; an empty home gets neither the session block nor the hook | Minor | AMBIGUOUS | Also append to `/etc/profile.d`, or document the limit. |
@@ -116,5 +121,5 @@ Key fixes applied:
 ## Test Results
 
 - `make verify`: pass (unit tests and golangci-lint, 0 issues).
-- `make test-integration` (podman 6.1.3): pass (648s).
+- `make test-integration` (podman 6.1.3): pass (648s after the review fixes; 340s after the user decisions).
 - `make test-gateway`: not run in this stage (needs a throwaway OpenShell gateway).

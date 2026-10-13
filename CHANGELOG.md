@@ -12,16 +12,16 @@ Fixes for the eleven issues from the first real builds ([#1](https://github.com/
 #### The image matches its inputs (#1, #2, #3)
 
 - The lockfile decides tool versions: a mise component that the base image provides at a version other than the one `mise.lock` locks for the target platform, or at a version the probe cannot read, is planned as `shadow` and installed at the locked version; an equal version stays `skip`. There is no per-component opt-out. The delta records `locked_version`.
-- The probe records every `PATH` hit of a component's binary. For the OpenShell target, a binary that lies only under the workspace path (the final user's home, `/sandbox` on the community base) counts as missing and is installed; when only the first hit lies there, another copy decides and its version counts as unknown. The delta records `ignored_paths`. The container target is unchanged.
+- The probe records every `PATH` hit of a component's primary binary (paths not resolved; every binary with resolved targets is follow-up T060). For the OpenShell target, a binary that lies only under the workspace path (the final user's home, `/sandbox` on the community base) counts as missing and is installed; when only the first hit lies there, another copy decides and its version counts as unknown. The delta records `ignored_paths`. The container target is unchanged.
 - New plan notices with a stable `<kind>: <subject>: <message>` form, sorted after the other notices: `lockfile-shadow`, `unknown-version`, `workspace-path`, `home-rc-path` (a home rc file of the base image resets `PATH`) and `reference`. `sandcast build` repeats them in its report (`notices`).
 - `sandcast components match` reports `pinned_versions` (value, file, `exact`, `range` or `channel`) from `go.mod`, `go.work`, `rust-toolchain.toml`, `rust-toolchain`, `.python-version`, `pyproject.toml`, `.nvmrc`, `.node-version`, `package.json`, `.tool-versions` and `mise.toml`, a `PINNED` table column, and `notes` for pin files it cannot parse. `.tool-versions` and `mise.toml` entries count as evidence.
 
 #### Sessions get the curated shell (#11)
 
-- `/etc/profile.d/sandcast-env.sh` replaces `/etc/profile.d/sandcast-mise.sh`. It exports every `MISE_*` setting and the component and harness environment (for example `RUSTUP_HOME`, `GOPATH`, `CLAUDE_CONFIG_DIR`) and puts the mise shims first on `PATH`; in bash it re-applies the shims through `PROMPT_COMMAND` and, for `bash -lc`, a self-removing `DEBUG` trap, so home rc files that reset `PATH` no longer hide the tools. The system bash rc of OpenShell images and the system zshenv source it.
+- `/etc/profile.d/sandcast-env.sh` replaces `/etc/profile.d/sandcast-mise.sh`. It exports every `MISE_*` setting and the component and harness environment (for example `RUSTUP_HOME`, `GOPATH`, `CLAUDE_CONFIG_DIR`) and puts the mise shims first on `PATH`, followed for the OpenShell target by the base image's `PATH` directories beyond `/usr/local/bin:/usr/bin:/bin` (recorded by the probe as a new `path` fact; the probe cache moves to format 3); in bash it re-applies the shims through `PROMPT_COMMAND` and, for `bash -lc`, a self-removing `DEBUG` trap, so home rc files that reset `PATH` no longer hide the tools. The system bash rc of OpenShell images and the system zshenv source it.
 - With `shell.program: zsh`, an interactive terminal session that OpenShell starts in bash switches to a zsh login shell (`SANDCAST_NO_SHELL_SWITCH=1` keeps bash), the final user's login shell is `/bin/zsh` for created and kept users, and the zsh new-user wizard is disabled.
 - The curated rc starts with two lines that re-apply the shims and mark the file as read.
-- `sandcast verify` (and `build --verify`) always adds session checks for the OpenShell target: every component check runs again under OpenShell's cleared environment through `bash -lc`, `bash -i` and, with zsh, `zsh -i -c`, plus a startup check of the selected shell. Results carry a `condition` and count toward the exit status; the console shows them in a `session checks` group.
+- `sandcast verify` (and `build --verify`) always adds session checks for the OpenShell target: every component check runs again under OpenShell's cleared environment through `bash -lc`, `bash -i` and, with zsh, `zsh -il -c`, plus a startup check of the selected shell. Each session check first requires every binary of the component that resolves in the image environment to resolve through the session `PATH`; a binary that does not resolve there either is skipped and reported in `notes`. Results carry a `condition` and count toward the exit status; the console shows them in a `session checks` group.
 
 #### The image reaches the gateway (#8, #9, #10)
 
@@ -33,14 +33,14 @@ Fixes for the eleven issues from the first real builds ([#1](https://github.com/
 
 #### Capture works from facts the binary reports (#3, #4, #5, #6, #7, #11)
 
-- Manifest component entries can declare `bins` for components that no tier defines: verify checks them, the conflict check includes them, `sandcast promote` defaults `--bins` to them, and validation and plan reject `bins` on a tier-defined key.
+- Manifest component entries can declare `bins` for components that no tier defines: verify checks them, the conflict check includes them, `sandcast promote` defaults `--bins` to them and then removes them from the manifest entry, and validation and plan reject `bins` on a tier-defined key.
 - `sandcast harness discover` marks every skill and plugin `portable` (with a `reason` when not) and proposes plugins whose local marketplace directory is a git checkout with a remote, with a `remote` object (`url` without credentials, `unpushed_commits`, `uncommitted_changes`, `name_match`). Discovery reads local git state only and never fetches.
 - Skill snippets run unchanged in sh, bash and zsh, remove their temporary file on every path and propagate the exit status of `sandcast`; a test runs every snippet under the three shells.
 - The capture skill proposes exact pinned versions, asks where the image runs and passes `--image`, `--platform` and `--push` to init for a remote gateway, bases its copy offer on the portability marker, presents remote notes for proposed marketplace plugins, and loads a tool's own zsh completion before a kept `compdef` line whose plugin was removed. The build skill declares `bins` instead of adding symlinks.
 
 #### Compatibility
 
-- Probe cache format 2: the first plan after the upgrade runs one full re-probe per base image.
+- Probe cache format 3 (format 2 added binary paths and home rc facts, format 3 the base image `PATH`): the first plan after the upgrade runs one full re-probe per base image.
 - Skill bundle 0.2.0: `sandcast skills check` reports installed skills as outdated; run `sandcast skills install`.
 - Images with `shell.program: zsh` now switch interactive terminal sessions from bash to zsh. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment to stay in bash.
 - Images with a base tool at another version than `mise.lock` now install the locked version and grow accordingly.

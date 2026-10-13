@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -25,8 +27,9 @@ container engine (no gateway needed), writes verify.yaml, reports every
 result, and exits 1 if any check failed.
 
 For the OpenShell target it always adds session checks: every component
-check runs again in a login bash and an interactive bash started with
-OpenShell's cleared environment (only HOME, USER, TERM and the default
+check runs again, after every binary of the component that resolves in the
+image environment must resolve through the session PATH too, in a login
+bash and an interactive bash started with OpenShell's cleared environment (only HOME, USER, TERM and the default
 PATH), and with shell.program zsh also in an interactive login zsh. The
 startup check of the selected shell program (session.zsh.startup or
 session.bash.startup) fails when the interactive shell does not read the
@@ -114,10 +117,25 @@ func printVerify(a *App, r *verify.Report) {
 	if len(session) > 0 {
 		_, _ = fmt.Fprintln(a.Stdout, "\nsession checks (cleared environment as in an OpenShell session):")
 		tb = newTable(a.Stdout, "CHECK", "CONDITION", "RESULT", "OUTPUT")
+		var notes []string
 		for _, res := range session {
 			tb.row(res.ComponentKey, res.Condition, verifyResult(res), firstLine(res.Output))
+			// A note repeats for each session condition; it is printed
+			// once per component.
+			component := res.ComponentKey
+			if parts := strings.SplitN(component, ".", 3); len(parts) == 3 {
+				component = parts[2]
+			}
+			for _, n := range res.Notes {
+				if line := "note: " + component + ": " + n; !slices.Contains(notes, line) {
+					notes = append(notes, line)
+				}
+			}
 		}
 		_ = tb.flush()
+		for _, n := range notes {
+			_, _ = fmt.Fprintln(a.Stdout, n)
+		}
 	}
 	_, _ = fmt.Fprintf(a.Stdout, "verify %s: %d passed, %d failed\n", r.Image.Reference, r.Passed, r.Failed)
 }

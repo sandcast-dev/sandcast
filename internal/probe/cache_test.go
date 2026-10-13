@@ -18,9 +18,9 @@ func TestCacheLayout(t *testing.T) {
 	require.NoError(t, c.StoreFacts(testDigest, "linux/arm/v7", Facts{}))
 
 	hex := strings.TrimPrefix(testDigest, "sha256:")
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v2", hex+"_linux-arm64.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v2", hex+"_linux-arm-v7.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks-v2", hex+"_linux-arm64", "go-0123456789ab.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm64.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm-v7.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks-v3", hex+"_linux-arm64", "go-0123456789ab.json"))
 
 	f, ok := c.LookupFacts(testDigest, "linux/arm64")
 	require.True(t, ok)
@@ -31,7 +31,7 @@ func TestCacheLayout(t *testing.T) {
 }
 
 // TestCacheFormatVersion checks that entries of format 1 (directories
-// without a version suffix) are never read, and format 2 entries round-trip.
+// without a version suffix) are never read, and current entries round-trip.
 func TestCacheFormatVersion(t *testing.T) {
 	c := &Cache{Dir: t.TempDir()}
 	hash := strings.Repeat("a", 64)
@@ -57,7 +57,7 @@ func TestCacheFormatVersion(t *testing.T) {
 	r, ok := c.LookupCheck(testDigest, "linux/arm64", "go", hash)
 	require.True(t, ok)
 	assert.Equal(t, []string{"/usr/bin/go"}, r.Paths)
-	assert.Equal(t, 2, FormatVersion)
+	assert.Equal(t, 3, FormatVersion)
 }
 
 func TestCacheMisses(t *testing.T) {

@@ -284,6 +284,21 @@ func TestScriptRecordsAllPaths(t *testing.T) {
 	}
 }
 
+// TestScriptPathFact checks the path fact: the directories of PATH in
+// order, without empty or duplicate entries.
+func TestScriptPathFact(t *testing.T) {
+	script := Script(nil, ScriptOptions{Facts: true})
+	for name, sh := range shells(t) {
+		facts, _, err := Parse([]byte(runShell(t, sh, script, "PATH=/opt/x/bin::"+os.Getenv("PATH")+":/opt/x/bin")))
+		require.NoError(t, err, name)
+		require.NotNil(t, facts, name)
+		require.NotEmpty(t, facts.Path, name)
+		assert.Equal(t, "/opt/x/bin", facts.Path[0], name)
+		assert.NotContains(t, facts.Path, "", name)
+		assert.Equal(t, 1, strings.Count(strings.Join(facts.Path, ":")+":", "/opt/x/bin:"), name)
+	}
+}
+
 // TestScriptHomeRCResetsPath checks the homerc fact: a PATH assignment
 // without $PATH is a reset, one that extends $PATH is not, and missing
 // files are skipped (R-05).

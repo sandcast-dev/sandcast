@@ -96,7 +96,7 @@ Spec compliance findings from stage 1 (before the deep review) are listed in `RE
 
 **Why this matters:** The help text promised a check the code does not run.
 
-**How it was resolved:** The help now says every component check runs again under session conditions. The FR-010 "every binary" gap stays open as an ambiguous compliance item.
+**How it was resolved:** The help now says every component check runs again under session conditions. After the user decided FR-010 (see REVIEW-CODE.md, O1), the session checks require every declared binary that resolves in the image environment, and the help says so.
 
 ### FINDING-6 to FINDING-17 (Minor, fixed)
 - **Distinct skip reasons** (architecture, internal/harness/claudecode/discover.go): git missing, not the top level of a repository, no remote and a remaining credential now produce different skip notes. Fixed round 1.
@@ -156,6 +156,10 @@ Spec compliance findings from stage 1 (before the deep review) are listed in `RE
 - **Description:** `TestLockfileDecidesVersions` depends on `latest` differing from the base image's versions.
 - **Rationale:** A base image refresh can make the correct `skip` fail the test.
 
+## User Decisions Applied After the Review
+
+The four Important compliance items left open by this review (REVIEW-CODE.md O1 to O4) were decided by the user and implemented in one commit: session checks for every declared binary that resolves in the image environment (FR-010), base image PATH directories in the session script (FR-006), FR-003 relaxed with follow-up T060, and `sandcast promote` removing redundant `bins` (FR-018).
+
 ## Post-Fix Spec Coverage
 
 The fix rounds removed code once: the per-binary session check added in eaa967e was reverted in round 1 because it failed the integration suite (`ca-certificates` has no executable, `nft` lives in `/usr/sbin`). The reverted code was itself added during this review, so no requirement implemented by the feature commits was dropped. All FR-001 to FR-025 still have implementing code; see the compliance matrix in `REVIEW-CODE.md`.
@@ -171,3 +175,5 @@ The fix rounds removed code once: the per-binary session check added in eaa967e 
 | 2 | make test-integration | 2 | 1 | failed: tmpfs copied image content (fixed with notmpcopyup) |
 | 3 | make verify | 0 | 0 | passed |
 | 3 | make test-integration | 0 | 0 | passed |
+| user decisions | make test-integration | 2 | 1 | failed: test assumed /usr/sbin on the base PATH (assertion now derived from the image PATH) |
+| user decisions | make verify, make test-integration | 0 | 0 | passed |

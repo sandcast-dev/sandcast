@@ -120,3 +120,42 @@ func TestSessionEnvScriptForPlan(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "it's here|/opt/rustup", string(out))
 }
+
+// TestSessionPathDirs: the base image's PATH directories beyond the
+// OpenShell default PATH and the shims are kept in the base image's order,
+// once each; a directory the script would have to quote is left out (I-1).
+func TestSessionPathDirs(t *testing.T) {
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin"},
+		SessionPathDirs([]string{"/opt/mise/shims", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/opt/x/bin/", "/usr/bin",
+			"/sbin", "/bin", "/usr/sbin", "/opt/has space", "relative/bin", "/opt/$HOME", "/sandbox/.local/bin"}))
+	assert.Empty(t, SessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}))
+	assert.Empty(t, SessionPathDirs(nil))
+}
+
+// TestSessionEnvScriptBasePath sources the OpenShell script with the
+// OpenShell default PATH under every available shell, twice: the shims come
+// first, then the base image's extra directories in their order, then the
+// default PATH, each once. The container target gets no extra directories.
+func TestSessionEnvScriptBasePath(t *testing.T) {
+	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/opt/x/bin", "/bin"}}}
+	text := SessionEnvScriptFor(p)
+	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", ImageFacts: p.ImageFacts}), "/opt/x/bin")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "sandcast-env.sh")
+	require.NoError(t, os.WriteFile(script, []byte(text), 0o644))
+	ran := 0
+	for _, sh := range []string{"sh", "dash", "bash", "zsh"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			continue
+		}
+		ran++
+		cmd := exec.Command(path, "-c", `. "$1"; PATH=/usr/bin:/bin; _sandcast_path; . "$1"; printf '%s\n' "$PATH"`, sh, script)
+		cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + dir}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", sh, out)
+		assert.Equal(t, MiseShimsDir+":/usr/local/sbin:/usr/sbin:/opt/x/bin:/usr/bin:/bin", strings.TrimSpace(string(out)),
+			"%s: a PATH reset is repaired with the base image directories", sh)
+	}
+	assert.Positive(t, ran)
+}

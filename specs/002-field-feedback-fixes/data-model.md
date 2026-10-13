@@ -10,7 +10,7 @@ Only changed or new entities are listed. Everything else is as in `specs/001-san
 |-------|------|--------|-------|
 | `status` | present, missing, incompatible | unchanged | |
 | `path` | string | unchanged | First `PATH` hit, kept for compatibility. |
-| `paths` | []string | **new** | Every `PATH` hit of every requested binary, in `PATH` order (R-02). |
+| `paths` | []string | **new** | Every `PATH` hit of the component's primary (first) binary, in `PATH` order, not resolved (R-02). Every binary and resolved targets are follow-up T060. |
 | `version` | string | unchanged | Empty when unparsable. |
 
 Cache: stored under a directory whose name includes `probe.FormatVersion = 2`. Entries of format 1 are never read.

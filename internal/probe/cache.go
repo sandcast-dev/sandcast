@@ -14,9 +14,10 @@ import (
 
 // FormatVersion is the probe cache format. It is part of the facts and
 // checks directory names, so entries written by an older format (format 1
-// recorded no binary paths and no home rc facts) are never read. Bump it
-// whenever the probe script records new facts or check fields.
-const FormatVersion = 2
+// recorded no binary paths and no home rc facts, format 2 no PATH) are
+// never read. Bump it whenever the probe script records new facts or check
+// fields.
+const FormatVersion = 3
 
 // Cache directory names below the sandcast cache directory.
 const (

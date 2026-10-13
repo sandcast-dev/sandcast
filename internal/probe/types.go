@@ -43,6 +43,11 @@ type Facts struct {
 	// .bash_profile in the default user's home that assign PATH without
 	// referencing $PATH (R-05).
 	HomeRCResetsPath []string `json:"home_rc_resets_path,omitempty" yaml:"home_rc_resets_path,omitempty"`
+	// Path lists the directories of the base image's PATH as the probe
+	// container saw it, in order, without empty or duplicate entries. The
+	// session environment re-exports the ones beyond the OpenShell default
+	// PATH (I-1).
+	Path []string `json:"path,omitempty" yaml:"path,omitempty"`
 	// ProbedAt is the RFC 3339 time of the probe run. It is kept out of YAML
 	// so that plans stay byte-identical.
 	ProbedAt string `json:"probed_at" yaml:"-"`

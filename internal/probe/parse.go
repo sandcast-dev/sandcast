@@ -16,6 +16,7 @@ const (
 	lineUser   = "user"
 	lineShells = "shells"
 	lineHomeRC = "homerc"
+	linePath   = "path"
 	lineCheck  = "check"
 	factsLines = 4
 )
@@ -46,9 +47,13 @@ type homeRCLine struct {
 	ResetsPath []string `json:"resets_path"`
 }
 
+type pathLine struct {
+	Dirs []string `json:"dirs"`
+}
+
 // Parse reads the output of a probe script. facts is nil when the output has
 // no facts lines (a partial probe); when one facts line is present, the os,
-// pkgmgr, user and shells lines must be. The homerc line is optional. Lines that do not start with "{" are ignored, unknown line types
+// pkgmgr, user and shells lines must be. The homerc and path lines are optional. Lines that do not start with "{" are ignored, unknown line types
 // too. A malformed JSON line, a duplicate line or an output without any probe
 // line is an error.
 func Parse(stdout []byte) (*Facts, []rawCheck, error) {
@@ -90,6 +95,13 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 			if len(facts.HomeRCResetsPath) == 0 {
 				facts.HomeRCResetsPath = nil
 			}
+		case linePath:
+			var pl pathLine
+			err = json.Unmarshal(line, &pl)
+			facts.Path = dedupe(pl.Dirs)
+			if len(facts.Path) == 0 {
+				facts.Path = nil
+			}
 		case lineCheck:
 			var c rawCheck
 			if c, err = parseCheck(line, keys); err == nil {
@@ -112,8 +124,10 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 		return nil, nil, errNoProbeLines
 	}
 	required := len(seen)
-	if seen[lineHomeRC] {
-		required--
+	for _, optional := range []string{lineHomeRC, linePath} {
+		if seen[optional] {
+			required--
+		}
 	}
 	if len(seen) == 0 {
 		return nil, checks, nil

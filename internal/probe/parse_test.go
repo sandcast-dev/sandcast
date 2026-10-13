@@ -60,6 +60,11 @@ func TestParse(t *testing.T) {
 			},
 		},
 		{
+			name:  "path facts",
+			out:   factsOutput + `{"type":"path","dirs":["/opt/x/bin","/usr/bin","/opt/x/bin",""]}` + "\n",
+			facts: func() *Facts { f := *debian; f.Path = []string{"/opt/x/bin", "/usr/bin"}; return &f }(),
+		},
+		{
 			name: "noise and unknown types are ignored",
 			out: "WARNING: platform mismatch\r\n\n" + factsOutput +
 				`{"type":"future","x":1}` + "\n" + `{"type":"check","key":"go","exit":0,"path":"","out":""}` + "\r\n",
