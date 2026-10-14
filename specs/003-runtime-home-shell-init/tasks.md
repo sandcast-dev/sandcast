@@ -48,9 +48,9 @@ description: "Task list for runtime home model and shell initialization"
 
 **Independent test**: plant `~/.zshrc`/`~/.bashrc` that touch a sentinel in the workspace; open shells; confirm no sentinel.
 
-- [ ] T011 [US2] Verify and lock in that `ZDOTDIR` (zsh) and `--noprofile --norc --rcfile` via the launcher (bash) prevent sourcing any `$HOME` startup file; add explicit assertions in `internal/build/sections_test.go` that the generated bash launcher carries `--noprofile --norc` and the zsh path sets `ZDOTDIR`.
+- [ ] T011 [US2] Verify and lock in that `ZDOTDIR` (zsh) and `--noprofile --norc --rcfile` via the launcher (bash) prevent sourcing any `$HOME` startup file; add explicit assertions in a build-package test (new file `internal/build/sections_test.go`, or the existing `internal/build/assemble_test.go`) that the generated bash launcher carries `--noprofile --norc` and the zsh path sets `ZDOTDIR`.
 - [ ] T012 [US2] Implement the minimal safe default for non-zsh/bash login shells in `internal/build/sections.go` / `internal/plan/plan.go`: login shell `/bin/sh`, curated env via `/etc/profile.d/sandcast.sh`, and a capture notice; add a unit test.
-- [ ] T013 [P] [US2] Unit test (in `internal/plan/plan_test.go` or `internal/build/sections_test.go`) that no generated image file sources a path under the overmount home, across zsh/bash/sh.
+- [ ] T013 [P] [US2] Unit test (in `internal/plan/plan_test.go` or the build-package test from T011) that no generated image file sources a path under the overmount home, across zsh/bash/sh.
 
 **Checkpoint**: US1 + US2 together = MVP (shell init correct and safe).
 
@@ -60,9 +60,9 @@ description: "Task list for runtime home model and shell initialization"
 
 **Independent test**: capture a `.gitconfig` and `.tmux.conf`, build, run, confirm the tools read them; a token-shaped value is redacted.
 
-- [ ] T014 [US3] Add the `dotfiles` field to the manifest schema in `internal/manifest/` per `contracts/manifest-dotfiles.md` (load, validate, reject a relocation under the overmount home), with version-gate handling if required.
-- [ ] T015 [P] [US3] Add the bounded dotfile allowlist (R4: `.gitconfig`, `.config/git/config`, `.config/starship.toml`, `.tmux.conf`, `.inputrc`) and host-home matching to `internal/capture/` (new match path or extension of `match.go`), reusing symlink/outside-home and credential-name rules (R6).
-- [ ] T016 [US3] Map each selected dotfile to its relocation target and env (R5) in `internal/plan/plan.go`, run contents through `internal/redact`, and emit a `relocated` notice per dotfile.
+- [ ] T014 [US3] Add the `dotfiles` field to the manifest schema in `internal/manifest/` per `contracts/manifest-dotfiles.md` (load, validate, reject a relocation under the overmount home), with version-gate handling if required. Note the field-naming split: the manifest input is a list of `{path: ...}` entries (the contract shape), while the internal resolved `DotfileSelection` entity (data-model.md) carries the richer `source`/`host_path`/`relocated_to`/`env` fields derived during planning; do not expose the resolved fields in the manifest.
+- [ ] T015 [P] [US3] Add the bounded dotfile allowlist (R4: `.gitconfig`, `.config/git/config`, `.config/starship.toml`, `.tmux.conf`, `.inputrc`) and host-home matching to `internal/capture/` (new match path or extension of `match.go`), reusing symlink/outside-home and credential-name rules (R6). A listed or proposed dotfile that does not exist at capture/build time is reported and skipped, never fatal (spec Edge Case).
+- [ ] T016 [US3] Map each selected dotfile to its relocation target and env (R5) in `internal/plan/plan.go`, run contents through `internal/redact`, and emit a `relocated` notice per dotfile. When two sources (host allowlist and an explicit manifest path) resolve to the same dotfile, deduplicate deterministically (explicit manifest path wins) and report the resolution with a notice (spec Edge Case).
 - [ ] T017 [US3] In `internal/build/sections.go`, add a section that `COPY`s the redacted dotfiles to their relocation targets (`/etc/gitconfig`, `/opt/sandcast/xdg/...`) and sets per-tool env via the plan's `RelocationEnv`.
 - [ ] T018 [US3] Update `skills/capture/SKILL.md` to propose the dotfile allowlist through the multi-select flow (as MCP/plugins/skills already are) and write confirmed entries plus explicit paths to the manifest; bump `skills/VERSION` and both SKILL.md `sandcast_version` frontmatters.
 - [ ] T019 [P] [US3] Unit tests: manifest dotfiles load/validate (`internal/manifest/*_test.go`), allowlist matching (`internal/capture/*_test.go`), redaction of a token-shaped dotfile value, relocation targets and golden (`internal/build`, `internal/plan`).
@@ -81,7 +81,7 @@ description: "Task list for runtime home model and shell initialization"
 
 ## Phase 7: Polish and cross-cutting
 
-- [ ] T023 [P] Add the integration test from research R8 to `tests/integration/` (build-tagged): build with relocation, run with a volume mounted over the home, assert zsh/bash load baked config, planted workspace rc does not run, and a baked git/tmux config is in effect.
+- [ ] T023 [P] Add the integration test from research R8 to `tests/integration/` (build-tagged): build with relocation, run with a volume mounted over the home, assert zsh/bash load baked config, planted workspace rc does not run, and a baked git/tmux config is in effect. Include a read-only-home case (mount the workspace over the home read-only) and assert the baked config still loads (spec Edge Case).
 - [ ] T024 [P] Update docs: `docs/guides/capture.md` (dotfile capture), `docs/guides/build.md` (home model and shell init under the overmount), `docs/configuration.md` (manifest `dotfiles` field).
 - [ ] T025 [P] Add a `CHANGELOG.md` entry for the runtime home model and shell initialization feature.
 - [ ] T026 Run `make fmt && make verify` and resolve any failures; confirm goldens are current and lint is clean.
