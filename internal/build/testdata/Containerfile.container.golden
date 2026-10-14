@@ -65,10 +65,10 @@ COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
 RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
 RUN install -d /opt/sandcast/zdotdir /etc/zsh \
  && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zsh/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir' >> /etc/zsh/zshenv) \
+     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zsh/zshenv) \
  && chmod 0644 /etc/zsh/zshenv \
  && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir' >> /etc/zshenv) \
+     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zshenv) \
  && chmod 0644 /etc/zshenv
 
 # 90-footer

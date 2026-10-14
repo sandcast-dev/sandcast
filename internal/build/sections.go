@@ -150,6 +150,76 @@ fi
 SANDCAST_EOF
 `))
 
+// hookTemplate bakes the shell hooks for shells that OpenShell starts
+// directly, after clearing the environment, instead of the CMD or the passwd
+// shell (see shell.BashrcHook and shell.LoginHook). The login hook goes to
+// /etc/profile.d, the redirect home holds the .profile that restores HOME for
+// other POSIX login shells, and the bashrc hook is prepended to the system
+// bashrc the image's bash was compiled with, found by its path string in the
+// bash binary. A bash without a system bashrc (Fedora, RHEL) cannot be
+// hooked for interactive non-login shells; the build log says so.
+var hookTemplate = template.Must(template.New("60-shell-hooks").Parse(`RUN <<'SANDCAST_EOF'
+set -eu
+install -d /etc/profile.d {{.RedirectHome}}
+cat > {{.LoginHookPath}} <<'SANDCAST_HOOK'
+{{.LoginHook}}
+SANDCAST_HOOK
+chmod 0644 {{.LoginHookPath}}
+cat > {{.RedirectHome}}/.profile <<'SANDCAST_HOOK'
+{{.RedirectProfile}}
+SANDCAST_HOOK
+chmod 0644 {{.RedirectHome}}/.profile
+cat > /tmp/sandcast-bashrc-hook <<'SANDCAST_HOOK'
+{{.BashrcHook}}
+SANDCAST_HOOK
+sysrc=
+bash_bin=$(command -v bash 2>/dev/null || true)
+if [ -n "$bash_bin" ]; then
+  for f in{{range .SystemBashrcPaths}} {{.}}{{end}}; do
+    if grep -qsF "$f" "$bash_bin"; then sysrc=$f; break; fi
+  done
+fi
+if [ -n "$sysrc" ]; then
+  if ! grep -qsF '{{.HookBegin}}' "$sysrc"; then
+    install -d "$(dirname "$sysrc")"
+    { cat /tmp/sandcast-bashrc-hook; cat "$sysrc" 2>/dev/null || true; } > "$sysrc.sandcast"
+    mv "$sysrc.sandcast" "$sysrc"
+  fi
+  chmod 0644 "$sysrc"
+elif [ -n "$bash_bin" ]; then
+  echo "sandcast: $bash_bin reads no system bashrc, so an interactive non-login bash that a runtime starts directly cannot be hooked" >&2
+fi
+rm -f /tmp/sandcast-bashrc-hook
+SANDCAST_EOF
+`))
+
+// hookTargets returns the commands the shell hooks replace an interactive
+// bash with: the curated shell for a top-level shell, and for a bash the
+// user starts inside a curated session, bash itself without home startup
+// files (the launcher for the bash kind, a bash without any rc otherwise).
+func hookTargets(p *plan.Plan) shell.HookTargets {
+	plainBash := `"$BASH" --noprofile --norc`
+	switch plan.ShellKind(p) {
+	case "zsh":
+		return shell.HookTargets{Top: "/bin/zsh", TopLogin: "/bin/zsh -l", Nested: plainBash}
+	case "bash":
+		return shell.HookTargets{Top: plan.ShellLoginPath, TopLogin: plan.ShellLoginPath, Nested: plan.ShellLoginPath}
+	default:
+		return shell.HookTargets{Top: plainBash, TopLogin: plainBash, Nested: plainBash}
+	}
+}
+
+// hookExports are the relocation variables the hooks restore after the
+// runtime cleared the image ENV.
+func hookExports(p *plan.Plan) []shell.Export {
+	env := plan.RelocationEnv(p)
+	out := make([]shell.Export, 0, len(env))
+	for _, e := range env {
+		out = append(out, shell.Export{Name: e.Name, Value: e.Value})
+	}
+	return out
+}
+
 // The dotfiles section bakes each redacted non-shell dotfile to its
 // relocation target outside the home (spec 003 US3). The relocation env
 // variables are set image-wide in the 20-user section via the plan's
@@ -174,8 +244,9 @@ RUN chmod 0644 {{.Path}}
 `))
 
 // The footer clears the base image's entrypoint (the community base sets
-// /bin/bash), so CMD starts the login shell on manual runs; OpenShell
-// replaces both anyway.
+// /bin/bash), so CMD starts the login shell on manual runs. OpenShell uses
+// neither for its sessions: it starts /bin/bash after clearing the
+// environment, which the 60-shell hooks (hookTemplate) cover.
 var footerTemplate = template.Must(template.New("90-footer").Parse(`# 90-footer
 WORKDIR {{.WorkDir}}
 USER {{.User}}
@@ -252,7 +323,26 @@ func shellSection(p *plan.Plan) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return body + login, nil
+	exports := hookExports(p)
+	for _, e := range exports {
+		if !component.ValidEnvName(e.Name) || component.HasControl(e.Value) {
+			return "", fmt.Errorf("relocation variable %q cannot be exported by the shell hooks", e.Name)
+		}
+	}
+	targets := hookTargets(p)
+	hooks, err := execTemplate(hookTemplate, map[string]any{
+		"LoginHookPath":     plan.LoginHookPath,
+		"LoginHook":         strings.TrimRight(shell.LoginHook(exports, targets, plan.RedirectHome), "\n"),
+		"RedirectHome":      plan.RedirectHome,
+		"RedirectProfile":   strings.TrimRight(shell.RedirectHomeProfile(), "\n"),
+		"BashrcHook":        strings.TrimRight(shell.BashrcHook(exports, targets), "\n"),
+		"SystemBashrcPaths": plan.SystemBashrcPaths,
+		"HookBegin":         shell.HookBegin,
+	})
+	if err != nil {
+		return "", err
+	}
+	return body + login + hooks, nil
 }
 
 // shellKindSection renders the shell-specific part of the 60-shell section.

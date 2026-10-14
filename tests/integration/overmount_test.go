@@ -64,10 +64,97 @@ func runEngine(t *testing.T, name string, args ...string) (string, error) {
 func workspaceWithPlantedRC(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
-	for _, rc := range []string{".zshrc", ".zprofile", ".zshenv", ".bashrc", ".bash_profile", ".profile"} {
+	for _, rc := range []string{".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, rc), []byte("touch /tmp/pwned-"+strings.TrimPrefix(rc, ".")+"\n"), 0o644))
 	}
 	return ws
+}
+
+// openShellSpawnScript simulates how OpenShell v0.1.x starts shells in a
+// sandbox (boundary_exec.rs and the default agent): it runs /bin/bash after
+// clearing the environment, with -i under a pty for a terminal session, with
+// -lc or -c for a command, and as -l for the default agent. None of these
+// uses the image CMD, the passwd shell or the image ENV. script(1) provides
+// the pty. Every case prints RESULT <case> pwned=[...] with the sentinels the
+// planted workspace files left behind, then clears them; the first case is a
+// positive control that sources the workspace .bashrc on purpose.
+const openShellSpawnScript = `#!/bin/sh
+E="env -i HOME=/sandbox USER=sandbox PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color"
+report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; rm -f /tmp/pwned-*; }
+rm -f /tmp/pwned-*
+$E /bin/bash -c '. /sandbox/.bashrc'
+report control
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
+report pty-i
+$E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
+$E /bin/bash -lc 'exit 3'; echo "OUT lc rc=$?"
+report lc
+$E /bin/bash -c 'echo C-OK' | sed 's/^/OUT c /'
+report c
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
+report pty-l
+printf 'echo FROM-STDIN; exit 4\n' | $E /bin/bash -l | sed 's/^/OUT pipe-l /'
+printf 'exit 4\n' | $E /bin/bash -l; echo "OUT pipe-l rc=$?"
+report pipe-l
+printf 'bash -i -c "echo NESTED-BASH=\\$BASH_VERSION"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT nested /'
+report nested
+$E /bin/sh -lc 'echo "SH-HOME=$HOME"; exit 6' | sed 's/^/OUT sh-lc /'
+$E /bin/sh -lc 'exit 6'; echo "OUT sh-lc rc=$?"
+report sh-lc
+env -i SSH_CLIENT='192.0.2.1 1 22' HOME=/sandbox PATH=/usr/bin:/bin /bin/bash -c 'echo SSH-OK' | sed 's/^/OUT ssh /'
+report ssh
+`
+
+// assertOpenShellSpawns runs openShellSpawnScript in image with the planted
+// workspace ws mounted over the home and checks the spec 003 guarantees for
+// every way OpenShell starts a shell: no workspace startup, profile or
+// logout file runs (FR-002, SC-002), the curated configuration is active in
+// interactive sessions (FR-001), and commands keep their output, arguments
+// and exit status. alias is how the shell prints the curated alias; zdotdir
+// is the expected ZDOTDIR in interactive sessions ("" for bash).
+func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spawn.sh"), []byte(openShellSpawnScript), 0o755))
+	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "-v", dir+":/harness:ro", "--entrypoint", "/bin/sh", image, "/harness/spawn.sh")
+	require.NoError(t, err, out)
+
+	results := map[string]string{}
+	lines := map[string][]string{}
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		switch {
+		case len(f) >= 3 && f[0] == "RESULT":
+			results[f[1]] = strings.TrimSpace(strings.TrimPrefix(strings.Join(f[2:], " "), "pwned="))
+		case len(f) >= 2 && f[0] == "OUT":
+			lines[f[1]] = append(lines[f[1]], strings.Join(f[2:], " "))
+		}
+	}
+	has := func(c, want string) {
+		t.Helper()
+		assert.Contains(t, strings.Join(lines[c], "\n"), want, "case %s", c)
+	}
+
+	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
+	for _, c := range []string{"pty-i", "lc", "c", "pty-l", "pipe-l", "nested", "sh-lc", "ssh"} {
+		require.Contains(t, results, c, "case %s ran", c)
+		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
+	}
+	has("pty-i", alias)
+	has("pty-l", alias)
+	if zdotdir != "" {
+		has("pty-i", "ZDOTDIR=["+zdotdir+"]")
+		has("pty-l", "ZDOTDIR=["+zdotdir+"]")
+	}
+	has("lc", "LC 0=zero @=a b")
+	has("lc", "rc=3")
+	has("c", "C-OK")
+	has("pipe-l", "FROM-STDIN")
+	has("pipe-l", "rc=4")
+	has("nested", "NESTED-BASH=5.")
+	has("sh-lc", "SH-HOME=/sandbox")
+	has("sh-lc", "rc=6")
+	has("ssh", "SSH-OK")
 }
 
 // TestOvermountZshSurvives covers quickstart scenarios 1, 2 and 3 for zsh: the
@@ -115,6 +202,10 @@ func TestOvermountZshSurvives(t *testing.T) {
 		assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir", "zsh %s with a cleared environment", mode)
 		assert.NotContains(t, out, "PWNED", "zsh %s with a cleared environment runs no workspace startup file", mode)
 	}
+
+	// How OpenShell itself starts shells: /bin/bash after env_clear. The bash
+	// hooks hand interactive sessions to the curated zsh.
+	assertOpenShellSpawns(t, engine, image, ws, "myll='ls -l'", "/opt/sandcast/zdotdir")
 
 	// Scenario 3: the baked git dotfile is read from /etc/gitconfig.
 	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "git", image, "config", "--get", "user.email")
@@ -184,4 +275,7 @@ func TestOvermountBashSurvives(t *testing.T) {
 	assert.Contains(t, out, ":/sandbox:/opt/sandcast/shell-login", "the kept user's login shell is the launcher")
 	assert.Contains(t, out, "IN_SU")
 	assert.NotContains(t, out, "PWNED", "su - runs no workspace startup file")
+
+	// How OpenShell itself starts shells: /bin/bash after env_clear.
+	assertOpenShellSpawns(t, engine, image, ws, "alias myll='ls -l'", "")
 }

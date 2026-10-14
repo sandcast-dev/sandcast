@@ -81,10 +81,10 @@ COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
 RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
 RUN install -d /opt/sandcast/zdotdir /etc/zsh \
  && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zsh/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir' >> /etc/zsh/zshenv) \
+     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zsh/zshenv) \
  && chmod 0644 /etc/zsh/zshenv \
  && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir' >> /etc/zshenv) \
+     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zshenv) \
  && chmod 0644 /etc/zshenv
 RUN <<'SANDCAST_EOF'
 set -eu
@@ -97,6 +97,104 @@ if grep -q '^sandbox:' /etc/passwd; then
     sed -i 's|^\(sandbox:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*$|\1/bin/zsh|' /etc/passwd
   fi
 fi
+SANDCAST_EOF
+RUN <<'SANDCAST_EOF'
+set -eu
+install -d /etc/profile.d /opt/sandcast/home
+cat > /etc/profile.d/zz-sandcast-shell.sh <<'SANDCAST_HOOK'
+# Written by sandcast: the home is the mounted workspace, so a login
+# shell must never read a profile or logout file there. See
+# docs/guides/build.md, the home model and shell initialization.
+export ZDOTDIR=/opt/sandcast/zdotdir
+if [ -n "${BASH_VERSION-}" ]; then
+  if shopt -q login_shell 2>/dev/null; then
+    case $- in
+    *i*)
+      if [ -n "${SANDCAST_SESSION-}" ]; then
+        if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+        exec "$BASH" --noprofile --norc -i
+      fi
+      SANDCAST_SESSION=1
+      export SANDCAST_SESSION
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec /bin/zsh -l -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      exec /bin/zsh -l -i
+      ;;
+    *)
+      _sandcast_posix=
+      case :${SHELLOPTS-}: in *:posix:*) _sandcast_posix=--posix ;; esac
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" $_sandcast_posix --noprofile --norc -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      case ${0##*/} in
+      bash | -bash | sh | -sh) exec "$BASH" $_sandcast_posix --noprofile --norc -s "$@" ;;
+      esac
+      exec "$BASH" $_sandcast_posix --noprofile --norc "$0" "$@"
+      ;;
+    esac
+  fi
+elif [ -z "${ZSH_VERSION-}" ] && [ -n "${HOME-}" ] && [ "$HOME" != /opt/sandcast/home ]; then
+  SANDCAST_HOME=$HOME
+  HOME=/opt/sandcast/home
+fi
+SANDCAST_HOOK
+chmod 0644 /etc/profile.d/zz-sandcast-shell.sh
+cat > /opt/sandcast/home/.profile <<'SANDCAST_HOOK'
+# Written by sandcast: the login hook pointed HOME here so the shell
+# reads this file instead of a .profile in the mounted workspace.
+# Restore the real home.
+if [ -n "${SANDCAST_HOME-}" ]; then
+  HOME=$SANDCAST_HOME
+  unset SANDCAST_HOME
+fi
+SANDCAST_HOOK
+chmod 0644 /opt/sandcast/home/.profile
+cat > /tmp/sandcast-bashrc-hook <<'SANDCAST_HOOK'
+# >>> sandcast shell hook >>>
+# Written by sandcast: the home is the mounted workspace, so an
+# interactive bash must never read a .bashrc there. Replace it with the
+# curated shell before bash gets to the home file.
+if [ -n "${BASH_VERSION-}" ]; then
+  if [ "${SANDCAST_SHELL_PID-}" = "$$" ]; then
+    unset SANDCAST_SHELL_PID
+  elif ! shopt -q login_shell; then
+    case $- in
+    *i*)
+      export ZDOTDIR=/opt/sandcast/zdotdir
+      if [ -n "${SANDCAST_SESSION-}" ]; then
+        if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+        exec "$BASH" --noprofile --norc -i
+      fi
+      SANDCAST_SESSION=1
+      export SANDCAST_SESSION
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec /bin/zsh -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      exec /bin/zsh -i
+      ;;
+    *)
+      _sandcast_posix=
+      case :${SHELLOPTS-}: in *:posix:*) _sandcast_posix=--posix ;; esac
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" $_sandcast_posix --noprofile --norc -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      ;;
+    esac
+  fi
+fi
+# <<< sandcast shell hook <<<
+SANDCAST_HOOK
+sysrc=
+bash_bin=$(command -v bash 2>/dev/null || true)
+if [ -n "$bash_bin" ]; then
+  for f in /etc/bash.bashrc /etc/bash/bashrc; do
+    if grep -qsF "$f" "$bash_bin"; then sysrc=$f; break; fi
+  done
+fi
+if [ -n "$sysrc" ]; then
+  if ! grep -qsF '# >>> sandcast shell hook >>>' "$sysrc"; then
+    install -d "$(dirname "$sysrc")"
+    { cat /tmp/sandcast-bashrc-hook; cat "$sysrc" 2>/dev/null || true; } > "$sysrc.sandcast"
+    mv "$sysrc.sandcast" "$sysrc"
+  fi
+  chmod 0644 "$sysrc"
+elif [ -n "$bash_bin" ]; then
+  echo "sandcast: $bash_bin reads no system bashrc, so an interactive non-login bash that a runtime starts directly cannot be hooked" >&2
+fi
+rm -f /tmp/sandcast-bashrc-hook
 SANDCAST_EOF
 
 # 80-policy: OpenShell sandbox policy (filesystem, landlock, process; no network entries)

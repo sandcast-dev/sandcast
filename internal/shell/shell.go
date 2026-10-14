@@ -31,8 +31,11 @@ func QuoteIfNeeded(s string) string {
 // means zsh never sources a workspace $HOME/.zshrc, even when the image ENV
 // was cleared (spec 003 research R1, FR-002). The caller quotes the line for
 // the Containerfile.
+//
+// The line also exports SessionVar, so a bash the user starts from a curated
+// zsh session is recognized as nested by the bashrc hook (see BashrcHook).
 func ZshEnvExport(zdotdir string) string {
-	return "export ZDOTDIR=" + zdotdir
+	return "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1"
 }
 
 // LoginLauncher returns the /opt/sandcast/shell-login script: a POSIX sh
@@ -42,14 +45,20 @@ func ZshEnvExport(zdotdir string) string {
 // ~/.bash_login and ~/.profile out, and --rcfile replaces ~/.bashrc. It must
 // not pass --norc: bash ignores --rcfile whenever --norc is set, which would
 // leave the shell unconfigured. The system bashrc (/etc/bash.bashrc on
-// Debian and Ubuntu) lies outside the home and is still read. It is the
-// user's login shell and the image CMD for the bash case; "$@" forwards any
-// arguments (for example a -c command) to bash.
+// Debian and Ubuntu) lies outside the home and is still read; the launcher
+// exports GuardVar with its own pid, which bash keeps across exec, so the
+// bashrc hook lets this bash continue to the rcfile instead of replacing it
+// again. It also exports SessionVar (see BashrcHook). It is the user's login
+// shell and the image CMD for the bash case, and the target of the shell
+// hooks; "$@" forwards any arguments (for example -i or a -c command) to bash.
 func LoginLauncher(rcfile string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: bash under the OpenShell home overmount must never\n" +
 		"# read a startup file from the workspace home. Launch bash with no profile\n" +
 		"# files and the baked rcfile in place of the home .bashrc.\n" +
+		GuardVar + "=$$\n" +
+		SessionVar + "=1\n" +
+		"export " + GuardVar + " " + SessionVar + "\n" +
 		"exec bash --noprofile --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
 }
 
@@ -68,7 +77,8 @@ func ShLoginLauncher(profile string) string {
 		"# baked profile and exec a non-login shell so that workspace file is\n" +
 		"# never sourced.\n" +
 		"ENV=" + QuoteIfNeeded(profile) + "\n" +
-		"export ENV\n" +
+		SessionVar + "=1\n" +
+		"export ENV " + SessionVar + "\n" +
 		`exec /bin/sh "$@"` + "\n"
 }
 

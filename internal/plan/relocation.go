@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/redact"
 )
 
@@ -217,6 +218,11 @@ func bakedPaths(p *Plan) []string {
 		out = append(out, ShellLoginPath, BashRCPath)
 	default:
 		out = append(out, ProfileScriptPath, ShLoginPath)
+	}
+	if p.Target == manifest.TargetOpenShell {
+		// The shell hooks for shells OpenShell starts directly.
+		out = append(out, LoginHookPath, RedirectHome, RedirectHome+"/.profile")
+		out = append(out, SystemBashrcPaths...)
 	}
 	for _, d := range p.Dotfiles {
 		out = append(out, d.RelocatedTo)

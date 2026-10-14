@@ -55,6 +55,15 @@ const (
 	// profile and execs a non-login /bin/sh, so no $HOME/.profile in the
 	// mounted workspace is ever sourced (research R2, spec US2/FR-002).
 	ShLoginPath = RelocationPrefix + "/sh-login"
+	// LoginHookPath is the login shell hook. /etc/profile sources it last for
+	// every login shell; it replaces a login bash before bash reads a profile
+	// file from the home and redirects HOME for other POSIX shells (spec 003
+	// FR-002, docs/guides/build.md).
+	LoginHookPath = "/etc/profile.d/zz-sandcast-shell.sh"
+	// RedirectHome is where the login hook points HOME for a POSIX login
+	// shell other than bash, so the shell reads RedirectHome/.profile (which
+	// restores HOME) instead of a workspace .profile.
+	RedirectHome = RelocationPrefix + "/home"
 	// OvermountHome is the path OpenShell mounts the workspace volume over at
 	// runtime on the sandbox base images. Anything baked under it is hidden
 	// once the volume is mounted (spec US4, FR-008/FR-009). It is a property
@@ -69,6 +78,12 @@ const (
 // /etc/zshenv. sandcast writes both, so ZDOTDIR is set even when a runtime
 // clears the image ENV (OpenShell starts shells after env_clear).
 var ZshEnvPaths = []string{"/etc/zsh/zshenv", "/etc/zshenv"}
+
+// SystemBashrcPaths are the system bashrc locations bash builds use (Debian
+// and Ubuntu, then Alpine). The build prepends the bashrc hook to the one the
+// image's bash was compiled with; bash builds without one (Fedora, RHEL, the
+// official bash image) read no system file before the home .bashrc.
+var SystemBashrcPaths = []string{"/etc/bash.bashrc", "/etc/bash/bashrc"}
 
 // OvermountPrefix returns the overmount home prefix for a target, or "" when
 // the target applies no sandbox mount. The container target keeps the base

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -119,4 +120,84 @@ targets:
 	require.NoError(t, err)
 	assert.Contains(t, out, "Claude Code")
 	assert.Contains(t, out, "config=/opt/sandcast/claude-code")
+}
+
+// TestGatewayShellHooks runs the shell checks against the real OpenShell
+// runtime instead of a simulation: a sandbox from a bash image built by
+// sandcast, workspace startup files planted through an exec that sources no
+// startup file, then OpenShell's default exec (a login shell started after
+// clearing the environment) and an interactive bash -i under a pty. No
+// planted file may run, the exit status must survive, and the curated
+// configuration under /opt/sandcast must be readable under the image policy
+// (landlock) and active in the interactive shell (spec 003 FR-001, FR-002,
+// SC-002).
+func TestGatewayShellHooks(t *testing.T) {
+	env := startGateway(t)
+	dir := project(t, `schema_version: 1
+name: sc-hooks
+base_image: nvidia-community-base
+shell:
+  program: bash
+  rc: |
+    alias myll='ls -l'
+targets:
+  openshell:
+    image: localhost/sandcast-it-hooks
+`)
+	removeImages(t, "podman", "localhost/sandcast-it-hooks:latest")
+	require.Zero(t, sandcast(t, dir, nil, "build").code)
+
+	// Keep the sandbox running while the checks exec into it.
+	create := exec.Command("openshell", "sandbox", "create", "--name", "sc-hooks", "--no-tty", "--no-auto-providers",
+		"--from", "localhost/sandcast-it-hooks:latest", "--", "sleep", "600")
+	create.Env = append(create.Environ(), env...)
+	require.NoError(t, create.Start())
+	t.Cleanup(func() {
+		_, _ = openshell(t, env, "sandbox", "delete", "sc-hooks")
+		_ = create.Process.Kill()
+		_ = create.Wait()
+	})
+	ready := false
+	for range 100 {
+		get := exec.Command("openshell", "sandbox", "get", "sc-hooks")
+		get.Env = append(get.Environ(), env...)
+		out, _ := get.CombinedOutput()
+		if strings.Contains(string(out), "Phase: Ready") {
+			ready = true
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	require.True(t, ready, "the sandbox becomes ready")
+
+	pwned := func() string {
+		t.Helper()
+		out, err := openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--no-login-shell", "--", "sh", "-c",
+			`ls /tmp | grep '^pwned-' | tr '\n' ' '; rm -f /tmp/pwned-*; true`)
+		require.NoError(t, err, out)
+		return strings.TrimSpace(out)
+	}
+
+	out, err := openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--no-login-shell", "--", "sh", "-c",
+		`for f in .bashrc .bash_profile .bash_login .bash_logout .profile; do echo "touch /tmp/pwned-${f#.}" > /sandbox/$f; done; rm -f /tmp/pwned-*`)
+	require.NoError(t, err, out)
+
+	// Positive control: sourcing a planted file leaves its sentinel.
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--no-login-shell", "--", "sh", "-c", ". /sandbox/.bashrc")
+	require.NoError(t, err, out)
+	assert.Contains(t, pwned(), "pwned-bashrc", "the planted files are in the workspace home")
+
+	// OpenShell's default exec sources login startup files.
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--", "sh", "-c", "echo LOGIN-OK; exit 3")
+	assert.Contains(t, out, "LOGIN-OK")
+	var ee *exec.ExitError
+	require.ErrorAs(t, err, &ee)
+	assert.Equal(t, 3, ee.ExitCode(), "the exit status survives the login hook")
+	assert.Empty(t, pwned(), "the login exec runs no workspace startup or logout file")
+
+	// An interactive bash under a pty gets the curated rcfile, not ~/.bashrc.
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--tty", "--no-login-shell", "--", "/bin/bash", "-i", "-c", "alias myll")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "alias myll='ls -l'")
+	assert.Empty(t, pwned(), "the interactive bash runs no workspace startup file")
 }

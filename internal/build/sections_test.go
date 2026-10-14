@@ -60,7 +60,7 @@ func TestShellSectionBashLauncher(t *testing.T) {
 	got, err := Assemble(shellKindPlan(t, "bash"))
 	require.NoError(t, err)
 	assert.Contains(t, got, "exec bash --noprofile --rcfile /opt/sandcast/bashrc")
-	assert.NotContains(t, got, "--norc")
+	assert.NotContains(t, got, "--norc --rcfile", "the launcher must not pass --norc")
 	assert.Contains(t, got, "cat > /opt/sandcast/shell-login")
 	assert.Contains(t, got, "COPY shell/sandcast.sh /opt/sandcast/bashrc")
 	// The launcher, not /bin/bash, is the login shell and the CMD.
@@ -118,6 +118,34 @@ func TestShellSectionSetsKeptUserLoginShell(t *testing.T) {
 	got, err := shellSection(p)
 	require.NoError(t, err)
 	assert.NotContains(t, got, "usermod")
+}
+
+// TestShellSectionBakesSpawnHooks checks OpenShell images get the hooks for
+// shells the runtime starts directly (bash -i, bash -lc, bash -l after
+// clearing the environment): the profile.d login hook, the redirect home
+// with its .profile, and the bashrc hook prepended to the system bashrc the
+// image's bash was compiled with. The targets follow the shell kind.
+func TestShellSectionBakesSpawnHooks(t *testing.T) {
+	for kind, top := range map[string]string{"zsh": "exec /bin/zsh -i\n", "bash": "exec /opt/sandcast/shell-login -i\n", "sh": `exec "$BASH" --noprofile --norc -i` + "\n"} {
+		got, err := shellSection(shellKindPlan(t, kind))
+		require.NoError(t, err, kind)
+		assert.Contains(t, got, "cat > "+plan.LoginHookPath+" <<'SANDCAST_HOOK'", kind)
+		assert.Contains(t, got, "cat > "+plan.RedirectHome+"/.profile <<'SANDCAST_HOOK'", kind)
+		assert.Contains(t, got, "for f in /etc/bash.bashrc /etc/bash/bashrc; do", kind)
+		assert.Contains(t, got, `grep -qsF "$f" "$bash_bin"`, "%s: the system bashrc is the one compiled into bash", kind)
+		assert.Contains(t, got, "{ cat /tmp/sandcast-bashrc-hook; cat \"$sysrc\"", "%s: the hook is prepended", kind)
+		assert.Contains(t, got, top, kind)
+	}
+	zsh, err := shellSection(shellKindPlan(t, "zsh"))
+	require.NoError(t, err)
+	assert.Contains(t, zsh, "export ZDOTDIR=/opt/sandcast/zdotdir\n", "the hooks restore the relocation variables")
+	assert.Contains(t, zsh, "exec /bin/zsh -l -i\n", "an interactive login bash becomes a login zsh")
+
+	p := shellKindPlan(t, "zsh")
+	p.Target = "container"
+	got, err := shellSection(p)
+	require.NoError(t, err)
+	assert.NotContains(t, got, plan.LoginHookPath, "the container target gets no hooks")
 }
 
 // TestShellSectionMinimalDefault checks a login shell that is neither zsh nor

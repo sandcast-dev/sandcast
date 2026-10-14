@@ -21,7 +21,7 @@ func TestQuote(t *testing.T) {
 }
 
 func TestZshEnvExport(t *testing.T) {
-	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir", ZshEnvExport("/opt/sandcast/zdotdir"))
+	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1", ZshEnvExport("/opt/sandcast/zdotdir"))
 }
 
 // TestLoginLauncher checks the baked bash launcher closes the workspace
@@ -35,6 +35,8 @@ func TestLoginLauncher(t *testing.T) {
 	assert.NotContains(t, got, "--norc", "--norc makes bash ignore --rcfile")
 	assert.Contains(t, got, "--rcfile /opt/sandcast/bashrc")
 	assert.Contains(t, got, `"$@"`, "forwards arguments")
+	assert.Contains(t, got, "SANDCAST_SHELL_PID=$$\n", "the bashrc hook recognizes this bash by its pid")
+	assert.Contains(t, got, "export SANDCAST_SHELL_PID SANDCAST_SESSION\n")
 	assert.Contains(t, got, "exec bash")
 	// The launcher must be runnable: a POSIX shell parses it without error.
 	if sh, err := exec.LookPath("sh"); err == nil {
