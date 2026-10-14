@@ -16,10 +16,11 @@ notices:
     from: /sandbox/.local/bin/<tool>     # the shadowed probe path
     to: /opt/mise/...                    # persistent install location
   - kind: relocated
-    subject: <dotfile path or config>
-    from: ~/.gitconfig
+    subject: ~/.gitconfig                # the dotfile path; no from, it would repeat the subject
     to: /etc/gitconfig
 ```
+
+`from` is set only for `reprovisioned` (the shadowed probe path). A `relocated` notice names its source in `subject`; repeating it in `from` was dropped after review. When git's two configuration files are merged into `/etc/gitconfig`, each source gets its own `relocated` notice.
 
 ## Human-readable form
 

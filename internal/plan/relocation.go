@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,7 +23,8 @@ var safeTargetRe = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)+$`)
 // resolve. The plan redacts Content, picks the relocation target and emits the
 // notice; the pipeline supplies the host facing values (spec 003 US3).
 type DotfileInput struct {
-	// HostPath is the manifest path the entry came from (kept for notices).
+	// HostPath is the manifest path the entry came from. It selects the
+	// relocation target (relocateDotfile) and is shown in the notices.
 	HostPath string
 	// Content is the raw host file content, redacted by the plan before it is
 	// baked.
@@ -74,11 +76,7 @@ func RelocationEnv(p *Plan) []EnvVar {
 			}
 		}
 	}
-	out := make([]EnvVar, 0, len(env))
-	for _, k := range sortedKeys(env) {
-		out = append(out, EnvVar{Name: k, Value: env[k]})
-	}
-	return out
+	return sortedEnv(env)
 }
 
 // mergeRelocationEnv sets the relocation variables in setup.Env, then
@@ -88,10 +86,7 @@ func RelocationEnv(p *Plan) []EnvVar {
 // tool back at a file in the overmounted home (spec 003 FR-002, FR-008). It
 // returns one notice per replaced value, in name order.
 func mergeRelocationEnv(setup *ImageSetup, relocation []EnvVar) []string {
-	env := map[string]string{}
-	for _, e := range setup.Env {
-		env[e.Name] = e.Value
-	}
+	env := envMap(setup.Env)
 	var notices []string
 	for _, e := range relocation {
 		if prev, ok := env[e.Name]; ok && prev != e.Value {
@@ -101,10 +96,7 @@ func mergeRelocationEnv(setup *ImageSetup, relocation []EnvVar) []string {
 		}
 		env[e.Name] = e.Value
 	}
-	setup.Env = make([]EnvVar, 0, len(env))
-	for _, k := range sortedKeys(env) {
-		setup.Env = append(setup.Env, EnvVar{Name: k, Value: env[k]})
-	}
+	setup.Env = sortedEnv(env)
 	sort.Strings(notices)
 	return notices
 }
@@ -125,11 +117,12 @@ var startupEnvVars = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 // root-owned tree (FINDING-39). resolveDotfiles refuses a target that is not
 // a clean, safe absolute path.
 func relocateDotfile(hostPath string) (target string, env map[string]string) {
-	norm := path.Clean(strings.TrimPrefix(hostPath, "~/"))
+	norm := normHostPath(hostPath)
 	base := path.Base(norm)
 	switch {
-	case base == ".gitconfig" || norm == ".config/git/config" || base == "gitconfig":
+	case base == ".gitconfig" || base == "gitconfig" || gitConfigXDG(norm):
 		// git reads /etc/gitconfig as system config natively, no env needed.
+		// Both git configuration files go there; resolveDotfiles merges them.
 		return GitConfigPath, nil
 	case base == "starship.toml":
 		t := XDGConfigDir + "/starship.toml"
@@ -146,6 +139,20 @@ func relocateDotfile(hostPath string) (target string, env map[string]string) {
 		rel := strings.TrimPrefix(strings.TrimPrefix(norm, ".config/"), ".")
 		return XDGConfigDir + "/" + strings.TrimPrefix(rel, "/"), nil
 	}
+}
+
+// normHostPath is the manifest path relocateDotfile classifies: without the
+// "~/" prefix, cleaned.
+func normHostPath(hostPath string) string {
+	return path.Clean(strings.TrimPrefix(hostPath, "~/"))
+}
+
+// gitConfigXDG reports whether a normalized host path is git's XDG
+// configuration: ~/.config/git/config, or a copy that keeps the
+// .config/git/config layout (a dotfiles directory in the project). Every
+// other path that relocates to GitConfigPath is a ~/.gitconfig.
+func gitConfigXDG(norm string) bool {
+	return norm == ".config/git/config" || strings.HasSuffix(norm, "/.config/git/config")
 }
 
 // InputRCInclude keeps the system readline defaults in the baked inputrc:
@@ -171,18 +178,25 @@ func safeTarget(t string) bool {
 // one's content so no credential enters the image (FR-007). On a collision
 // (two inputs relocate to the same target) the explicit manifest entry wins
 // over an allowlist proposal, deterministically, and a notice reports it
-// (spec Edge Case). It returns the sorted selections, one relocated notice per
-// selection, and any dedup notices.
-func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelection, []RelocationNotice, []string, error) {
-	byTarget := map[string]DotfileSelection{}
-	var dedup []string
+// (spec Edge Case). git configuration is the exception: git reads both its
+// XDG file and ~/.gitconfig, so one of each is merged into /etc/gitconfig in
+// git's order rather than one being dropped (mergeGitConfig). It returns the
+// selections sorted by target, one relocated notice per baked source path,
+// and the skip, dedup and merge notices. Whether a target lies under the
+// overmount home is checked once, by the overmount guard (bakedPaths).
+func resolveDotfiles(inputs []DotfileInput) ([]DotfileSelection, []RelocationNotice, []string) {
+	// slot is where a dotfile goes: its target, and for /etc/gitconfig which
+	// of git's two files it is, since those are merged, not deduplicated.
+	type slot struct {
+		target string
+		xdgGit bool
+	}
+	bySlot := map[slot]DotfileSelection{}
+	var extra []string
 	for _, in := range inputs {
 		target, env := relocateDotfile(in.HostPath)
-		if UnderOvermount(overmount, target) {
-			return nil, nil, nil, fmt.Errorf("dotfile %s would relocate to %s, under the overmount home %s", in.HostPath, target, overmount)
-		}
 		if !safeTarget(target) {
-			dedup = append(dedup, fmt.Sprintf(
+			extra = append(extra, fmt.Sprintf(
 				"dotfile %s relocates to an unsafe image path %q (only letters, digits, '.', '_' and '-' are allowed in a path segment, and no segment may be . or ..); skipped",
 				in.HostPath, target))
 			continue
@@ -196,28 +210,62 @@ func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelectio
 			source = DotfileSourceAllowlist
 		}
 		sel := DotfileSelection{Source: source, HostPath: in.HostPath, RelocatedTo: target, Env: env, Content: content}
-		prev, clash := byTarget[target]
+		k := slot{target: target, xdgGit: target == GitConfigPath && gitConfigXDG(normHostPath(in.HostPath))}
+		prev, clash := bySlot[k]
 		if !clash {
-			byTarget[target] = sel
+			bySlot[k] = sel
 			continue
 		}
 		winner := dedupDotfiles(prev, sel)
-		byTarget[target] = winner
-		dedup = append(dedup, fmt.Sprintf(
+		bySlot[k] = winner
+		extra = append(extra, fmt.Sprintf(
 			"dotfiles %s and %s both relocate to %s; %s is used (%s source wins)",
 			prev.HostPath, sel.HostPath, target, winner.HostPath, winner.Source))
 	}
-	sels := make([]DotfileSelection, 0, len(byTarget))
-	for _, s := range byTarget {
+	xdgSlot, globalSlot := slot{GitConfigPath, true}, slot{GitConfigPath, false}
+	if xdg, ok := bySlot[xdgSlot]; ok {
+		if global, ok := bySlot[globalSlot]; ok {
+			delete(bySlot, xdgSlot)
+			bySlot[globalSlot] = mergeGitConfig(xdg, global)
+			extra = append(extra, fmt.Sprintf(
+				"dotfiles %s and %s are both git configuration; they are merged into %s in git's order, %s last so its values win",
+				xdg.HostPath, global.HostPath, GitConfigPath, global.HostPath))
+		}
+	}
+	sels := make([]DotfileSelection, 0, len(bySlot))
+	for _, s := range bySlot {
 		sels = append(sels, s)
 	}
 	sort.Slice(sels, func(i, j int) bool { return sels[i].RelocatedTo < sels[j].RelocatedTo })
-	notices := make([]RelocationNotice, 0, len(sels))
+	var notices []RelocationNotice
 	for _, s := range sels {
-		notices = append(notices, RelocationNotice{Kind: NoticeRelocated, Subject: s.HostPath, From: s.HostPath, To: s.RelocatedTo})
+		for _, hp := range append(slices.Clone(s.MergedFrom), s.HostPath) {
+			notices = append(notices, RelocationNotice{Kind: NoticeRelocated, Subject: hp, To: s.RelocatedTo})
+		}
 	}
-	sort.Strings(dedup)
-	return sels, notices, dedup, nil
+	sort.Strings(extra)
+	return sels, notices, extra
+}
+
+// mergeGitConfig concatenates git's XDG configuration (first) and a
+// ~/.gitconfig (last) into one /etc/gitconfig. git reads both, the XDG file
+// before ~/.gitconfig, so a key set in both takes the ~/.gitconfig value; the
+// concatenation keeps that, because git lets the last value of a key win
+// within one file as well (FINDING-38). Each part starts with a comment that
+// names its source.
+func mergeGitConfig(first, last DotfileSelection) DotfileSelection {
+	merged := last
+	merged.MergedFrom = []string{first.HostPath}
+	merged.Content = gitConfigPart(first) + gitConfigPart(last)
+	return merged
+}
+
+func gitConfigPart(s DotfileSelection) string {
+	c := s.Content
+	if c != "" && !strings.HasSuffix(c, "\n") {
+		c += "\n"
+	}
+	return "# sandcast: from " + s.HostPath + "\n" + c
 }
 
 // dedupDotfiles picks the winner of two dotfiles that relocate to the same
@@ -236,47 +284,77 @@ func dedupDotfiles(a, b DotfileSelection) DotfileSelection {
 	}
 }
 
-// bakedPaths lists every image path sandcast writes for the interactive
-// environment of p, so the overmount guard can assert none lands under the
-// home (FR-008, SC-004).
-func bakedPaths(p *Plan) []string {
-	var out []string
+// bakedPath is one image path the plan writes or declares, with what it is
+// for the guard's error message.
+type bakedPath struct {
+	path, what string
+	// mountPointOK allows the path to be the overmount home itself: the
+	// workspace directory, which the build creates and the policy grants.
+	mountPointOK bool
+}
+
+// bakedPaths lists every image path the plan writes or declares, so the
+// overmount guard can assert none lands under the home (FR-008, SC-004): the
+// shell configuration, launchers and hooks, each dotfile target (this is the
+// only overmount check for dotfiles), the component and harness directories,
+// and the policy paths (component and harness read_only and read_write,
+// fragment trees, /opt/sandcast and /opt/mise).
+func bakedPaths(p *Plan, policyPaths []string) []bakedPath {
+	var shellFiles []string
 	switch ShellKind(p) {
 	case "zsh":
-		out = append(out, ZshEnvPaths...)
-		out = append(out, ZDotDir)
+		shellFiles = append(shellFiles, ZshEnvPaths...)
+		shellFiles = append(shellFiles, ZDotDir)
 		if p.Shell.RCPath != "" {
-			out = append(out, p.Shell.RCPath)
+			shellFiles = append(shellFiles, p.Shell.RCPath)
 		}
 	case "bash":
 		// The bash launcher and its rcfile are always baked (the rcfile is
 		// created empty when there is no curated content), so both are listed
 		// unconditionally.
-		out = append(out, ShellLoginPath, BashRCPath)
+		shellFiles = append(shellFiles, ShellLoginPath, BashRCPath)
 	default:
-		out = append(out, ProfileScriptPath, ShLoginPath)
+		shellFiles = append(shellFiles, ProfileScriptPath, ShLoginPath)
 	}
 	if p.Target == manifest.TargetOpenShell {
 		// The shell hooks for shells OpenShell starts directly.
-		out = append(out, LoginHookPath, RedirectHome, RedirectHome+"/.profile")
-		out = append(out, SystemBashrcPaths...)
+		shellFiles = append(shellFiles, LoginHookPath, RedirectHome, RedirectHome+"/.profile")
+		shellFiles = append(shellFiles, SystemBashrcPaths...)
+	}
+	out := make([]bakedPath, 0, len(shellFiles)+len(p.Dotfiles)+len(p.Image.Dirs)+len(policyPaths))
+	for _, f := range shellFiles {
+		out = append(out, bakedPath{path: f, what: "shell configuration"})
 	}
 	for _, d := range p.Dotfiles {
-		out = append(out, d.RelocatedTo)
+		out = append(out, bakedPath{path: d.RelocatedTo, what: "dotfile " + d.HostPath})
+	}
+	for _, d := range p.Image.Dirs {
+		out = append(out, bakedPath{path: d.Path, what: "directory of a component or harness", mountPointOK: true})
+	}
+	for _, pp := range policyPaths {
+		out = append(out, bakedPath{path: pp, what: "policy path of a component, harness or fragment", mountPointOK: true})
 	}
 	return out
 }
 
-// checkOvermountGuard fails when any path sandcast bakes for the interactive
-// environment would resolve under the overmount home (all are fixed
-// /opt/sandcast and /etc locations, so that is a programming error; defense
-// in depth for SC-004), or when the final image value of a relocation or
-// startup-file variable points under it, which a component or harness env
-// can cause (FR-002, FR-008).
-func checkOvermountGuard(p *Plan, overmount string) error {
-	for _, bp := range bakedPaths(p) {
-		if UnderOvermount(overmount, bp) {
-			return fmt.Errorf("plan would bake %s under the overmount home %s, where it is hidden at runtime", bp, overmount)
+// checkOvermountGuard fails when any path the plan bakes or declares
+// (bakedPaths) would resolve under the overmount home, where it is hidden
+// once the workspace is mounted, or when the final image value of a
+// relocation or startup-file variable points under it, which a component or
+// harness env can cause (FR-002, FR-008, SC-004). policyPaths are the image
+// policy paths besides the pinned defaults.
+func checkOvermountGuard(p *Plan, overmount string, policyPaths []string) error {
+	if overmount == "" {
+		return nil
+	}
+	for _, bp := range bakedPaths(p, policyPaths) {
+		clean := path.Clean(bp.path)
+		if bp.mountPointOK && clean == overmount {
+			continue
+		}
+		if UnderOvermount(overmount, clean) {
+			return fmt.Errorf("%s (%s) lies under the overmount home %s and would be hidden once the workspace is mounted; use a path outside it",
+				bp.path, bp.what, overmount)
 		}
 	}
 	guarded := map[string]bool{}

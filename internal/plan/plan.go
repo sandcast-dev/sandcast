@@ -355,11 +355,8 @@ func Build(in Inputs) (*Plan, error) {
 	mergeHarnessNeeds(&p.Image, in.Harnesses)
 
 	// Resolve the non-shell dotfiles: redact, pick a relocation target outside
-	// the home, dedup, and record one notice per dotfile (US3).
-	dotfiles, relocated, dedup, err := resolveDotfiles(in.Dotfiles, overmount)
-	if err != nil {
-		return nil, err
-	}
+	// the home, dedup or merge, and record one notice per source (US3).
+	dotfiles, relocated, dedup := resolveDotfiles(in.Dotfiles)
 	p.Dotfiles = dotfiles
 
 	// Relocation variables are set image-wide so non-shell processes read the
@@ -393,9 +390,10 @@ func Build(in Inputs) (*Plan, error) {
 			ProfileScriptPath))
 	}
 
-	// Defense in depth: nothing sandcast bakes may land under the overmount
-	// home (SC-004).
-	if err := checkOvermountGuard(p, overmount); err != nil {
+	// Nothing the plan bakes or declares may land under the overmount home,
+	// and no startup-file variable may point there (SC-004).
+	policyRO, policyRW := policyPaths(installed, in.Harnesses, fragmentDirs, len(miseTools) > 0)
+	if err := checkOvermountGuard(p, overmount, append(slices.Clone(policyRO), policyRW...)); err != nil {
 		return nil, err
 	}
 
@@ -409,7 +407,7 @@ func Build(in Inputs) (*Plan, error) {
 		if in.PolicyDefaults == nil {
 			return nil, errors.New("plan: no policy defaults for the openshell target")
 		}
-		pol, err := renderPolicy(in.PolicyDefaults, installed, in.Harnesses, fragmentDirs, user, len(miseTools) > 0)
+		pol, err := renderPolicy(in.PolicyDefaults, policyRO, policyRW, user)
 		if err != nil {
 			return nil, err
 		}
@@ -466,7 +464,7 @@ func describe(c *Component, def *component.Component, selector string) {
 // imageSetupOf merges environment variables and directories of the
 // installed components, sorted; on a duplicate the first key wins.
 func imageSetupOf(installed []*component.Component) ImageSetup {
-	setup := ImageSetup{Env: []EnvVar{}, Dirs: []Dir{}}
+	setup := ImageSetup{Dirs: []Dir{}}
 	env := map[string]string{}
 	dirs := map[string]string{}
 	for _, c := range installed {
@@ -484,9 +482,7 @@ func imageSetupOf(installed []*component.Component) ImageSetup {
 			}
 		}
 	}
-	for _, k := range sortedKeys(env) {
-		setup.Env = append(setup.Env, EnvVar{Name: k, Value: env[k]})
-	}
+	setup.Env = sortedEnv(env)
 	for _, k := range sortedKeys(dirs) {
 		setup.Dirs = append(setup.Dirs, Dir{Path: k, Owner: dirs[k]})
 	}
@@ -496,10 +492,7 @@ func imageSetupOf(installed []*component.Component) ImageSetup {
 // mergeHarnessNeeds adds harness environment variables and directories to
 // the image setup; component values win on a name clash.
 func mergeHarnessNeeds(setup *ImageSetup, harnesses []Harness) {
-	env := map[string]string{}
-	for _, e := range setup.Env {
-		env[e.Name] = e.Value
-	}
+	env := envMap(setup.Env)
 	dirs := map[string]string{}
 	for _, d := range setup.Dirs {
 		dirs[d.Path] = d.Owner
@@ -520,14 +513,31 @@ func mergeHarnessNeeds(setup *ImageSetup, harnesses []Harness) {
 			}
 		}
 	}
-	setup.Env = []EnvVar{}
-	for _, k := range sortedKeys(env) {
-		setup.Env = append(setup.Env, EnvVar{Name: k, Value: env[k]})
-	}
+	setup.Env = sortedEnv(env)
 	setup.Dirs = []Dir{}
 	for _, k := range sortedKeys(dirs) {
 		setup.Dirs = append(setup.Dirs, Dir{Path: k, Owner: dirs[k]})
 	}
+}
+
+// envMap indexes environment variables by name.
+func envMap(env []EnvVar) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		m[e.Name] = e.Value
+	}
+	return m
+}
+
+// sortedEnv returns the variables of m sorted by name, the order the plan
+// and the Containerfile use so rebuilds are byte-identical (FR-004). Every
+// env merge (components, harnesses, relocation) ends with it.
+func sortedEnv(m map[string]string) []EnvVar {
+	out := make([]EnvVar, 0, len(m))
+	for _, k := range sortedKeys(m) {
+		out = append(out, EnvVar{Name: k, Value: m[k]})
+	}
+	return out
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -593,17 +603,19 @@ func reprovisionTarget(def *component.Component) string {
 // so fragment installs and promoted recipes declare it read-only.
 func OptDir(key string) string { return "/opt/" + key }
 
-// renderPolicy renders the OpenShell image policy. Besides the component,
-// harness and fragment paths it always grants read access to RelocationPrefix:
-// the 60-shell section bakes the shell configuration and the launchers there
-// for every shell kind (and dotfiles may land there), and the upstream default
-// policy covers nothing under /opt, so without the grant landlock would deny
-// the sandbox user its own rc files and login shell (spec 003 FR-001, FR-003).
-// A harness that needs a writable subtree (such as /opt/sandcast/claude-code)
-// declares it read-write; landlock grants the union of both rules there.
-func renderPolicy(defaults *policy.Defaults, installed []*component.Component, harnesses []Harness, fragmentDirs []string, user FinalUser, usesMise bool) (string, error) {
-	ro := append(slices.Clone(fragmentDirs), RelocationPrefix)
-	var rw []string
+// policyPaths returns the read-only and read-write paths the image policy
+// adds to the pinned defaults: the component, harness and fragment paths, and
+// always RelocationPrefix read-only. The 60-shell section bakes the shell
+// configuration and the launchers there for every shell kind (and dotfiles
+// may land there), and the upstream default policy covers nothing under
+// /opt, so without the grant landlock would deny the sandbox user its own rc
+// files and login shell (spec 003 FR-001, FR-003). A harness that needs a
+// writable subtree (such as /opt/sandcast/claude-code) declares it
+// read-write; landlock grants the union of both rules there. MiseDataDir is
+// read-only when mise tools are installed, unless a component declares it
+// read-write. The overmount guard checks the same paths.
+func policyPaths(installed []*component.Component, harnesses []Harness, fragmentDirs []string, usesMise bool) (ro, rw []string) {
+	ro = append(slices.Clone(fragmentDirs), RelocationPrefix)
 	for _, c := range installed {
 		if c.Image == nil {
 			continue
@@ -618,6 +630,12 @@ func renderPolicy(defaults *policy.Defaults, installed []*component.Component, h
 	if usesMise && !slices.Contains(rw, MiseDataDir) {
 		ro = append(ro, MiseDataDir)
 	}
+	return ro, rw
+}
+
+// renderPolicy renders the OpenShell image policy from the pinned defaults,
+// the policyPaths and the final user.
+func renderPolicy(defaults *policy.Defaults, ro, rw []string, user FinalUser) (string, error) {
 	data, err := policy.Render(defaults, policy.Input{
 		ReadOnly:   ro,
 		ReadWrite:  rw,

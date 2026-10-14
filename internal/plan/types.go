@@ -65,8 +65,15 @@ type DotfileSelection struct {
 	// Source records how the entry entered the plan: "allowlist" (a host
 	// dotfile capture proposed) or "manifest" (an explicit manifest path).
 	Source string `yaml:"source" json:"source"`
-	// HostPath is the manifest path the content came from, kept for notices.
+	// HostPath is the manifest path the content came from. It selects the
+	// relocation target and is shown in the notices.
 	HostPath string `yaml:"host_path" json:"host_path"`
+	// MergedFrom lists further manifest paths whose content precedes
+	// HostPath's in Content. Only git configuration is merged: git reads
+	// both ~/.config/git/config and ~/.gitconfig (the latter wins), so both
+	// are concatenated into /etc/gitconfig in that order instead of one
+	// being dropped (FINDING-38).
+	MergedFrom []string `yaml:"merged_from,omitempty" json:"merged_from,omitempty"`
 	// RelocatedTo is the image path the content is baked to; never under the
 	// overmount home.
 	RelocatedTo string `yaml:"relocated_to" json:"relocated_to"`
@@ -91,9 +98,9 @@ type RelocationNotice struct {
 	Kind string `yaml:"kind" json:"kind"`
 	// Subject is the component key or dotfile path the decision is about.
 	Subject string `yaml:"subject" json:"subject"`
-	// From is the overmount-shadowed location (the probed path for a
-	// reprovision, the home-relative source for a relocation).
-	From string `yaml:"from" json:"from"`
+	// From is the overmount-shadowed location a reprovisioned tool was
+	// probed at. It is empty for a relocation, whose source is the Subject.
+	From string `yaml:"from,omitempty" json:"from,omitempty"`
 	// To is the persistent location chosen outside the home.
 	To string `yaml:"to" json:"to"`
 }
