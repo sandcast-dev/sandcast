@@ -49,9 +49,13 @@ const (
 	GitConfigPath = "/etc/gitconfig"
 	// InputRCPath is the baked readline configuration (pointed at by INPUTRC).
 	InputRCPath = RelocationPrefix + "/inputrc"
-	// ProfileScriptPath is the minimal safe default for sh logins and an env
-	// fallback (research R2, FR-011).
+	// ProfileScriptPath is the minimal safe default for the sh fallback and an
+	// env fallback (research R2, FR-011).
 	ProfileScriptPath = "/etc/profile.d/sandcast.sh"
+	// ShLoginPath is the sh fallback launcher: it points $ENV at the baked
+	// profile and execs a non-login /bin/sh, so no $HOME/.profile in the
+	// mounted workspace is ever sourced (research R2, spec US2/FR-002).
+	ShLoginPath = RelocationPrefix + "/sh-login"
 	// OvermountHome is the path OpenShell mounts the workspace volume over at
 	// runtime on the sandbox base images. Anything baked under it is hidden
 	// once the volume is mounted (spec US4, FR-008/FR-009). It is a property

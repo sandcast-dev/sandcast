@@ -390,7 +390,8 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 	var out []plan.DotfileInput
 	var notices []string
 	for _, d := range m.Dotfiles {
-		homeRel := strings.HasPrefix(d.Path, "~") || !filepath.IsAbs(d.Path) && !isProjectRelative(d.Path)
+		homeRel := strings.HasPrefix(d.Path, "~")
+		projRel := isProjectRelative(d.Path)
 		src, ok := resolveDotfilePath(env, d.Path)
 		if !ok {
 			notices = append(notices, fmt.Sprintf("dotfile %s could not be resolved (no home or project directory); skipped", d.Path))
@@ -401,11 +402,19 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 			notices = append(notices, fmt.Sprintf("dotfile %s does not exist on this host; skipped", d.Path))
 			continue
 		}
-		// A home-relative dotfile that resolves outside the home is refused,
-		// matching the skill-copy safety rule (R6).
-		if homeRel && env.Home != "" {
+		// Containment: a home-relative dotfile must stay under the home and a
+		// project-relative one under the project root, so a symlink cannot pull
+		// file content from outside into the image. This matches the skill-copy
+		// safety rule (R6, spec Edge Cases). An absolute path is taken as given.
+		switch {
+		case homeRel && env.Home != "":
 			if realHome, herr := filepath.EvalSymlinks(env.Home); herr == nil && !withinDir(realHome, real) {
 				notices = append(notices, fmt.Sprintf("dotfile %s resolves to %s outside the home; skipped", d.Path, real))
+				continue
+			}
+		case projRel && env.Layout.Root != "":
+			if realRoot, rerr := filepath.EvalSymlinks(env.Layout.Root); rerr == nil && !withinDir(realRoot, real) {
+				notices = append(notices, fmt.Sprintf("dotfile %s resolves to %s outside the project; skipped", d.Path, real))
 				continue
 			}
 		}

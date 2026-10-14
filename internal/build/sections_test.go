@@ -63,13 +63,19 @@ func TestShellSectionBashLauncher(t *testing.T) {
 }
 
 // TestShellSectionMinimalDefault checks a login shell that is neither zsh nor
-// bash gets /bin/sh with a baked /etc/profile.d default (FR-011, research R2).
+// bash gets a baked /etc/profile.d default plus a non-login sh launcher, so a
+// workspace .profile is never sourced (FR-011, FR-002/SC-002, research R2).
 func TestShellSectionMinimalDefault(t *testing.T) {
 	got, err := Assemble(shellKindPlan(t, "sh"))
 	require.NoError(t, err)
 	assert.Contains(t, got, "cat > /etc/profile.d/sandcast.sh")
-	assert.Contains(t, got, `CMD ["/bin/sh", "-l"]`)
-	assert.NotContains(t, got, "/opt/sandcast/shell-login")
+	// The launcher sets $ENV and execs a non-login sh (no -l), so neither
+	// /etc/profile nor a workspace .profile is read on login.
+	assert.Contains(t, got, "cat > /opt/sandcast/sh-login")
+	assert.Contains(t, got, `exec /bin/sh "$@"`)
+	assert.Contains(t, got, "-s /opt/sandcast/sh-login")
+	assert.Contains(t, got, `CMD ["/opt/sandcast/sh-login"]`)
+	assert.NotContains(t, got, `CMD ["/bin/sh", "-l"]`)
 }
 
 // TestDotfilesSectionBakesToRelocationTargets checks baked dotfiles are

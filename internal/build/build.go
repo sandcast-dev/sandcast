@@ -431,7 +431,7 @@ func writeContext(dir string, p *plan.Plan, containerfile string) error {
 			return err
 		}
 	}
-	dotfilesDir := filepath.Join(dir, "dotfiles")
+	dotfilesDir := filepath.Join(dir, DotfileContextDir)
 	if err := os.RemoveAll(dotfilesDir); err != nil {
 		return err
 	}

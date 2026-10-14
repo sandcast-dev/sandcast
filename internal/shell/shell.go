@@ -47,6 +47,25 @@ func LoginLauncher(rcfile string) string {
 		"exec bash --noprofile --norc --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
 }
 
+// ShLoginLauncher returns the POSIX sh fallback launcher used when the login
+// shell is neither zsh nor bash. A POSIX login shell reads $HOME/.profile, and
+// the final user's $HOME is the overmounted workspace, so launching /bin/sh as
+// a login shell would auto-source a workspace .profile (spec 003 FR-002,
+// SC-002). The launcher is the created user's login shell instead: it points
+// $ENV at the baked profile script and execs a NON-login /bin/sh, which reads
+// $ENV for interactive shells and never $HOME/.profile. "$@" forwards any
+// arguments (for example a -c command).
+func ShLoginLauncher(profile string) string {
+	return "#!/bin/sh\n" +
+		"# Written by sandcast: a login shell under the OpenShell home overmount\n" +
+		"# would read a profile file from the workspace home. Point $ENV at the\n" +
+		"# baked profile and exec a non-login shell so that workspace file is\n" +
+		"# never sourced.\n" +
+		"ENV=" + QuoteIfNeeded(profile) + "\n" +
+		"export ENV\n" +
+		`exec /bin/sh "$@"` + "\n"
+}
+
 // JSONHelpers defines _jsafe, which prints its argument escaped for a JSON
 // string: backslash, double quote, tab, newline and carriage return get
 // their short escapes, other control characters become \u00XX. It also sets

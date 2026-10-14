@@ -108,7 +108,9 @@ func TestLoginShell(t *testing.T) {
 	// A bash login shell uses the baked launcher, never /bin/bash directly.
 	assert.Equal(t, plan.ShellLoginPath, loginShell(p))
 	p.ImageFacts.Shells = []string{"/bin/sh"}
-	assert.Equal(t, "/bin/sh", loginShell(p))
+	// The sh fallback uses the baked launcher too, so a login shell never
+	// reads a startup file from the workspace home (spec 003 FR-002/SC-002).
+	assert.Equal(t, plan.ShLoginPath, loginShell(p))
 }
 
 func TestAssembleContainerTargetGolden(t *testing.T) {

@@ -81,6 +81,9 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 				}
 				_, _ = fmt.Fprintf(a.Stdout, "dotfiles: %s\n", strings.Join(paths, ", "))
 			}
+			for _, n := range res.DotfileNotices {
+				_, _ = fmt.Fprintf(a.Stdout, "dotfile skipped: %s\n", n)
+			}
 			return nil
 		},
 	}

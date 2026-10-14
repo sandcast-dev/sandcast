@@ -3,11 +3,19 @@ package plan
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/rhuss/sandcast/internal/redact"
 )
+
+// safeTargetRe matches an absolute image path built only from characters that
+// are inert in both the shell and a Containerfile instruction. A relocation
+// target that fails it would let a crafted dotfile path inject into the
+// generated COPY/RUN instructions, so such a target is skipped (spec 003 US3,
+// constitution IV).
+var safeTargetRe = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)+$`)
 
 // DotfileInput is one dotfile the pipeline read from the host for the plan to
 // resolve. The plan redacts Content, picks the relocation target and emits the
@@ -138,6 +146,12 @@ func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelectio
 		if UnderOvermount(overmount, target) {
 			return nil, nil, nil, fmt.Errorf("dotfile %s would relocate to %s, under the overmount home %s", in.HostPath, target, overmount)
 		}
+		if !safeTargetRe.MatchString(target) {
+			dedup = append(dedup, fmt.Sprintf(
+				"dotfile %s relocates to an unsafe image path %q (only letters, digits, '.', '_' and '-' are allowed in a path segment); skipped",
+				in.HostPath, target))
+			continue
+		}
 		content, _ := redact.Replace(in.Content)
 		source := DotfileSourceManifest
 		if in.FromAllowlist {
@@ -149,12 +163,11 @@ func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelectio
 			byTarget[target] = sel
 			continue
 		}
-		winner, loser := dedupDotfiles(prev, sel)
+		winner := dedupDotfiles(prev, sel)
 		byTarget[target] = winner
 		dedup = append(dedup, fmt.Sprintf(
 			"dotfiles %s and %s both relocate to %s; %s is used (%s source wins)",
 			prev.HostPath, sel.HostPath, target, winner.HostPath, winner.Source))
-		_ = loser
 	}
 	sels := make([]DotfileSelection, 0, len(byTarget))
 	for _, s := range byTarget {
@@ -172,16 +185,16 @@ func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelectio
 // dedupDotfiles picks the winner of two dotfiles that relocate to the same
 // target: an explicit manifest entry beats an allowlist proposal; otherwise
 // the smaller host path wins, so the choice is deterministic.
-func dedupDotfiles(a, b DotfileSelection) (winner, loser DotfileSelection) {
+func dedupDotfiles(a, b DotfileSelection) DotfileSelection {
 	switch {
 	case a.Source == DotfileSourceManifest && b.Source != DotfileSourceManifest:
-		return a, b
+		return a
 	case b.Source == DotfileSourceManifest && a.Source != DotfileSourceManifest:
-		return b, a
+		return b
 	case a.HostPath <= b.HostPath:
-		return a, b
+		return a
 	default:
-		return b, a
+		return b
 	}
 }
 
@@ -197,12 +210,12 @@ func bakedPaths(p *Plan) []string {
 			out = append(out, p.Shell.RCPath)
 		}
 	case "bash":
-		out = append(out, ShellLoginPath)
-		if p.Shell.RCPath != "" {
-			out = append(out, p.Shell.RCPath)
-		}
+		// The bash launcher and its rcfile are always baked (the rcfile is
+		// created empty when there is no curated content), so both are listed
+		// unconditionally.
+		out = append(out, ShellLoginPath, BashRCPath)
 	default:
-		out = append(out, ProfileScriptPath)
+		out = append(out, ProfileScriptPath, ShLoginPath)
 	}
 	for _, d := range p.Dotfiles {
 		out = append(out, d.RelocatedTo)

