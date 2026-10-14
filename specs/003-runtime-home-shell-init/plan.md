@@ -6,7 +6,7 @@
 
 ## Summary
 
-Make the sandbox's interactive environment survive the OpenShell home overmount by defining it entirely in image-baked locations outside the home and pointing programs at them through environment variables. zsh uses `ZDOTDIR` set in `/etc/zshenv`; bash uses a baked rcfile launched with `--noprofile --norc`; XDG-aware and per-tool configuration uses `XDG_CONFIG_HOME` and per-tool variables set as image `ENV`. The writable workspace home is never auto-sourced. Capture gains a bounded dotfile allowlist (host-proposed, confirmed) plus explicit manifest paths, all passed through the existing redaction. The plan reclassifies any base-image tool found only under the overmount as missing so it is re-provisioned to a persistent path, and reports every relocation or re-provision.
+Make the sandbox's interactive environment survive the OpenShell home overmount by defining it entirely in image-baked locations outside the home and pointing programs at them through environment variables. zsh uses `ZDOTDIR` set in the global zshenv (`/etc/zsh/zshenv` and `/etc/zshenv`) and as image `ENV`; bash uses a baked launcher that runs `bash --noprofile --rcfile /opt/sandcast/bashrc`; OpenShell images also hook the system bashrc and `/etc/profile.d` for the shells OpenShell starts directly after clearing the environment; dotfiles go to system paths the tools read natively (`/etc/gitconfig`, `/etc/tmux.conf`, `/etc/xdg`) or to paths named by per-tool variables. (The original plan said `--noprofile --norc`, `/etc/zshenv` only and `XDG_CONFIG_HOME`; all three were corrected after the code review, see research R1, R3 and R5.) The writable workspace home is never auto-sourced. Capture gains a bounded dotfile allowlist (host-proposed, confirmed) plus explicit manifest paths, all passed through the existing redaction. The plan reclassifies any base-image tool found only under the overmount as missing so it is re-provisioned to a persistent path, and reports every relocation or re-provision.
 
 ## Technical Context
 
@@ -34,7 +34,7 @@ Make the sandbox's interactive environment survive the OpenShell home overmount 
 
 - **I. Tests and documentation**: PASS. Every new behavior ships Go unit tests and golden coverage; docs updated in `docs/guides/capture.md`, `docs/guides/build.md`, `docs/configuration.md`. (FR-014)
 - **II. Determinism before convenience**: PASS. The mechanism is static image `ENV` and baked files, computed deterministically in the plan; no runtime writes, no nondeterministic seeding. Golden files assert the Containerfile sections. (FR-004, SC-005)
-- **III. Upstream formats over home-grown ones**: PASS. Uses the standard `ZDOTDIR`, `XDG_CONFIG_HOME`, and per-tool environment conventions and `/etc` system files rather than a sandcast-invented scheme.
+- **III. Upstream formats over home-grown ones**: PASS. Uses the standard `ZDOTDIR`, the default `XDG_CONFIG_DIRS`, per-tool environment conventions and `/etc` system files rather than a sandcast-invented scheme.
 - **IV. No credentials, ever**: PASS. Dotfiles flow through the existing `internal/redact` detection and placeholder rules before entering the build context. (FR-007, SC and US3-AS3)
 - **V. Build and tool rules**: PASS. Uses make targets; podman-first; no docker-specific features; golden regen via `UPDATE_GOLDEN=1 go test ./...`.
 
@@ -72,7 +72,7 @@ docs/           # guides/capture.md, guides/build.md, configuration.md
 
 ## Phase 0: Research
 
-See [research.md](./research.md). It resolves: the env-relocation mechanism per shell (zsh `ZDOTDIR`, bash baked rcfile with `--noprofile --norc`, sh minimal default), where relocation variables are set (image `ENV`), the bounded dotfile allowlist, the symlink/outside-project rule, and how `/sandbox`-only probe hits are reclassified in the plan delta without breaking the probe cache.
+See [research.md](./research.md). It resolves: the env-relocation mechanism per shell (zsh `ZDOTDIR`, bash baked launcher with `--noprofile --rcfile`, sh minimal default, plus the hooks for shells OpenShell starts directly), where relocation variables are set (image `ENV`), the bounded dotfile allowlist, the symlink/outside-project rule, and how `/sandbox`-only probe hits are reclassified in the plan delta without breaking the probe cache.
 
 ## Phase 1: Design and Contracts
 
