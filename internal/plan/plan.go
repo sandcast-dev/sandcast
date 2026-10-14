@@ -46,7 +46,7 @@ const (
 	// configuration directory, in the default XDG_CONFIG_DIRS search path.
 	// sandcast never sets XDG_CONFIG_HOME image-wide, because tools write
 	// their own configuration there and a root-owned baked tree would make
-	// them fail (FINDING-39).
+	// them fail.
 	XDGConfigDir = "/etc/xdg"
 	// TmuxConfPath is tmux's system configuration, read natively outside the
 	// home before any user file.

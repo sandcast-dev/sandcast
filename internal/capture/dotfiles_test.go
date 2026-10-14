@@ -47,9 +47,9 @@ func TestProposeDotfilesSkipsSymlinkOutsideHome(t *testing.T) {
 
 // TestProposeDotfilesResolvesParentSymlink checks a leaf that is a regular
 // file below a symlinked parent (~/.config pointing out of the home) is not
-// proposed: the pipeline resolves the whole path and would skip it later
-// (FINDING-16). A symlink that stays inside the home but lands in a
-// credential store is not proposed either, for the same reason.
+// proposed: the pipeline resolves the whole path and would skip it later.
+// A symlink that stays inside the home but lands in a credential store is
+// not proposed either, for the same reason.
 func TestProposeDotfilesResolvesParentSymlink(t *testing.T) {
 	home := t.TempDir()
 	elsewhere := t.TempDir()

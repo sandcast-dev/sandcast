@@ -565,7 +565,7 @@ func TestRelocationEnvForZshAndBash(t *testing.T) {
 // TestRelocationEnvWinsOverComponentEnv checks a component or harness cannot
 // point a relocation variable back into the overmounted home: the relocation
 // value wins, the override is reported, and a startup-file variable whose
-// final value lies under the home fails the plan (FINDING-36).
+// final value lies under the home fails the plan.
 func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	in.Harnesses = []Harness{{
@@ -602,14 +602,35 @@ func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 		assert.Contains(t, err.Error(), name)
 		assert.Contains(t, err.Error(), DefaultOvermountHome)
 	}
+
+	// A guarded value the shell expands at run time ($HOME, ~) names a
+	// workspace file without starting with the overmount home, so only a
+	// plain absolute path passes; an unguarded variable (TOOL_HOME, and
+	// INPUTRC while no dotfile relocates it) may carry anything.
+	for name, value := range map[string]string{"BASH_ENV": "$HOME/.bashrc", "ENV": "~/.shrc", "ZDOTDIR": "${HOME}"} {
+		bad := testInputs(t, testManifest(), nil)
+		bad.Harnesses = []Harness{{
+			Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+			Env: []EnvVar{{Name: name, Value: value}, {Name: "TOOL_HOME", Value: "$HOME/.tool"}, {Name: "INPUTRC", Value: "~/.inputrc"}},
+		}}
+		_, err := Build(bad)
+		if name == "ZDOTDIR" {
+			// The relocation value replaces it before the guard runs.
+			require.NoError(t, err, name)
+			continue
+		}
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), name+"="+value, name)
+		assert.Contains(t, err.Error(), "not a plain absolute path", name)
+	}
 }
 
 // TestRelocateDotfileNoImageWideXDG checks no dotfile sets XDG_CONFIG_HOME:
 // an image-wide value pointing at a root-owned tree made every tool that
-// writes its configuration there (gh, helm, glab) fail with EACCES
-// (FINDING-39). tmux goes to /etc/tmux.conf, which tmux reads natively,
-// generic files to /etc/xdg (in the default XDG_CONFIG_DIRS), and only
-// tool-specific variables remain.
+// writes its configuration there (gh, helm, glab) fail with EACCES. tmux
+// goes to /etc/tmux.conf, which tmux reads natively, generic files to
+// /etc/xdg (in the default XDG_CONFIG_DIRS), and only tool-specific
+// variables remain.
 func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
 	for _, tt := range []struct {
 		host, target string
@@ -652,7 +673,7 @@ func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
 // TestResolveDotfilesRejectsDotSegments checks a host path with ".." cannot
 // produce a target that escapes the relocation tree: a character class
 // alone accepts "." and ".." segments, so shell.SafeAbsPath rejects them
-// (FINDING-33).
+// .
 func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
 	sels, _, extra := resolveDotfiles([]DotfileInput{
 		{HostPath: "~/../../../../etc/passwd", Content: "root::0:0::/:/bin/sh\n"},
@@ -713,7 +734,7 @@ func TestDedupDotfilesTieBreak(t *testing.T) {
 // TestResolveDotfilesMergesGitConfig checks git's two configuration files
 // are both kept: git reads ~/.config/git/config and then ~/.gitconfig, so
 // they are concatenated into /etc/gitconfig in that order (the ~/.gitconfig
-// values win) instead of one being dropped (FINDING-38). A second
+// values win) instead of one being dropped. A second
 // ~/.gitconfig-style entry is still deduplicated.
 func TestResolveDotfilesMergesGitConfig(t *testing.T) {
 	inputs := []DotfileInput{
@@ -811,7 +832,7 @@ func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
 // path the plan bakes or declares, not only the shell files and dotfiles: a
 // component or harness directory under the home would be created by the
 // 20-user section and then hidden by the workspace mount, and a policy path
-// there would be a grant on the workspace (FINDING-42). The overmount home
+// there would be a grant on the workspace. The overmount home
 // itself, the workspace directory, stays allowed.
 func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
 	withGoImage := func(t *testing.T, mutate func(img *component.ImageNeeds)) Inputs {
@@ -962,7 +983,7 @@ func TestSelectAddsGitForHarnessPlugins(t *testing.T) {
 // property of the base image: a registry entry's overmount_home reaches the
 // plan, which records it and applies it to the re-provisioning and the
 // guard; the OpenShell default is /sandbox, and the container target has
-// none (FINDING-28).
+// none.
 func TestBuildUsesBaseImageOvermountHome(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	in.BaseImage.OvermountHome = "/workspace"

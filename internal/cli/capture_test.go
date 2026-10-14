@@ -89,7 +89,7 @@ func TestComponentsMatch(t *testing.T) {
 
 // TestComponentsMatchUnknownHome checks an unknown host home (HOME unset in
 // a CI container or a service) is reported instead of silently proposing no
-// dotfiles (FINDING-18).
+// dotfiles.
 func TestComponentsMatchUnknownHome(t *testing.T) {
 	ta := newTestApp(t)
 	ta.Getenv = func(string) string { return "" }

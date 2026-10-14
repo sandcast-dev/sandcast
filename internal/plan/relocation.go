@@ -107,7 +107,7 @@ var startupEnvVars = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 // or a baked file named by a tool-specific variable (STARSHIP_CONFIG,
 // INPUTRC). No dotfile sets XDG_CONFIG_HOME: an image-wide value would point
 // every tool that writes its configuration there (gh, helm, glab) at a
-// root-owned tree (FINDING-39). resolveDotfiles refuses a target that is not
+// root-owned tree. resolveDotfiles refuses a target that is not
 // a clean, safe absolute path.
 func relocateDotfile(hostPath string) (target string, env map[string]string) {
 	norm := normHostPath(hostPath)
@@ -175,7 +175,7 @@ func resolveDotfiles(inputs []DotfileInput) ([]DotfileSelection, []RelocationNot
 		target, env := relocateDotfile(in.HostPath)
 		// A target that is not a safe path would let a crafted dotfile path
 		// inject into the generated COPY and RUN instructions, or escape its
-		// tree with a "." or ".." segment (FINDING-33), so it is skipped
+		// tree with a "." or ".." segment, so it is skipped
 		// (spec 003 US3, constitution IV).
 		if !shell.SafeAbsPath(target) {
 			extra = append(extra, fmt.Sprintf(
@@ -233,7 +233,7 @@ func resolveDotfiles(inputs []DotfileInput) ([]DotfileSelection, []RelocationNot
 // ~/.gitconfig (last) into one /etc/gitconfig. git reads both, the XDG file
 // before ~/.gitconfig, so a key set in both takes the ~/.gitconfig value; the
 // concatenation keeps that, because git lets the last value of a key win
-// within one file as well (FINDING-38). Each part starts with a comment that
+// within one file as well. Each part starts with a comment that
 // names its source.
 func mergeGitConfig(first, last DotfileSelection) DotfileSelection {
 	merged := last
@@ -323,8 +323,11 @@ func bakedPaths(p *Plan, policyPaths []string) []bakedPath {
 // (bakedPaths) would resolve under the overmount home, where it is hidden
 // once the workspace is mounted, or when the final image value of a
 // relocation or startup-file variable points under it, which a component or
-// harness env can cause (FR-002, FR-008, SC-004). policyPaths are the image
-// policy paths besides the pinned defaults.
+// harness env can cause (FR-002, FR-008, SC-004). Such a value must be a
+// plain absolute path: bash expands BASH_ENV, dash expands ENV and readline
+// tilde-expands INPUTRC at run time, so "$HOME/.bashrc" or "~/.shrc" names a
+// workspace file although it does not start with the overmount home.
+// policyPaths are the image policy paths besides the pinned defaults.
 func checkOvermountGuard(p *Plan, overmount string, policyPaths []string) error {
 	if overmount == "" {
 		return nil
@@ -347,8 +350,15 @@ func checkOvermountGuard(p *Plan, overmount string, policyPaths []string) error 
 		guarded[e.Name] = true
 	}
 	for _, e := range p.Image.Env {
-		if guarded[e.Name] && UnderOvermount(overmount, path.Clean(e.Value)) {
+		if !guarded[e.Name] {
+			continue
+		}
+		if UnderOvermount(overmount, path.Clean(e.Value)) {
 			return fmt.Errorf("image env %s=%s points under the overmount home %s, so a shell or tool would read its configuration from the mounted workspace; remove it from the component or harness",
+				e.Name, e.Value, overmount)
+		}
+		if !shell.SafeAbsPath(e.Value) {
+			return fmt.Errorf("image env %s=%s is not a plain absolute path; the shell expands it at run time, so it could name a file in the mounted workspace; use an absolute path outside the overmount home %s in the component or harness",
 				e.Name, e.Value, overmount)
 		}
 	}

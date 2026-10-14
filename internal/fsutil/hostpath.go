@@ -21,6 +21,7 @@ const (
 	HostPathAbsolute
 )
 
+// String names the kind for messages: "home", "project" or "absolute".
 func (k HostPathKind) String() string {
 	switch k {
 	case HostPathHome:
@@ -39,14 +40,15 @@ func (k HostPathKind) String() string {
 // project. Every caller that reads host files named in the manifest (harness
 // sources, dotfiles) uses it, so the same string is never resolved one way and
 // checked another. It fails for an empty path, for "~user" forms (only "~/"
-// names the home), and when the directory a path needs is unknown.
+// names the home), and when the directory a path needs is unknown; on every
+// error the kind is 0.
 func ResolveHostPath(p, home, project string) (HostPathKind, string, error) {
 	switch {
 	case p == "":
 		return 0, "", errors.New("the path is empty")
 	case p == "~" || strings.HasPrefix(p, "~/"):
 		if home == "" {
-			return HostPathHome, "", fmt.Errorf("%s needs the home directory, which is unknown", p)
+			return 0, "", fmt.Errorf("%s needs the %s directory, which is unknown", p, HostPathHome)
 		}
 		return HostPathHome, filepath.Join(home, strings.TrimPrefix(p, "~")), nil
 	case strings.HasPrefix(p, "~"):
@@ -55,7 +57,7 @@ func ResolveHostPath(p, home, project string) (HostPathKind, string, error) {
 		return HostPathAbsolute, filepath.Clean(p), nil
 	default:
 		if project == "" {
-			return HostPathProject, "", fmt.Errorf("%s needs the project directory, which is unknown", p)
+			return 0, "", fmt.Errorf("%s needs the %s directory, which is unknown", p, HostPathProject)
 		}
 		return HostPathProject, filepath.Join(project, p), nil
 	}

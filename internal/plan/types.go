@@ -72,7 +72,7 @@ type DotfileSelection struct {
 	// HostPath's in Content. Only git configuration is merged: git reads
 	// both ~/.config/git/config and ~/.gitconfig (the latter wins), so both
 	// are concatenated into /etc/gitconfig in that order instead of one
-	// being dropped (FINDING-38).
+	// being dropped.
 	MergedFrom []string `yaml:"merged_from,omitempty" json:"merged_from,omitempty"`
 	// RelocatedTo is the image path the content is baked to; never under the
 	// overmount home.

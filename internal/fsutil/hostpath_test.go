@@ -36,9 +36,10 @@ func TestResolveHostPath(t *testing.T) {
 		{"~/.gitconfig", "", project, "needs the home directory"},
 		{"conf", home, "", "needs the project directory"},
 	} {
-		_, _, err := ResolveHostPath(tt.in, tt.home, tt.project)
+		kind, _, err := ResolveHostPath(tt.in, tt.home, tt.project)
 		require.Error(t, err, tt.in)
 		assert.Contains(t, err.Error(), tt.want, tt.in)
+		assert.Zero(t, kind, "%s: no kind beside an error", tt.in)
 	}
 	assert.Equal(t, "home", HostPathHome.String())
 	assert.Equal(t, "project", HostPathProject.String())

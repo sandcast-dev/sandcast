@@ -115,7 +115,7 @@ func TestPlanUnknownTarget(t *testing.T) {
 // dotfiles from the CLI: project-relative sources are read, redacted,
 // relocated (git's two files merged) and written to plan.yaml with one
 // relocation per source, and sandcast build stages each one in the build
-// context (FINDING-3).
+// context.
 func TestPlanRecordsDotfilesAndRelocations(t *testing.T) {
 	ta := newTestApp(t)
 	ta.project(t)
@@ -159,7 +159,7 @@ func TestPlanRecordsDotfilesAndRelocations(t *testing.T) {
 }
 
 // TestPlanUsesRegistryOvermountHome checks a user registry entry's
-// overmount_home reaches the plan (FINDING-28): the plan records it, and
+// overmount_home reaches the plan: the plan records it, and
 // the Containerfile's WORKDIR follows it.
 func TestPlanUsesRegistryOvermountHome(t *testing.T) {
 	const ref = "quay.io/example/ws:1"

@@ -57,8 +57,11 @@ func proposeDotfile(home, realHome, rel string) string {
 	if _, err := os.Lstat(src); err != nil {
 		return notPresent
 	}
-	if manifest.IsCredentialName(rel) {
-		return "looks like a credential file"
+	// The same two checks the pipeline applies: the path as written here,
+	// the resolved path below. No allowlist entry is denied as written, so
+	// this only keeps the two bounds the same.
+	if why := manifest.DotfileDenied(rel); why != "" {
+		return "is not baked because " + why
 	}
 	real, err := filepath.EvalSymlinks(src)
 	if err != nil {

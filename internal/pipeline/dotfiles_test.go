@@ -41,12 +41,13 @@ func TestDotfileInputsAllowlistAndExplicit(t *testing.T) {
 	home := t.TempDir()
 	root := t.TempDir()
 	writeFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\temail = a@b.c\n")
+	writeFile(t, filepath.Join(root, ".gitconfig"), "[user]\n\tname = project copy\n")
 	abs := filepath.Join(root, "custom.conf")
 	writeFile(t, abs, "key = value\n")
 
-	out, notices := dotfileInputs(dotfileEnv(home, root), mdotfiles("~/.gitconfig", abs))
+	out, notices := dotfileInputs(dotfileEnv(home, root), mdotfiles("~/.gitconfig", abs, ".gitconfig"))
 	require.Empty(t, notices)
-	require.Len(t, out, 2)
+	require.Len(t, out, 3)
 
 	byPath := map[string]bool{}
 	for _, in := range out {
@@ -54,6 +55,7 @@ func TestDotfileInputsAllowlistAndExplicit(t *testing.T) {
 	}
 	assert.True(t, byPath["~/.gitconfig"], "~/.gitconfig is tagged as from the allowlist")
 	assert.False(t, byPath[abs], "an explicit absolute path is not from the allowlist")
+	assert.False(t, byPath[".gitconfig"], "a project copy named like an allowlist entry is an explicit entry")
 }
 
 // TestDotfileInputsMissingSkipped checks an explicit dotfile that does not
@@ -200,14 +202,14 @@ func TestDotfileInputsProjectCredentialSkipped(t *testing.T) {
 }
 
 // TestDotfileInputsTildeUserSkipped checks "~user" forms are refused rather
-// than resolved one way and checked another (FINDING-23).
+// than resolved one way and checked another.
 func TestDotfileInputsTildeUserSkipped(t *testing.T) {
 	skippedWith(t, dotfileEnv(t.TempDir(), t.TempDir()), "only ~/ names the home", "~root/.gitconfig")
 }
 
 // TestDotfileInputsNotRegularOrTooLargeSkipped checks only regular files up
 // to the size cap are read: a FIFO would block the plan forever and a huge
-// file would be embedded in plan.yaml (FINDING-25).
+// file would be embedded in plan.yaml.
 func TestDotfileInputsNotRegularOrTooLargeSkipped(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "pipe.conf"), 0o644))
@@ -233,7 +235,7 @@ func TestDotfileInputsNotRegularOrTooLargeSkipped(t *testing.T) {
 }
 
 // TestDotfileInputsResolveErrorsAreDistinct checks a symlink loop is not
-// reported as a missing file (FINDING-24) and that an unresolvable home fails
+// reported as a missing file and that an unresolvable home fails
 // closed.
 func TestDotfileInputsResolveErrorsAreDistinct(t *testing.T) {
 	root := t.TempDir()

@@ -390,15 +390,17 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 	var out []plan.DotfileInput
 	var notices []string
 	for _, d := range m.Dotfiles {
-		content, err := readDotfile(env, d.Path)
+		kind, content, err := readDotfile(env, d.Path)
 		if err != nil {
 			notices = append(notices, fmt.Sprintf("dotfile %s %v; skipped", d.Path, err))
 			continue
 		}
 		out = append(out, plan.DotfileInput{
-			HostPath:      d.Path,
-			Content:       content,
-			FromAllowlist: manifest.IsAllowlisted(d.Path),
+			HostPath: d.Path,
+			Content:  content,
+			// Only a home path can be the allowlist entry capture proposed;
+			// a project copy named like one is an explicit entry.
+			FromAllowlist: kind == fsutil.HostPathHome && manifest.IsAllowlisted(d.Path),
 		})
 	}
 	return out, notices
@@ -417,36 +419,40 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 //
 // An error that the home or project directory, or the entry itself, cannot
 // be resolved skips the entry; a missing file is told apart from other
-// errors. The error text completes "dotfile <path> ...".
-func readDotfile(env Env, p string) (string, error) {
+// errors. The error text completes "dotfile <path> ...". It returns the kind
+// of the path with the content, so the caller can tell a home allowlist
+// entry from a project copy of the same name.
+func readDotfile(env Env, p string) (fsutil.HostPathKind, string, error) {
 	kind, src, err := fsutil.ResolveHostPath(p, env.Home, env.Layout.Root)
 	if err != nil {
-		return "", fmt.Errorf("could not be resolved (%w)", err)
+		return 0, "", fmt.Errorf("could not be resolved (%w)", err)
 	}
-	root, rootName := env.Layout.Root, "project"
+	// An absolute path must lie in the project, so it is checked against the
+	// project root like a project-relative one.
+	rootKind, root := fsutil.HostPathProject, env.Layout.Root
 	if kind == fsutil.HostPathHome {
 		rel := path.Clean(strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
 		if !manifest.HomeDotfileAllowed(rel) {
-			return "", fmt.Errorf("is not baked: from the home, only %s are read", manifest.HomeDotfileBound())
+			return 0, "", fmt.Errorf("is not baked: from the home, only %s are read", manifest.HomeDotfileBound())
 		}
-		root, rootName = env.Home, "home"
+		rootKind, root = fsutil.HostPathHome, env.Home
 	}
 	if root == "" {
-		return "", fmt.Errorf("could not be resolved (the %s directory is unknown)", rootName)
+		return 0, "", fmt.Errorf("could not be resolved (the %s directory is unknown)", rootKind)
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", fmt.Errorf("could not be checked: the %s directory %s cannot be resolved (%w)", rootName, root, err)
+		return 0, "", fmt.Errorf("could not be checked: the %s directory %s cannot be resolved (%w)", rootKind, root, err)
 	}
 	real, err := filepath.EvalSymlinks(src)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return "", errors.New("does not exist on this host")
+		return 0, "", errors.New("does not exist on this host")
 	case err != nil:
-		return "", fmt.Errorf("could not be resolved (%w)", err)
+		return 0, "", fmt.Errorf("could not be resolved (%w)", err)
 	}
 	if !fsutil.Within(realRoot, real) {
-		return "", fmt.Errorf("resolves to %s outside the %s", real, rootName)
+		return 0, "", fmt.Errorf("resolves to %s outside the %s", real, rootKind)
 	}
 	// The path as written (cleaned by ResolveHostPath), relative to the
 	// directory it names, and the resolved path, relative to the resolved
@@ -457,10 +463,14 @@ func readDotfile(env Env, p string) (string, error) {
 			continue
 		}
 		if why := manifest.DotfileDenied(filepath.ToSlash(rel)); why != "" {
-			return "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
+			return 0, "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
 		}
 	}
-	return readRegularFile(real)
+	content, err := readRegularFile(real)
+	if err != nil {
+		return 0, "", err
+	}
+	return kind, content, nil
 }
 
 // readRegularFile reads a regular file of at most manifest.MaxDotfileSize bytes. It
