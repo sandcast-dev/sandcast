@@ -8,6 +8,16 @@
 
 **Input**: Brainstorm `brainstorm/03-runtime-home-shell-init.md` (runtime home model and shell initialization under the OpenShell home overmount).
 
+## Clarifications
+
+### Session 2026-10-14 (resolved autonomously under ship pipeline, smart oversight)
+
+- Q: Is the runtime seeding escape hatch implemented in this feature? -> A: No. Environment-variable relocation is the only mechanism built. Runtime seeding is documented as the sanctioned future fallback for tools that hardcode a home path, but is not implemented here (FR-013 tightened accordingly).
+- Q: Which interactive shells must work under the overmount? -> A: zsh and bash. Any other login shell gets a minimal safe default and a capture notice (FR-011).
+- Q: Does this feature configure how or where OpenShell mounts the workspace? -> A: No. The overmount path is a property of the base image that sandcast already knows; the feature adapts to it and never configures the runtime.
+- Q: How is the dotfile allowlist bounded? -> A: A curated, bounded allowlist (the shell config is already handled; common additions include git, the prompt tool, editor basics, and tmux). Its exact membership is finalized in planning; explicit manifest paths cover anything the allowlist omits.
+- Q: Is credential persistence across sandbox recreations in scope? -> A: No. Explicitly deferred to a separate feature.
+
 ## User Scenarios & Testing *(mandatory)*
 
 In an OpenShell sandbox the final user's home is `/sandbox`, and the runtime mounts the workspace volume over that path. The home is therefore shadowed (image-baked content under it is hidden), writable, and tied to the workspace rather than to the image. These stories make the captured environment behave correctly under that overmount.
@@ -94,7 +104,7 @@ Nothing sandcast bakes lands under the overmounted home, and a base-image tool t
 - **FR-010**: sandcast MUST report, in the plan or build output, each path it relocated or component it re-provisioned because of the overmount.
 - **FR-011**: The feature MUST support zsh and bash. For any other login shell, capture MUST record that it could not curate the shell and the image MUST still start with a minimal safe default.
 - **FR-012**: A user MUST be able to apply their own project shell configuration only by capturing it explicitly into the image, never by having the sandbox source the live workspace.
-- **FR-013**: A runtime mechanism that seeds configuration into the live home MUST NOT be the default path; if provided at all, it MUST be an explicit, documented escape hatch.
+- **FR-013**: The primary path MUST NOT depend on seeding configuration into the live home. Runtime seeding is NOT implemented in this feature; it is documented as the sanctioned future escape hatch for tools that hardcode a home path.
 - **FR-014**: The feature MUST ship with tests and documentation, consistent with the project constitution.
 
 ### Key Entities *(include if feature involves data)*
