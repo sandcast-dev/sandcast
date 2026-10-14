@@ -123,7 +123,7 @@ printf 'bash -i -c "echo NESTED-BASH=\\$BASH_VERSION"; exit\n' | script -qec "$E
 report nested
 printf '/bin/bash -i -c "alias myll; echo NESTED-ABS=\\$BASH_VERSION"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT abs-bash /'
 report abs-bash
-printf '/harness/spawn-shell.sh; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT shell-l /'
+script -qec "$E /bin/bash -i -c /harness/spawn-shell.sh" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT shell-l /'
 report shell-l
 $E /bin/sh -lc 'echo "SH-HOME=$HOME"; exit 6' | sed 's/^/OUT sh-lc /'
 $E /bin/sh -lc 'exit 6'; echo "OUT sh-lc rc=$?"
@@ -137,10 +137,12 @@ fi
 `
 
 // spawnShellScript is what tmux or an editor's terminal does inside a
-// curated session: start $SHELL as an interactive login shell. It prints
-// the curated alias and the value of SHELL.
+// curated session: start $SHELL as an interactive login shell on a pty of
+// its own (script(1) provides it, as tmux would; an interactive zsh whose
+// stdin is a pipe inside another shell's pty stops on job control). It
+// prints the curated alias and the value of SHELL.
 const spawnShellScript = `#!/bin/sh
-printf 'alias myll; echo "SHELL=[$SHELL]"; exit\n' | "$SHELL" -l -i 2>&1
+printf 'alias myll; echo "SHELL=[$SHELL]"; exit\n' | script -qec "$SHELL -l -i" /dev/null 2>&1
 `
 
 // assertOpenShellSpawns runs openShellSpawnScript in image with the planted
