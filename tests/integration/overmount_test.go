@@ -103,6 +103,19 @@ func TestOvermountZshSurvives(t *testing.T) {
 	assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir")
 	assert.Contains(t, out, "myll='ls -l'", "the baked alias is active")
 
+	// Scenario 2 without the image ENV: a runtime that clears the environment
+	// (OpenShell, su -l, sshd) starts zsh with no ZDOTDIR. The global zshenv
+	// zsh actually reads (/etc/zsh/zshenv on Ubuntu) must set it, or zsh
+	// sources the workspace ~/.zshenv and ~/.zshrc.
+	for _, mode := range []string{"-ic", "-lc"} {
+		out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/usr/bin/env", image,
+			"-i", "HOME=/sandbox", "USER=sandbox", "PATH=/usr/local/bin:/usr/bin:/bin", "TERM=xterm",
+			"/bin/zsh", mode, `echo "ZDOTDIR=$ZDOTDIR"; ls /tmp | grep '^pwned-' | sed 's/^/PWNED /'; true`)
+		require.NoError(t, err, out)
+		assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir", "zsh %s with a cleared environment", mode)
+		assert.NotContains(t, out, "PWNED", "zsh %s with a cleared environment runs no workspace startup file", mode)
+	}
+
 	// Scenario 3: the baked git dotfile is read from /etc/gitconfig.
 	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "git", image, "config", "--get", "user.email")
 	require.NoError(t, err, out)

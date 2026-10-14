@@ -25,16 +25,14 @@ const (
 	// RelocationPrefix holds all image-baked shell and dotfile configuration,
 	// outside the overmounted home.
 	RelocationPrefix = "/opt/sandcast"
-	// ZDotDir is the zsh ZDOTDIR tree. With ZDOTDIR set (in /etc/zshenv and
-	// as image ENV) zsh reads its startup files here and never from $HOME, so
-	// a workspace $HOME/.zshrc is never sourced (research R1, spec US2).
+	// ZDotDir is the zsh ZDOTDIR tree. With ZDOTDIR set (in the global zshenv
+	// and as image ENV) zsh reads its startup files here and never from
+	// $HOME, so a workspace $HOME/.zshrc is never sourced (research R1, spec
+	// US2).
 	ZDotDir = RelocationPrefix + "/zdotdir"
 	// ZshRCPath is the curated zsh configuration, baked inside the ZDOTDIR
 	// tree rather than under /etc/zsh so it survives the overmount.
 	ZshRCPath = ZDotDir + "/.zshrc"
-	// ZshEnvPath is read by zsh first and unconditionally, before any $HOME
-	// file; sandcast sets ZDOTDIR there.
-	ZshEnvPath = "/etc/zshenv"
 	// BashRCPath is the curated bash configuration, loaded only through the
 	// baked launcher with --rcfile (bash has no ZDOTDIR equivalent).
 	BashRCPath = RelocationPrefix + "/bashrc"
@@ -63,6 +61,14 @@ const (
 	// of the base image; the current base images use /sandbox.
 	OvermountHome = "/sandbox"
 )
+
+// ZshEnvPaths are the global zshenv files sandcast sets ZDOTDIR in. zsh reads
+// its global zshenv first and unconditionally, before any $HOME file, but the
+// location is a build option: Debian and Ubuntu (both shipped OpenShell base
+// images) use /etc/zsh/zshenv and never read /etc/zshenv, other builds use
+// /etc/zshenv. sandcast writes both, so ZDOTDIR is set even when a runtime
+// clears the image ENV (OpenShell starts shells after env_clear).
+var ZshEnvPaths = []string{"/etc/zsh/zshenv", "/etc/zshenv"}
 
 // OvermountPrefix returns the overmount home prefix for a target, or "" when
 // the target applies no sandbox mount. The container target keeps the base

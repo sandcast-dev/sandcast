@@ -205,7 +205,8 @@ func bakedPaths(p *Plan) []string {
 	var out []string
 	switch ShellKind(p) {
 	case "zsh":
-		out = append(out, ZshEnvPath, ZDotDir)
+		out = append(out, ZshEnvPaths...)
+		out = append(out, ZDotDir)
 		if p.Shell.RCPath != "" {
 			out = append(out, p.Shell.RCPath)
 		}

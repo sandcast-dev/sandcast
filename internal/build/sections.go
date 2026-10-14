@@ -71,8 +71,9 @@ ENV {{env .}}
 `))
 
 // The shell section relocates the interactive environment out of the
-// overmounted home (spec 003, research R1/R2). zsh sets ZDOTDIR in
-// /etc/zshenv so it never reads $HOME; bash gets a baked rcfile launched with
+// overmounted home (spec 003, research R1/R2). zsh sets ZDOTDIR in its global
+// zshenv (both /etc/zsh/zshenv and /etc/zshenv, see plan.ZshEnvPaths) so it
+// never reads $HOME; bash gets a baked rcfile launched with
 // --noprofile --rcfile so it never reads any workspace startup file; any other
 // login shell gets /bin/sh with a minimal baked default.
 var shellZshTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
@@ -81,10 +82,12 @@ USER root
 COPY {{.ContextFile}} {{.RCPath}}
 RUN chmod 0644 {{.RCPath}}
 {{- end}}
-RUN install -d {{.ZDotDir}} \
- && (grep -qs 'ZDOTDIR={{.ZDotDir}}' {{.ZshEnvPath}} 2>/dev/null \
-     || printf '%s\n' {{.ZshEnvLine}} >> {{.ZshEnvPath}}) \
- && chmod 0644 {{.ZshEnvPath}}
+RUN install -d {{.ZDotDir}} /etc/zsh
+{{- range .ZshEnvPaths}} \
+ && (grep -qs 'ZDOTDIR={{$.ZDotDir}}' {{.}} 2>/dev/null \
+     || printf '%s\n' {{$.ZshEnvLine}} >> {{.}}) \
+ && chmod 0644 {{.}}
+{{- end}}
 `))
 
 var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
@@ -215,7 +218,7 @@ func shellSection(p *plan.Plan) (string, error) {
 			"RCPath":      p.Shell.RCPath,
 			"ContextFile": ShellContextFile(p.Shell.Program),
 			"ZDotDir":     plan.ZDotDir,
-			"ZshEnvPath":  plan.ZshEnvPath,
+			"ZshEnvPaths": plan.ZshEnvPaths,
 			"ZshEnvLine":  shell.Quote(shell.ZshEnvExport(plan.ZDotDir)),
 		})
 	case "bash":

@@ -24,11 +24,13 @@ func QuoteIfNeeded(s string) string {
 	return Quote(s)
 }
 
-// ZshEnvExport returns the single line sandcast adds to /etc/zshenv to
-// relocate zsh's startup files out of the overmounted home. zsh reads
-// /etc/zshenv first and unconditionally, before any $HOME file, so setting
-// ZDOTDIR there means zsh never sources a workspace $HOME/.zshrc (spec 003
-// research R1, FR-002). The caller quotes the line for the Containerfile.
+// ZshEnvExport returns the single line sandcast adds to the global zshenv
+// (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv elsewhere) to relocate
+// zsh's startup files out of the overmounted home. zsh reads its global zshenv
+// first and unconditionally, before any $HOME file, so setting ZDOTDIR there
+// means zsh never sources a workspace $HOME/.zshrc, even when the image ENV
+// was cleared (spec 003 research R1, FR-002). The caller quotes the line for
+// the Containerfile.
 func ZshEnvExport(zdotdir string) string {
 	return "export ZDOTDIR=" + zdotdir
 }

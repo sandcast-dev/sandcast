@@ -42,7 +42,12 @@ func TestShellSectionZshRelocates(t *testing.T) {
 	got, err := Assemble(shellKindPlan(t, "zsh"))
 	require.NoError(t, err)
 	assert.Contains(t, got, "export ZDOTDIR=/opt/sandcast/zdotdir")
+	// Debian and Ubuntu build zsh with /etc/zsh as its global rc directory and
+	// never read /etc/zshenv; other builds read /etc/zshenv. Both are written
+	// so ZDOTDIR is set even when a runtime clears the image ENV (env -i).
+	assert.Contains(t, got, ">> /etc/zsh/zshenv")
 	assert.Contains(t, got, ">> /etc/zshenv")
+	assert.Contains(t, got, "install -d /opt/sandcast/zdotdir /etc/zsh")
 	assert.Contains(t, got, "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc")
 	assert.Contains(t, got, `CMD ["/bin/zsh", "-l"]`)
 	assert.NotContains(t, got, "/etc/zsh/zshrc.d", "the old in-home-chained location is gone")
