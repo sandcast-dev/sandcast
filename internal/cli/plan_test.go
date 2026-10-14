@@ -111,6 +111,53 @@ func TestPlanUnknownTarget(t *testing.T) {
 	assert.Contains(t, ta.stderr.String(), "declares no container target")
 }
 
+// TestPlanRecordsDotfilesAndRelocations covers the manifest-to-plan flow for
+// dotfiles from the CLI: project-relative sources are read, redacted,
+// relocated (git's two files merged) and written to plan.yaml with one
+// relocation per source, and sandcast build stages each one in the build
+// context (FINDING-3).
+func TestPlanRecordsDotfilesAndRelocations(t *testing.T) {
+	ta := newTestApp(t)
+	ta.project(t)
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "targets:",
+		"dotfiles:\n  - path: conf/.gitconfig\n  - path: conf/.config/git/config\n  - path: conf/.tmux.conf\ntargets:", 1))
+	token := "ghp_" + strings.Repeat("a", 36)
+	ta.write(t, "conf/.gitconfig", "[user]\n\temail = me@example.com\n[github]\n\ttoken = "+token+"\n")
+	ta.write(t, "conf/.config/git/config", "[core]\n\tpager = less\n")
+	ta.write(t, "conf/.tmux.conf", "set -g mouse on\n")
+
+	p := planJSON(t, ta)
+	require.Len(t, p.Dotfiles, 2)
+	git, tmux := p.Dotfiles[0], p.Dotfiles[1]
+	assert.Equal(t, plan.GitConfigPath, git.RelocatedTo)
+	assert.Equal(t, "conf/.gitconfig", git.HostPath)
+	assert.Equal(t, []string{"conf/.config/git/config"}, git.MergedFrom)
+	assert.Contains(t, git.Content, "pager = less")
+	assert.Contains(t, git.Content, "email = me@example.com")
+	assert.NotContains(t, git.Content, token, "the credential is redacted")
+	assert.Equal(t, plan.TmuxConfPath, tmux.RelocatedTo)
+	assert.Equal(t, []plan.RelocationNotice{
+		{Kind: plan.NoticeRelocated, Subject: "conf/.config/git/config", To: plan.GitConfigPath},
+		{Kind: plan.NoticeRelocated, Subject: "conf/.gitconfig", To: plan.GitConfigPath},
+		{Kind: plan.NoticeRelocated, Subject: "conf/.tmux.conf", To: plan.TmuxConfPath},
+	}, p.Relocations)
+
+	require.Equal(t, 0, ta.run("plan"), ta.stderr.String())
+	data, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "plan.yaml"))
+	require.NoError(t, err)
+	doc := string(data)
+	assert.Contains(t, doc, "dotfiles:\n")
+	assert.Contains(t, doc, "merged_from:\n")
+	assert.Contains(t, doc, "relocated_to: /etc/gitconfig\n")
+	assert.Contains(t, doc, "relocations:\n")
+	assert.NotContains(t, doc, token)
+
+	require.Equal(t, 0, ta.run("build"), ta.stderr.String())
+	staged, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "dotfiles", "etc%2Fgitconfig"))
+	require.NoError(t, err)
+	assert.Equal(t, git.Content, string(staged), "the build context carries the redacted, merged content")
+}
+
 // TestPlanUsesRegistryOvermountHome checks a user registry entry's
 // overmount_home reaches the plan (FINDING-28): the plan records it, and
 // the Containerfile's WORKDIR follows it.

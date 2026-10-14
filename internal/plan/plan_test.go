@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -598,6 +599,12 @@ func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
 		{"~/.config/ghostty/config", XDGConfigDir + "/ghostty/config", nil},
 		{"conf/tool.conf", XDGConfigDir + "/conf/tool.conf", nil},
 		{".editorconfig", XDGConfigDir + "/editorconfig", nil},
+		{"./rel.conf", XDGConfigDir + "/rel.conf", nil},
+		{"/abs/extra.conf", XDGConfigDir + "/abs/extra.conf", nil},
+		{"~/.config/nvim/init.lua", XDGConfigDir + "/nvim/init.lua", nil},
+		{"dots/.config/git/config", GitConfigPath, nil},
+		{"dots/gitconfig", GitConfigPath, nil},
+		{"conf/inputrc", InputRCPath, map[string]string{"INPUTRC": InputRCPath}},
 	} {
 		target, env := relocateDotfile(tt.host)
 		assert.Equal(t, tt.target, target, tt.host)
@@ -980,4 +987,67 @@ func TestBuildUsesBaseImageOvermountHome(t *testing.T) {
 	// A plan.yaml written before the field existed reads as the default.
 	old := &Plan{Target: manifest.TargetOpenShell}
 	assert.Equal(t, DefaultOvermountHome, OvermountPrefix(old))
+}
+
+// TestReprovisionTargets checks the persistent location a re-provision
+// notice names for each installer kind: the mise data directory, /usr for a
+// system package, /opt/<key> for a script or fragment (FR-009).
+func TestReprovisionTargets(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	for _, key := range []string{"go", "git", "mytool"} {
+		in.Probe.Checks[key] = probe.CheckResult{ComponentKey: key, Status: probe.StatusPresent, Version: "1.0", Path: DefaultOvermountHome + "/.local/bin/" + key}
+	}
+	p, err := Build(in)
+	require.NoError(t, err)
+	to := map[string]string{}
+	for _, r := range p.Relocations {
+		if r.Kind == NoticeReprovisioned {
+			to[r.Subject] = r.To
+		}
+	}
+	assert.Equal(t, map[string]string{"go": MiseDataDir, "git": "/usr", "mytool": "/opt/mytool"}, to)
+	assert.Contains(t, p.Notices, "component go was found only under /sandbox/.local/bin/go (hidden once the workspace is mounted over the home); it is provisioned to /opt/mise instead")
+}
+
+func TestRelocationNoticeString(t *testing.T) {
+	assert.Equal(t, "~/.gitconfig relocated to /etc/gitconfig so it survives the workspace mount over the home",
+		RelocationNotice{Kind: NoticeRelocated, Subject: "~/.gitconfig", To: GitConfigPath}.String())
+	assert.Equal(t, "component rg was found only under /sandbox/bin/rg (hidden once the workspace is mounted over the home); it is provisioned to /usr instead",
+		RelocationNotice{Kind: NoticeReprovisioned, Subject: "rg", From: "/sandbox/bin/rg", To: "/usr"}.String())
+}
+
+// TestBuildShFallbackNotice checks a login shell that is neither zsh nor
+// bash yields the minimal default and the notice that says so (FR-011).
+func TestBuildShFallbackNotice(t *testing.T) {
+	m := testManifest()
+	m.Shell = nil
+	m.Components = []manifest.ComponentRef{{Key: "git"}}
+	in := testInputs(t, m, nil)
+	in.Probe.Facts.Shells = []string{"/bin/sh"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	require.Equal(t, "sh", ShellKind(p))
+	assert.Contains(t, p.Notices, "the login shell is neither zsh nor bash; the image uses /bin/sh with a minimal baked default (/etc/profile.d/sandcast.sh) and the curated shell is not applied")
+}
+
+// TestBakedPathsPerShellKind checks the guard sees the files each shell kind
+// bakes, and the OpenShell hooks only for the OpenShell target.
+func TestBakedPathsPerShellKind(t *testing.T) {
+	paths := func(p *Plan) []string {
+		var out []string
+		for _, bp := range bakedPaths(p, nil) {
+			out = append(out, bp.path)
+		}
+		return out
+	}
+	zsh := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}})
+	assert.Subset(t, zsh, append(slices.Clone(ZshEnvPaths), ZDotDir, ZshRCPath, LoginHookPath, RedirectHome))
+	bash := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "bash"}})
+	assert.Subset(t, bash, []string{ShellLoginPath, BashRCPath, LoginHookPath})
+	assert.NotContains(t, bash, ZDotDir)
+	sh := paths(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "none"}})
+	assert.Equal(t, []string{ProfileScriptPath, ShLoginPath}, sh, "no hooks for the container target")
+	withAll := paths(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "none"},
+		Dotfiles: []DotfileSelection{{RelocatedTo: GitConfigPath}}, Image: ImageSetup{Dirs: []Dir{{Path: "/opt/go"}}}})
+	assert.Subset(t, withAll, []string{GitConfigPath, "/opt/go"})
 }

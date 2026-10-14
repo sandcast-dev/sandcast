@@ -13,11 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// zshOvermountManifest builds a zsh image with a baked alias and two dotfiles
-// (git and tmux). The dotfile sources are project-relative files the test
-// writes (dotfile sources must stay inside the home bounds or the project),
-// so the run is deterministic and never reads the developer's real home.
-func zshOvermountManifest(image, gitconfig, tmuxconf string) string {
+// zshOvermountManifest builds a zsh image with a baked alias and three
+// dotfiles: git's two configuration files (merged into /etc/gitconfig) and
+// tmux. The dotfile sources are project-relative files the test writes
+// (dotfile sources must stay inside the home bounds or the project), so the
+// run is deterministic and never reads the developer's real home.
+func zshOvermountManifest(image, gitconfig, gitXDG, tmuxconf string) string {
 	return `schema_version: 1
 name: sc-overmount
 base_image: nvidia-community-base
@@ -30,6 +31,7 @@ shell:
     export SANDCAST_OVERMOUNT_OK=1
 dotfiles:
   - path: ` + gitconfig + `
+  - path: ` + gitXDG + `
   - path: ` + tmuxconf + `
 targets:
   openshell:
@@ -52,7 +54,7 @@ targets:
 `
 }
 
-// run executes a command and returns combined output and the exit error.
+// runEngine executes a command and returns combined output and the exit error.
 func runEngine(t *testing.T, name string, args ...string) (string, error) {
 	t.Helper()
 	out, err := exec.Command(name, args...).CombinedOutput()
@@ -170,23 +172,42 @@ func TestOvermountZshSurvives(t *testing.T) {
 	image := repo + ":latest"
 	removeImages(t, engine, image)
 
-	dir := project(t, zshOvermountManifest(repo, "dotfiles-src/.gitconfig", "dotfiles-src/.tmux.conf"))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "dotfiles-src"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".gitconfig"), []byte("[user]\n\temail = captured@example.com\n"), 0o644))
+	dir := project(t, zshOvermountManifest(repo, "dotfiles-src/.gitconfig", "dotfiles-src/.config/git/config", "dotfiles-src/.tmux.conf"))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "dotfiles-src", ".config", "git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".gitconfig"), []byte("[user]\n\temail = captured@example.com\n\tname = from-gitconfig\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".config", "git", "config"), []byte("[user]\n\tname = from-xdg\n[core]\n\tpager = less-from-xdg\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".tmux.conf"), []byte("set -g history-limit 99999\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)
 
-	// Scenario 1 + 2: the baked zsh config loads and the planted ~/.zshrc does
-	// not run, even though /sandbox is mounted over the home.
-	script := `test -f /tmp/pwned-zshrc && echo PWNED || echo SAFE; echo "ZDOTDIR=$ZDOTDIR"; alias myll`
-	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/bin/zsh", image, "-ic", script)
+	// Positive control: sourcing the planted files on purpose leaves their
+	// sentinels, so the checks below can fire under this mount (the files
+	// are readable and /tmp is writable as the image user).
+	listPwned := `ls /tmp | grep '^pwned-' | sed 's/^/PWNED /'; true`
+	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/bin/zsh", image,
+		"-f", "-c", `. /sandbox/.zshenv; . /sandbox/.zshrc; `+listPwned)
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "SAFE", "the planted workspace ~/.zshrc must not run")
-	assert.NotContains(t, out, "PWNED")
-	assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir")
-	assert.Contains(t, out, "myll='ls -l'", "the baked alias is active")
+	assert.Contains(t, out, "PWNED pwned-zshenv", "positive control")
+	assert.Contains(t, out, "PWNED pwned-zshrc", "positive control")
+
+	// The image ENV sets ZDOTDIR for every process, besides the global
+	// zshenv that covers a cleared environment.
+	out, err = runEngine(t, engine, "run", "--rm", "--entrypoint", "/usr/bin/env", image)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir\n", "image ENV")
+
+	// Scenario 1 + 2: the baked zsh config loads and no planted startup file
+	// runs (.zshenv, .zshrc, .zprofile, .profile), even though /sandbox is
+	// mounted over the home, in an interactive and in a login shell.
+	for _, mode := range []string{"-ic", "-lic"} {
+		out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/bin/zsh", image, mode,
+			`echo "ZDOTDIR=$ZDOTDIR"; alias myll; `+listPwned)
+		require.NoError(t, err, out)
+		assert.NotContains(t, out, "PWNED", "zsh %s: no workspace startup file may run", mode)
+		assert.Contains(t, out, "ZDOTDIR=/opt/sandcast/zdotdir", mode)
+		assert.Contains(t, out, "myll='ls -l'", "zsh %s: the baked alias is active", mode)
+	}
 
 	// Scenario 2 without the image ENV: a runtime that clears the environment
 	// (OpenShell, su -l, sshd) starts zsh with no ZDOTDIR. The global zshenv
@@ -205,10 +226,15 @@ func TestOvermountZshSurvives(t *testing.T) {
 	// hooks hand interactive sessions to the curated zsh.
 	assertOpenShellSpawns(t, engine, image, ws, "myll='ls -l'", "/opt/sandcast/zdotdir")
 
-	// Scenario 3: the baked git dotfile is read from /etc/gitconfig.
-	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "git", image, "config", "--get", "user.email")
-	require.NoError(t, err, out)
-	assert.Contains(t, out, "captured@example.com")
+	// Scenario 3: the baked git dotfiles are read from /etc/gitconfig. Both
+	// of git's files are kept, merged in git's order, so a key only in one
+	// of them is set and a key in both takes the ~/.gitconfig value
+	// (FINDING-38).
+	for key, want := range map[string]string{"user.email": "captured@example.com", "core.pager": "less-from-xdg", "user.name": "from-gitconfig"} {
+		out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "git", image, "config", "--get", key)
+		require.NoError(t, err, out)
+		assert.Equal(t, want+"\n", out, key)
+	}
 
 	// The tmux dotfile is baked to /etc/tmux.conf, which tmux reads natively,
 	// and no image-wide XDG_CONFIG_HOME points tools at a root-owned tree:
