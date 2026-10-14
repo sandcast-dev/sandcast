@@ -81,10 +81,10 @@ description: "Task list for runtime home model and shell initialization"
 
 ## Phase 7: Polish and cross-cutting
 
-- [ ] T023 [P] Add the integration test from research R8 to `tests/integration/` (build-tagged): build with relocation, run with a volume mounted over the home, assert zsh/bash load baked config, planted workspace rc does not run, and a baked git/tmux config is in effect. Include a read-only-home case (mount the workspace over the home read-only) and assert the baked config still loads (spec Edge Case).
-- [ ] T024 [P] Update docs: `docs/guides/capture.md` (dotfile capture), `docs/guides/build.md` (home model and shell init under the overmount), `docs/configuration.md` (manifest `dotfiles` field).
-- [ ] T025 [P] Add a `CHANGELOG.md` entry for the runtime home model and shell initialization feature.
-- [ ] T026 Run `make fmt && make verify` and resolve any failures; confirm goldens are current and lint is clean.
+- [x] T023 [P] Add the integration test from research R8 to `tests/integration/` (build-tagged): build with relocation, run with a volume mounted over the home, assert zsh/bash load baked config, planted workspace rc does not run, and a baked git/tmux config is in effect. Include a read-only-home case (mount the workspace over the home read-only) and assert the baked config still loads (spec Edge Case).
+- [x] T024 [P] Update docs: `docs/guides/capture.md` (dotfile capture), `docs/guides/build.md` (home model and shell init under the overmount), `docs/configuration.md` (manifest `dotfiles` field).
+- [x] T025 [P] Add a `CHANGELOG.md` entry for the runtime home model and shell initialization feature.
+- [x] T026 Run `make fmt && make verify` and resolve any failures; confirm goldens are current and lint is clean.
 
 ## Dependencies and order
 

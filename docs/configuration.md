@@ -33,6 +33,9 @@ shell:
   rc: |
     alias ls=lsd
   components: [lsd]
+dotfiles:
+  - path: ~/.gitconfig
+  - path: ~/.config/starship.toml
 targets:
   openshell:
     image: localhost/demo
@@ -50,6 +53,7 @@ targets:
 | `components` | list | yes | The components to include. See below. |
 | `harnesses` | list | no | Agent harnesses. See [Harnesses](#harnesses). |
 | `shell` | object | no | The curated shell configuration. See below. |
+| `dotfiles` | list | no | Non-shell home dotfiles to bake. See below. |
 | `targets` | object | yes | At least one of `openshell` and `container`. See below. |
 
 The manifest is decoded strictly: an unknown field anywhere is an error with its line number. It must not contain credential values. `sandcast manifest validate` reports every value that looks like a credential, and `sandcast manifest set-shell` refuses to write one. Use `${SANDCAST_SECRET_N}` placeholders and supply the real value at runtime as a provider credential (see [secrets handling](guides/capture.md#secrets)).
@@ -71,8 +75,20 @@ You do not need to list components that sandcast adds by itself: the shell progr
 | Field | Type | Rules |
 |-------|------|-------|
 | `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. |
-| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. Write it with `sandcast manifest set-shell`. |
+| `rc` | multi-line string | The curated configuration. It is baked outside the home so it survives the OpenShell workspace mount over the home: zsh reads it from the `ZDOTDIR` tree (`/opt/sandcast/zdotdir/.zshrc`), and bash reads it as the rcfile the baked launcher passes (`/opt/sandcast/bashrc`). The live workspace home is never auto-sourced. Write it with `sandcast manifest set-shell`. |
 | `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. |
+
+See the [build guide](guides/build.md#the-home-model-and-shell-initialization) for how the shell initializes under the overmount.
+
+### dotfiles
+
+Non-shell home dotfiles to bake into the image. Capture proposes a bounded host-home allowlist (git, the prompt tool, tmux and readline basics) and you may add explicit paths. Each entry records only a source path; its contents are read at build time, passed through credential redaction, and baked to a persistent location outside the home.
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `path` | string | Required. The host source. A `~`-prefixed or home-relative path resolves against the host home; a project-relative or absolute path is taken as given. A path that does not exist at build time is reported and skipped, never fatal. |
+
+The plan chooses the relocation target per dotfile (there is no override in v1): git goes to `/etc/gitconfig`, starship to `/opt/sandcast/xdg/starship.toml` with `STARSHIP_CONFIG`, tmux under `/opt/sandcast/xdg` with `XDG_CONFIG_HOME`, readline to `/opt/sandcast/inputrc` with `INPUTRC`, and anything else under the `XDG_CONFIG_HOME` tree. When two entries resolve to the same target, the explicit manifest path wins over an allowlist proposal, deterministically, and the plan reports the resolution. No credential value is ever written: a detected credential becomes a `${SANDCAST_SECRET_N}` placeholder.
 
 ### targets
 

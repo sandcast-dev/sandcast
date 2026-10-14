@@ -124,7 +124,7 @@ The `match.host_tools` field is defined in the [match reference](../configuratio
 
 ## Shell curation
 
-The image gets a curated copy of your interactive shell configuration, installed under `/etc` for the final user. Host configurations carry plugin managers, macOS paths and host-only tools that break inside a Linux sandbox, so the skill applies fixed rules. They encode the failures recorded while the image build skill of cc-deck was developed. sandcast curates zsh and bash; for any other login shell, the skill asks whether to skip the shell configuration or write a minimal one with you.
+The image gets a curated copy of your interactive shell configuration, baked outside the home so it survives the OpenShell workspace mount over the home (see [the home model](build.md#the-home-model-and-shell-initialization)). Host configurations carry plugin managers, macOS paths and host-only tools that break inside a Linux sandbox, so the skill applies fixed rules. They encode the failures recorded while the image build skill of cc-deck was developed. sandcast curates zsh and bash; for any other login shell, the skill asks whether to skip the shell configuration or write a minimal one with you.
 
 ### What is removed
 
@@ -184,6 +184,12 @@ setopt HIST_IGNORE_DUPS SHARE_HISTORY
 
 The skill stores the text with `sandcast manifest set-shell --program zsh --file <file>`. Change it later the same way rather than by editing `shell.rc` in the manifest.
 
+## Dotfiles beyond the shell
+
+Besides the shell, the skill proposes a bounded set of home dotfiles found on the host: `~/.gitconfig` and `~/.config/git/config` (git), `~/.config/starship.toml` (the prompt tool), `~/.tmux.conf` and `~/.inputrc`. You confirm which to bake with a multi-select, the same flow as harness extensions. You may also add explicit paths the allowlist omits.
+
+Each selected dotfile is read at build time, passed through the same credential redaction as everything else (a detected token becomes a `${SANDCAST_SECRET_N}` placeholder), and baked to a persistent location outside the home so it survives the overmount: git goes to `/etc/gitconfig`, starship to `/opt/sandcast/xdg/starship.toml`, and the rest under the `XDG_CONFIG_HOME` tree, each with the environment variable its tool reads. The manifest records only the source path under `dotfiles`, never contents. A dotfile that is a symlink out of the home, a credential-named file, or a path that does not exist is skipped with a notice rather than failing the capture. See the [configuration reference](../configuration.md#dotfiles) for the manifest field.
+
 ## Secrets
 
 No credential value may appear in the manifest, the plan, a stored fragment, an adapted profile, the image or a log. Credentials belong to whatever starts the sandbox, which supplies them as OpenShell provider credentials at runtime.
@@ -193,6 +199,7 @@ sandcast enforces this at several points:
 - `sandcast harness discover` replaces every value that looks like a credential with a `${SANDCAST_SECRET_N}` placeholder before printing anything, and reports where it was (`path`), what it looked like (`kind`), the placeholder, and the environment variable it was assigned to (`env_var`).
 - `sandcast manifest validate` reports every credential-shaped value in the manifest with its line, and fails.
 - `sandcast manifest set-shell`, `sandcast fragments write` and `sandcast learnings add` refuse input that contains one.
+- Baked dotfile contents are run through the redactor before they enter the image, so a credential in a captured `.gitconfig` becomes a placeholder and is never written.
 - `sandcast plan` refuses a manifest or a stored fragment that contains one.
 - Before the first build pass, sandcast scans the build context (including skill and marketplace files copied from the host, without their `.git` directories) and refuses to build on a finding; after the build it scans every output and removes the image on a finding.
 - The harness scaffold refuses an MCP server or a marketplace source that discovery would have redacted, so a hand-edited manifest meets the same rule.

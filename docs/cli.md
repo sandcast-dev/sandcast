@@ -412,6 +412,8 @@ sandcast components match [<dir>] [flags]
 
 `<dir>` defaults to `--project`, else the current directory. Each proposal has a source: `project` (ecosystem files such as `go.mod`), `host` (a tool on the host `PATH`), `harness` (a selected harness) or `always` (base system components). Components that do not match are listed as available. An unknown harness name exits 2.
 
+With host detection on, the command also reports the home dotfiles from the bounded allowlist (git, starship, tmux, readline) that exist in your home: a `dotfiles:` line in the table output and a `dotfiles` array in `--json`. The capture skill offers these to bake into the image.
+
 ```console
 $ sandcast components match tests/fixtures/reference-project --no-host
 COMPONENT        SOURCE   VERSION  EVIDENCE

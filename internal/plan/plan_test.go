@@ -513,8 +513,8 @@ func TestRelocationEnvForZshAndBash(t *testing.T) {
 func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
 	inputs := []DotfileInput{
 		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n"},
-		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true},   // -> /etc/gitconfig (allowlist)
-		{HostPath: "~/.config/git/config", Content: "[core]\n\tpager = less\n"},                 // also -> /etc/gitconfig (explicit)
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true}, // -> /etc/gitconfig (allowlist)
+		{HostPath: "~/.config/git/config", Content: "[core]\n\tpager = less\n"},               // also -> /etc/gitconfig (explicit)
 	}
 	sels, notices, dedup, err := resolveDotfiles(inputs, OvermountHome)
 	require.NoError(t, err)

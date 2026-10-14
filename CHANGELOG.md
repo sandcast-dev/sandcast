@@ -29,12 +29,19 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - `sandcast fragments list|write`, `sandcast learnings add`, `sandcast promote`; stored fragments are reused by non-interactive builds and reported as stale once a recipe covers them.
 - `--target container`: no OpenShell policy or sandbox user conventions, and an `allowed-domains.txt` from the referenced profiles.
 
+### Runtime home model and shell initialization (feature 003)
+
+- The interactive environment now survives the OpenShell workspace mount over the home. Everything is baked outside the home and programs are pointed at it through environment variables: zsh sets `ZDOTDIR=/opt/sandcast/zdotdir` in `/etc/zshenv` (and as image `ENV`); bash uses a baked `/opt/sandcast/shell-login` launcher that runs `bash --noprofile --norc --rcfile /opt/sandcast/bashrc` and is the login shell and `CMD`; any other login shell gets `/bin/sh` with a minimal `/etc/profile.d/sandcast.sh` default.
+- A startup file in the mounted workspace home (a committed `.zshrc` or `.bashrc`) is never auto-sourced, closing a code-execution vector for untrusted projects.
+- New manifest `dotfiles` field: capture proposes a bounded host-home allowlist (git, starship, tmux, readline) and accepts explicit paths. Each dotfile is redacted and relocated outside the home (`/etc/gitconfig`, `/opt/sandcast/xdg/...`) with the environment variable its tool reads. Colliding entries dedup deterministically (explicit wins) with a notice.
+- The plan reclassifies a base-image tool found only under the overmount home as missing and re-provisions it to a persistent location, reporting every relocation and re-provision as a notice. The probe cache is unchanged.
+
 ### Pins
 
 - OpenShell v0.1.3 (commit e1f3c82c): vendored example profiles, profile lint rules, default sandbox policy, `openshell` CLI for the import step, gateway image `ghcr.io/nvidia/openshell/gateway:0.1.3` for `make test-gateway`.
 - mise v2026.10.4 inside images; host `mise` 2026.9.16 or newer for `sandcast lock`.
 - Remote component registry v0.1.0.
-- Manifest schema version 1, plan schema version 1, skill bundle 0.1.1.
+- Manifest schema version 1, plan schema version 1, skill bundle 0.1.2.
 
 ### OpenShell pin refresh v0.1.2 to v0.1.3
 

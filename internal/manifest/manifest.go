@@ -325,7 +325,7 @@ func (m *Manifest) Validate() []Diagnostic {
 			add(p, "required: the host path of the dotfile to bake")
 			continue
 		}
-		if strings.ContainsFunc(d.Path, func(r rune) bool { return unicode.IsControl(r) }) {
+		if strings.ContainsFunc(d.Path, unicode.IsControl) {
 			add(p, "%s must not contain control characters", safeValue(d.Path))
 		}
 	}

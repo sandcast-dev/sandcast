@@ -146,18 +146,29 @@ sandcast build --verify
 | `30-mise` | The mise layout and one `mise install --locked` for all mise tools. See [the mise layout](#the-mise-layout). |
 | `40-recipes` | One layer per `script` component in key order, as a `RUN` heredoc with `set -eux`, as the final user or as root when the recipe sets `as_root`. |
 | `50-fragments` | One block per stored fragment in key order, each preceded by a comment with its key and file and by `USER root`. |
-| `60-shell` | The curated shell configuration under `/etc` (see below). |
+| `60-shell` | The curated shell configuration, relocated outside the home (see [the home model](#the-home-model-and-shell-initialization)). |
+| `62-dotfiles` | One `COPY` per baked dotfile to its relocation target (for example `/etc/gitconfig`, `/opt/sandcast/xdg/...`). Omitted when the manifest lists no dotfiles. |
 | `70-harness` | One block per harness in the manifest: for Claude Code, the configuration in `/opt/sandcast/claude-code` (`CLAUDE_CONFIG_DIR`), the MCP servers, the skills and the plugins. See [baking harness extensions](capture.md#baking-harness-extensions). |
 | `80-policy` | `COPY policy.yaml /etc/openshell/policy.yaml` (OpenShell target only). |
-| `90-footer` | `WORKDIR /sandbox` (OpenShell target) or the final user's home (container target), `USER <final user>`, `ENTRYPOINT []` and `CMD ["<login shell>", "-l"]`. Clearing the entrypoint matters because the community base image sets `/bin/bash` as its entrypoint; without that, a manual `podman run` would not start the login shell. OpenShell replaces both anyway. |
+| `90-footer` | `WORKDIR /sandbox` (OpenShell target) or the final user's home (container target), `USER <final user>`, `ENTRYPOINT []` and the `CMD`. The `CMD` is `["/bin/zsh", "-l"]` for zsh, `["/opt/sandcast/shell-login"]` for bash (the baked launcher, which makes bash interactive with its own rcfile), and `["/bin/sh", "-l"]` otherwise. Clearing the entrypoint matters because the community base image sets `/bin/bash` as its entrypoint; without that, a manual `podman run` would not start the login shell. OpenShell replaces both anyway. |
 
 Sections without content (no packages, no mise tools, no recipes) are left out.
 
 **The final user.** When the base image runs as a non-root user, that user stays the final user and keeps its home. When it runs as root and the target is `openshell`, sandcast creates the user `sandbox` with uid and gid 1000 and home `/home/sandbox`, and first removes any existing user or group with id 1000 (such as the `ubuntu` user of `ubuntu:24.04`). The container target never creates a user and keeps root as the final user. System packages are installed as root either way.
 
-**The shell.** A zsh configuration is copied to `/etc/zsh/zshrc.d/sandcast.zsh` and sourced from `/etc/zsh/zshrc` (or `/etc/zshrc` when the image uses that path). A bash configuration is copied to `/etc/profile.d/sandcast.sh` and sourced from `/etc/bash.bashrc` or `/etc/bashrc` when they exist. The login shell in `CMD` (and of a created user) is the manifest's shell program, otherwise zsh when the plan includes the `zsh` component, otherwise bash when the probe found it in the base image, otherwise `/bin/sh`.
+**The shell.** The login shell in `CMD` (and of a created user) is the manifest's shell program, otherwise zsh when the plan includes the `zsh` component, otherwise bash when the probe found it in the base image, otherwise `/bin/sh`. The configuration is baked outside the home; see [the home model](#the-home-model-and-shell-initialization) for how each shell initializes under the overmount.
 
-**Nothing under `/sandbox`.** OpenShell's Kubernetes driver mounts the workspace volume over `/sandbox`, which hides anything an image put there. sandcast installs tools under `/opt/mise`, shell configuration under `/etc` and harness configuration under `/opt/sandcast`, and in OpenShell images `/sandbox` stays an empty working directory.
+**Nothing under `/sandbox`.** OpenShell's Kubernetes driver mounts the workspace volume over `/sandbox`, which hides anything an image put there. sandcast installs tools under `/opt/mise`, shell and dotfile configuration under `/opt/sandcast` and `/etc`, and harness configuration under `/opt/sandcast`, and in OpenShell images `/sandbox` stays an empty working directory. A base-image tool whose only copy lives under `/sandbox` is hidden at runtime, so the plan treats it as missing and re-provisions it to a persistent location, with a notice.
+
+### The home model and shell initialization
+
+On the OpenShell sandbox base images the final user's home is `/sandbox`, and the runtime mounts the workspace volume over it. The home is therefore shadowed, writable and tied to the workspace rather than the image. sandcast makes the interactive environment survive this by baking everything outside the home and pointing programs at it through environment variables, never by writing into the home.
+
+- **zsh.** `/etc/zshenv` sets `ZDOTDIR=/opt/sandcast/zdotdir` (also set as image `ENV`, so every process inherits it). zsh reads `/etc/zshenv` first and unconditionally, before any `$HOME` file, so it reads its startup from the `ZDOTDIR` tree and never from a workspace `$HOME/.zshrc`. The curated configuration is baked at `/opt/sandcast/zdotdir/.zshrc`.
+- **bash.** bash has no `ZDOTDIR` equivalent, so sandcast bakes a launcher at `/opt/sandcast/shell-login` that runs `exec bash --noprofile --norc --rcfile /opt/sandcast/bashrc "$@"`. `--noprofile --norc` means bash reads neither profile files nor any `~/.bashrc`/`~/.bash_profile`/`~/.profile` in the workspace; the curated configuration is the explicit rcfile. The launcher is the created user's login shell and the image `CMD`.
+- **other login shells.** When the login shell is neither zsh nor bash the image does not fail: it uses `/bin/sh` with a minimal baked `/etc/profile.d/sandcast.sh`, and capture records that the shell was not curated.
+
+Because the workspace home is never auto-sourced, a startup file committed into a project (an untrusted `.zshrc` or `.bashrc`) is never run simply by opening the project in a sandbox. The baked configuration loads the same way whether the mounted home is writable or read-only, because it does not depend on writing into the home. Relocation variables (`ZDOTDIR`, `XDG_CONFIG_HOME`, and per-tool variables such as `STARSHIP_CONFIG`) are emitted as image `ENV` by the plan, deterministically and sorted.
 
 ### The mise layout
 
