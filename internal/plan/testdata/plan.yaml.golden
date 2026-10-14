@@ -312,6 +312,7 @@ policy: |
       - /etc
       - /lib
       - /opt/mise
+      - /opt/sandcast
       - /proc
       - /usr
       - /var/log

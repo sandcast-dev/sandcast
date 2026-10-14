@@ -205,6 +205,7 @@ filesystem_policy:
     - /etc
     - /lib
     - /opt/mise
+    - /opt/sandcast
     - /proc
     - /usr
     - /var/log
@@ -220,7 +221,7 @@ process:
 network_policies: {}
 ```
 
-The network section is always empty. Network access comes at runtime from the provider profiles attached to the sandbox, never from the image (see the [profiles guide](profiles.md)). `/opt/mise` is added as read-only whenever mise tools are installed, and component `read_only` and `read_write` paths are merged in. The `/opt/<key>` tree of every component installed from a stored fragment is added as read-only too, which is why a fragment unpacks its files into `/opt/<key>`.
+The network section is always empty. Network access comes at runtime from the provider profiles attached to the sandbox, never from the image (see the [profiles guide](profiles.md)). `/opt/sandcast` is always added as read-only, because the baked shell configuration, the shell launchers and relocated dotfiles live there and the upstream default policy covers nothing under `/opt`; without it, landlock denies the sandbox user its own rc files and login shell. A harness that needs a writable subtree, such as `/opt/sandcast/claude-code`, lists it as read-write, and landlock grants the union of both rules there. `/opt/mise` is added as read-only whenever mise tools are installed, and component `read_only` and `read_write` paths are merged in. The `/opt/<key>` tree of every component installed from a stored fragment is added as read-only too, which is why a fragment unpacks its files into `/opt/<key>`.
 
 `run_as_group` follows the final user's primary group, but OpenShell v0.1.3 rejects group 0 (root). When the kept base user's primary group is GID 0 (the OpenShift style of a numeric non-root user with group root), `run_as_group` uses the user's UID instead, and the plan prints a notice to that effect. Files the image gives that user stay accessible through ownership.
 

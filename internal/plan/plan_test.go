@@ -178,6 +178,31 @@ func TestBuildContent(t *testing.T) {
 	assert.False(t, p.FinalUser.Created)
 }
 
+// TestPolicyGrantsRelocationPrefix checks the OpenShell image policy grants
+// read access to /opt/sandcast for every shell kind. The upstream default
+// policy covers nothing under /opt, so without this grant landlock denies the
+// sandbox user the baked rc files and the launchers that are its login shell
+// and CMD (verified under a real gateway: "cat /opt/sandcast/bashrc:
+// Permission denied").
+func TestPolicyGrantsRelocationPrefix(t *testing.T) {
+	bash := testManifest()
+	bash.Shell = &manifest.Shell{Program: "bash", RC: "alias ll='ls -l'\n"}
+	none := testManifest()
+	none.Shell = nil
+	for name, m := range map[string]*manifest.Manifest{"zsh": testManifest(), "bash": bash, "no shell": none} {
+		p, err := Build(testInputs(t, m, nil))
+		require.NoError(t, err, name)
+		var doc struct {
+			FilesystemPolicy struct {
+				ReadOnly []string `yaml:"read_only"`
+			} `yaml:"filesystem_policy"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(p.Policy), &doc), name)
+		assert.Contains(t, doc.FilesystemPolicy.ReadOnly, RelocationPrefix, "%s: the policy grants the baked shell configuration", name)
+		require.NoError(t, policy.Validate([]byte(p.Policy)), name)
+	}
+}
+
 func TestBuildConflicts(t *testing.T) {
 	m := testManifest()
 	m.Components = append(m.Components, manifest.ComponentRef{Key: "rg-a"}, manifest.ComponentRef{Key: "rg-b"})

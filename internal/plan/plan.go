@@ -560,8 +560,16 @@ func reprovisionTarget(def *component.Component) string {
 // so fragment installs and promoted recipes declare it read-only.
 func OptDir(key string) string { return "/opt/" + key }
 
+// renderPolicy renders the OpenShell image policy. Besides the component,
+// harness and fragment paths it always grants read access to RelocationPrefix:
+// the 60-shell section bakes the shell configuration and the launchers there
+// for every shell kind (and dotfiles may land there), and the upstream default
+// policy covers nothing under /opt, so without the grant landlock would deny
+// the sandbox user its own rc files and login shell (spec 003 FR-001, FR-003).
+// A harness that needs a writable subtree (such as /opt/sandcast/claude-code)
+// declares it read-write; landlock grants the union of both rules there.
 func renderPolicy(defaults *policy.Defaults, installed []*component.Component, harnesses []Harness, fragmentDirs []string, user FinalUser, usesMise bool) (string, error) {
-	ro := slices.Clone(fragmentDirs)
+	ro := append(slices.Clone(fragmentDirs), RelocationPrefix)
 	var rw []string
 	for _, c := range installed {
 		if c.Image == nil {
