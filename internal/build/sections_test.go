@@ -48,12 +48,14 @@ func TestShellSectionZshRelocates(t *testing.T) {
 	assert.NotContains(t, got, "/etc/zsh/zshrc.d", "the old in-home-chained location is gone")
 }
 
-// TestShellSectionBashLauncher checks bash is launched with no profile and no
-// rc and the baked rcfile, so a workspace ~/.bashrc is never sourced (US2).
+// TestShellSectionBashLauncher checks bash is launched with no profile files
+// and the baked rcfile in place of ~/.bashrc, so a workspace ~/.bashrc is
+// never sourced (US2). --norc must be absent: it makes bash ignore --rcfile.
 func TestShellSectionBashLauncher(t *testing.T) {
 	got, err := Assemble(shellKindPlan(t, "bash"))
 	require.NoError(t, err)
-	assert.Contains(t, got, "exec bash --noprofile --norc --rcfile /opt/sandcast/bashrc")
+	assert.Contains(t, got, "exec bash --noprofile --rcfile /opt/sandcast/bashrc")
+	assert.NotContains(t, got, "--norc")
 	assert.Contains(t, got, "cat > /opt/sandcast/shell-login")
 	assert.Contains(t, got, "COPY shell/sandcast.sh /opt/sandcast/bashrc")
 	// The launcher, not /bin/bash, is the login shell and the CMD.

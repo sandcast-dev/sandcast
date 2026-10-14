@@ -76,7 +76,10 @@ func workspaceWithPlantedRC(t *testing.T) string {
 // It also checks the read-only-home case (spec Edge Case).
 func TestOvermountZshSurvives(t *testing.T) {
 	engine := requireEngine(t)
-	image := "localhost/sandcast-it-overmount-zsh:latest"
+	// The manifest names the repository; the build tags it :latest. A tag in
+	// targets.*.image would make the pass-1 stage reference invalid.
+	repo := "localhost/sandcast-it-overmount-zsh"
+	image := repo + ":latest"
 	removeImages(t, engine, image)
 
 	src := t.TempDir()
@@ -85,7 +88,7 @@ func TestOvermountZshSurvives(t *testing.T) {
 	tmuxconf := filepath.Join(src, ".tmux.conf")
 	require.NoError(t, os.WriteFile(tmuxconf, []byte("set -g history-limit 99999\n"), 0o644))
 
-	dir := project(t, zshOvermountManifest(image, gitconfig, tmuxconf))
+	dir := project(t, zshOvermountManifest(repo, gitconfig, tmuxconf))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)
@@ -117,16 +120,19 @@ func TestOvermountZshSurvives(t *testing.T) {
 // runs under the overmount.
 func TestOvermountBashSurvives(t *testing.T) {
 	engine := requireEngine(t)
-	image := "localhost/sandcast-it-overmount-bash:latest"
+	repo := "localhost/sandcast-it-overmount-bash"
+	image := repo + ":latest"
 	removeImages(t, engine, image)
 
-	dir := project(t, bashOvermountManifest(image))
+	dir := project(t, bashOvermountManifest(repo))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)
 	script := `test -f /tmp/pwned-bashrc && echo PWNED || echo SAFE; alias myll`
-	// The launcher forwards -i -c to bash --noprofile --norc --rcfile.
-	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", image, "-i", "-c", script)
+	// The launcher is the image CMD; with --entrypoint it receives -i -c as
+	// arguments and forwards them to bash --noprofile --rcfile. Without
+	// --entrypoint, podman would replace the CMD and run "-i" as the command.
+	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/opt/sandcast/shell-login", image, "-i", "-c", script)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "SAFE", "the planted workspace ~/.bashrc must not run")
 	assert.NotContains(t, out, "PWNED")

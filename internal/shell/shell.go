@@ -34,17 +34,21 @@ func ZshEnvExport(zdotdir string) string {
 }
 
 // LoginLauncher returns the /opt/sandcast/shell-login script: a POSIX sh
-// launcher that execs bash with neither profile nor rc files and an explicit
-// baked rcfile, so no $HOME startup file in the mounted workspace is ever
-// sourced (spec 003 research R1, FR-002). It is the created user's login
-// shell and the image CMD for the bash case; "$@" forwards any arguments (for
-// example a -c command) to bash.
+// launcher that execs bash with no profile files and the baked rcfile in place
+// of ~/.bashrc, so no $HOME startup file in the mounted workspace is ever
+// sourced (spec 003 research R1, FR-002). --noprofile keeps ~/.bash_profile,
+// ~/.bash_login and ~/.profile out, and --rcfile replaces ~/.bashrc. It must
+// not pass --norc: bash ignores --rcfile whenever --norc is set, which would
+// leave the shell unconfigured. The system bashrc (/etc/bash.bashrc on
+// Debian and Ubuntu) lies outside the home and is still read. It is the
+// user's login shell and the image CMD for the bash case; "$@" forwards any
+// arguments (for example a -c command) to bash.
 func LoginLauncher(rcfile string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: bash under the OpenShell home overmount must never\n" +
 		"# read a startup file from the workspace home. Launch bash with no profile\n" +
-		"# and no rc, and an explicit baked rcfile.\n" +
-		"exec bash --noprofile --norc --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
+		"# files and the baked rcfile in place of the home .bashrc.\n" +
+		"exec bash --noprofile --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
 }
 
 // ShLoginLauncher returns the POSIX sh fallback launcher used when the login

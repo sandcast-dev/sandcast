@@ -39,8 +39,9 @@ const (
 	// baked launcher with --rcfile (bash has no ZDOTDIR equivalent).
 	BashRCPath = RelocationPrefix + "/bashrc"
 	// ShellLoginPath is the bash login launcher: it execs bash with
-	// --noprofile --norc and the baked --rcfile, so no $HOME startup file in
-	// the mounted workspace is ever sourced (research R1, spec US2).
+	// --noprofile and the baked --rcfile in place of ~/.bashrc, so no $HOME
+	// startup file in the mounted workspace is ever sourced (research R1,
+	// spec US2).
 	ShellLoginPath = RelocationPrefix + "/shell-login"
 	// XDGConfigHome is the baked XDG_CONFIG_HOME tree for relocated dotfiles.
 	XDGConfigHome = RelocationPrefix + "/xdg"
