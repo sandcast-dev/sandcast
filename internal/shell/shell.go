@@ -43,6 +43,10 @@ func SafeAbsPath(p string) bool {
 	return true
 }
 
+// ZshProgram is the zsh of the images sandcast builds: the zsh component
+// installs the distribution package, which puts it there.
+const ZshProgram = "/bin/zsh"
+
 // ZshEnvExport returns the single line sandcast adds to the global zshenv
 // (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv elsewhere) to relocate
 // zsh's startup files out of the overmounted home. zsh reads its global zshenv
@@ -52,9 +56,13 @@ func SafeAbsPath(p string) bool {
 // the Containerfile.
 //
 // The line also exports SessionVar, so a bash the user starts from a curated
-// zsh session is recognized as nested by the bashrc hook (see BashrcHook).
+// zsh session is recognized as nested by the bashrc hook (see BashrcHook),
+// and SHELL: OpenShell sets SHELL=/bin/bash for its sessions, so a program
+// that starts $SHELL from the curated zsh (tmux, an editor's terminal) would
+// otherwise get a login bash that the hooks turn into the nested bare bash.
+// The curated zsh owns SHELL instead.
 func ZshEnvExport(zdotdir string) string {
-	return "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1"
+	return "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1 SHELL=" + ZshProgram
 }
 
 // LoginLauncher returns the /opt/sandcast/shell-login script: a POSIX sh
@@ -119,7 +127,7 @@ fi
 // arguments (for example a -c command), without -l and --login: a caller
 // that passes them (an editor's environment probe, su -l, a tmux
 // default-command) would otherwise make /bin/sh a login shell that reads the
-// workspace .profile (FINDING-46). See shOptionFilter.
+// workspace .profile. See shOptionFilter.
 func ShLoginLauncher(profile string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: a login shell under the OpenShell home overmount\n" +

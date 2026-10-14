@@ -13,12 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// zshOvermountManifest builds a zsh image with a baked alias and three
-// dotfiles: git's two configuration files (merged into /etc/gitconfig) and
-// tmux. The dotfile sources are project-relative files the test writes
-// (dotfile sources must stay inside the home bounds or the project), so the
-// run is deterministic and never reads the developer's real home.
-func zshOvermountManifest(image, gitconfig, gitXDG, tmuxconf string) string {
+// zshOvermountManifest builds a zsh image with a baked alias and four
+// dotfiles: git's two configuration files (merged into /etc/gitconfig),
+// tmux, and readline (relocated with INPUTRC, which the hooks must restore).
+// The dotfile sources are project-relative files the test writes (dotfile
+// sources must stay inside the home bounds or the project), so the run is
+// deterministic and never reads the developer's real home.
+func zshOvermountManifest(image, gitconfig, gitXDG, tmuxconf, inputrc string) string {
 	return `schema_version: 1
 name: sc-overmount
 base_image: nvidia-community-base
@@ -34,6 +35,7 @@ dotfiles:
   - path: ` + gitconfig + `
   - path: ` + gitXDG + `
   - path: ` + tmuxconf + `
+  - path: ` + inputrc + `
 targets:
   openshell:
     image: ` + image + `
@@ -88,17 +90,18 @@ func workspaceWithPlantedRC(t *testing.T) string {
 // sandbox (boundary_exec.rs and the default agent): it runs /bin/bash after
 // clearing the environment, with -i under a pty for a terminal session, with
 // -lc or -c for a command, and as -l for the default agent. None of these
-// uses the image CMD, the passwd shell or the image ENV. script(1) provides
-// the pty. Every case prints RESULT <case> pwned=[...] with the sentinels the
-// planted workspace files left behind, then clears them; the first case is a
-// positive control that sources the workspace .bashrc on purpose.
+// uses the image CMD, the passwd shell or the image ENV; SHELL is set to the
+// bash it found, as the runtime does. script(1) provides the pty. Every case
+// prints RESULT <case> pwned=[...] with the sentinels the planted workspace
+// files left behind, then clears them; the first case is a positive control
+// that sources the workspace .bashrc on purpose.
 const openShellSpawnScript = `#!/bin/sh
-E="env -i HOME=/sandbox USER=sandbox PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color"
+E="env -i HOME=/sandbox USER=sandbox SHELL=/bin/bash PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color"
 report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; rm -f /tmp/pwned-*; }
 rm -f /tmp/pwned-*
 $E /bin/bash -c '. /sandbox/.bashrc'
 report control
-printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
 report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
 $E /bin/bash -lc 'exit 3'; echo "OUT lc rc=$?"
@@ -111,7 +114,7 @@ $E /tmp/le.sh | sed 's/^/OUT le-script /'; $E /tmp/le.sh; echo "OUT le-script rc
 report options
 $E /bin/bash -c 'echo C-OK' | sed 's/^/OUT c /'
 report c
-printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
 report pty-l
 printf 'echo FROM-STDIN; exit 4\n' | $E /bin/bash -l | sed 's/^/OUT pipe-l /'
 printf 'exit 4\n' | $E /bin/bash -l; echo "OUT pipe-l rc=$?"
@@ -120,6 +123,8 @@ printf 'bash -i -c "echo NESTED-BASH=\\$BASH_VERSION"; exit\n' | script -qec "$E
 report nested
 printf '/bin/bash -i -c "alias myll; echo NESTED-ABS=\\$BASH_VERSION"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT abs-bash /'
 report abs-bash
+printf '/harness/spawn-shell.sh; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT shell-l /'
+report shell-l
 $E /bin/sh -lc 'echo "SH-HOME=$HOME"; exit 6' | sed 's/^/OUT sh-lc /'
 $E /bin/sh -lc 'exit 6'; echo "OUT sh-lc rc=$?"
 report sh-lc
@@ -131,6 +136,13 @@ if [ -x /opt/sandcast/shell-login ]; then
 fi
 `
 
+// spawnShellScript is what tmux or an editor's terminal does inside a
+// curated session: start $SHELL as an interactive login shell. It prints
+// the curated alias and the value of SHELL.
+const spawnShellScript = `#!/bin/sh
+printf 'alias myll; echo "SHELL=[$SHELL]"; exit\n' | "$SHELL" -l -i 2>&1
+`
+
 // assertOpenShellSpawns runs openShellSpawnScript in image with the planted
 // workspace ws mounted over the home and checks the spec 003 guarantees for
 // every way OpenShell starts a shell: no workspace startup, profile or
@@ -139,10 +151,13 @@ fi
 // and exit status. alias is how the shell prints the curated alias; zdotdir
 // is the expected ZDOTDIR in interactive sessions ("" for bash, which also
 // selects the launcher cases: a bash image has /opt/sandcast/shell-login).
+// The zsh image bakes an inputrc, so with a zdotdir the hooks must restore
+// INPUTRC as well, the per-dotfile relocation variable.
 func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir string) {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "spawn.sh"), []byte(openShellSpawnScript), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spawn-shell.sh"), []byte(spawnShellScript), 0o755))
 	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "-v", dir+":/harness:ro", "--entrypoint", "/bin/sh", image, "/harness/spawn.sh")
 	require.NoError(t, err, out)
 
@@ -163,7 +178,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
-	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "pipe-l", "abs-bash", "sh-lc", "ssh"}
+	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
@@ -182,8 +197,8 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	has("pty-i", alias)
 	has("pty-l", alias)
 	if zdotdir != "" {
-		has("pty-i", "ZDOTDIR=["+zdotdir+"]")
-		has("pty-l", "ZDOTDIR=["+zdotdir+"]")
+		has("pty-i", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
+		has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
 	}
 	has("lc", "LC 0=zero @=a b")
 	has("lc", "rc=3")
@@ -206,6 +221,16 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	has("abs-bash", "NESTED-ABS=5.")
 	if zdotdir == "" {
 		has("abs-bash", alias)
+	}
+	// What tmux or an editor's terminal starts inside the curated session,
+	// $SHELL as an interactive login shell, gets the curated configuration:
+	// the curated zsh owns SHELL, and in a bash image the runtime's
+	// SHELL=/bin/bash goes through the login hook to the launcher.
+	has("shell-l", alias)
+	if zdotdir != "" {
+		has("shell-l", "SHELL=[/bin/zsh]")
+	} else {
+		has("shell-l", "SHELL=[/bin/bash]")
 	}
 	has("sh-lc", "SH-HOME=/sandbox")
 	has("sh-lc", "rc=6")
@@ -231,11 +256,12 @@ func TestOvermountZshSurvives(t *testing.T) {
 	image := repo + ":latest"
 	removeImages(t, engine, image)
 
-	dir := project(t, zshOvermountManifest(repo, "dotfiles-src/.gitconfig", "dotfiles-src/.config/git/config", "dotfiles-src/.tmux.conf"))
+	dir := project(t, zshOvermountManifest(repo, "dotfiles-src/.gitconfig", "dotfiles-src/.config/git/config", "dotfiles-src/.tmux.conf", "dotfiles-src/.inputrc"))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "dotfiles-src", ".config", "git"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".gitconfig"), []byte("[user]\n\temail = captured@example.com\n\tname = from-gitconfig\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".config", "git", "config"), []byte("[user]\n\tname = from-xdg\n[core]\n\tpager = less-from-xdg\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".tmux.conf"), []byte("set -g history-limit 99999\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".inputrc"), []byte("set editing-mode vi\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)
@@ -287,8 +313,7 @@ func TestOvermountZshSurvives(t *testing.T) {
 
 	// Scenario 3: the baked git dotfiles are read from /etc/gitconfig. Both
 	// of git's files are kept, merged in git's order, so a key only in one
-	// of them is set and a key in both takes the ~/.gitconfig value
-	// (FINDING-38).
+	// of them is set and a key in both takes the ~/.gitconfig value.
 	for key, want := range map[string]string{"user.email": "captured@example.com", "core.pager": "less-from-xdg", "user.name": "from-gitconfig"} {
 		out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "git", image, "config", "--get", key)
 		require.NoError(t, err, out)

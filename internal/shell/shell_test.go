@@ -30,7 +30,7 @@ func TestSafeAbsPath(t *testing.T) {
 }
 
 func TestZshEnvExport(t *testing.T) {
-	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1", ZshEnvExport("/opt/sandcast/zdotdir"))
+	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh", ZshEnvExport("/opt/sandcast/zdotdir"))
 }
 
 // TestLoginLauncher checks the baked bash launcher closes the workspace
@@ -239,9 +239,9 @@ func TestShLoginLauncher(t *testing.T) {
 // TestShLoginLauncherDropsLogin runs the sh launcher with the host sh and a
 // planted $HOME/.profile. A caller that passes -l, --login or -lc (an
 // editor's environment probe, su -l, a tmux default-command) must not turn
-// the shell into a login shell, which would read the workspace .profile
-// (FINDING-46). Options after the command string are the command's own
-// arguments and are kept.
+// the shell into a login shell, which would read the workspace .profile.
+// Options after the command string are the command's own arguments and are
+// kept.
 func TestShLoginLauncherDropsLogin(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {

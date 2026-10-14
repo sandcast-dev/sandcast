@@ -82,7 +82,7 @@ RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
 RUN <<'SANDCAST_EOF'
 set -eu
 install -d /opt/sandcast/zdotdir /etc/zsh
-zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1'
+zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh'
 for f in /etc/zsh/zshenv /etc/zshenv; do
   if grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
     echo "sandcast: replacing the ZDOTDIR export of a previous sandcast build in $f" >&2
@@ -115,6 +115,7 @@ cat > /etc/profile.d/zz-sandcast-shell.sh <<'SANDCAST_HOOK'
 # shell must never read a profile or logout file there. See
 # docs/guides/build.md, the home model and shell initialization.
 export ZDOTDIR=/opt/sandcast/zdotdir
+export SHELL=/bin/zsh
 if [ -n "${BASH_VERSION-}" ]; then
   if shopt -q login_shell 2>/dev/null; then
     case $- in
@@ -194,6 +195,7 @@ if [ -n "${BASH_VERSION-}" ]; then
     case $- in
     *i*)
       export ZDOTDIR=/opt/sandcast/zdotdir
+      export SHELL=/bin/zsh
       if [ -n "${SANDCAST_SESSION-}" ]; then
         if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
         exec "$BASH" --noprofile --norc -i

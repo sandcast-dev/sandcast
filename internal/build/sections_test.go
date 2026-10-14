@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -133,6 +134,40 @@ func TestShellSectionSetsKeptUserLoginShell(t *testing.T) {
 	assert.NotContains(t, got, "usermod")
 }
 
+// TestPasswdShellFallbackRewritesEntry runs the sed expression of the
+// usermod-less fallback with the host sed over sample passwd lines: the
+// shell field of the final user's line is replaced, every other field and
+// every other line is kept, and a "." in the user name matches itself only.
+func TestPasswdShellFallbackRewritesEntry(t *testing.T) {
+	sed, err := exec.LookPath("sed")
+	if err != nil {
+		t.Skip("no sed")
+	}
+	sedLine := regexp.MustCompile(`(?m)^\s*sed -i ('[^\n]*') /etc/passwd$`)
+	for _, user := range []string{"sandbox", "sand.box"} {
+		p := shellKindPlan(t, "bash")
+		p.FinalUser.Name = user
+		p.FinalUser.Created = false
+		got, err := shellSection(p)
+		require.NoError(t, err)
+		m := sedLine.FindStringSubmatch(got)
+		require.Len(t, m, 2, "the passwd fallback is rendered:\n%s", got)
+		expr := strings.Trim(m[1], "'")
+		passwd := "root:x:0:0:root:/root:/bin/bash\n" +
+			user + ":x:1000:1000::/sandbox:/bin/bash\n" +
+			"sandxbox:x:1001:1001::/home/sandxbox:/bin/bash\n" +
+			user + "2:x:1002:1002::/home/x:/bin/sh\n"
+		cmd := exec.Command(sed, "-e", expr)
+		cmd.Stdin = strings.NewReader(passwd)
+		out, err := cmd.Output()
+		require.NoError(t, err, user)
+		assert.Equal(t, "root:x:0:0:root:/root:/bin/bash\n"+
+			user+":x:1000:1000::/sandbox:"+plan.ShellLoginPath+"\n"+
+			"sandxbox:x:1001:1001::/home/sandxbox:/bin/bash\n"+
+			user+"2:x:1002:1002::/home/x:/bin/sh\n", string(out), user)
+	}
+}
+
 // TestShellSectionBakesSpawnHooks checks OpenShell images get the hooks for
 // shells the runtime starts directly (bash -i, bash -lc, bash -l after
 // clearing the environment): the profile.d login hook, the redirect home
@@ -154,6 +189,14 @@ func TestShellSectionBakesSpawnHooks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, zsh, "export ZDOTDIR=/opt/sandcast/zdotdir\n", "the hooks restore the relocation variables")
 	assert.Contains(t, zsh, "exec /bin/zsh -l -i\n", "an interactive login bash becomes a login zsh")
+	// The curated zsh owns SHELL, so a $SHELL spawner (tmux, an editor's
+	// terminal) starts zsh and not the nested bare bash: both hooks and the
+	// global zshenv export it; a bash image leaves SHELL alone.
+	assert.Equal(t, 2, strings.Count(zsh, "export SHELL=/bin/zsh\n"), "the login hook and the bashrc hook export SHELL")
+	assert.Contains(t, zsh, "SANDCAST_SESSION=1 SHELL=/bin/zsh'", "the global zshenv exports SHELL")
+	bash, err := shellSection(shellKindPlan(t, "bash"))
+	require.NoError(t, err)
+	assert.NotContains(t, bash, "export SHELL=")
 
 	p := shellKindPlan(t, "zsh")
 	p.Target = "container"
@@ -234,8 +277,9 @@ func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 // so, a second run is idempotent, and a missing file is created.
 func TestZshEnvInstallReplacesPreviousLine(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "zshenv")
+	// The line of a build before SHELL was exported, and the current one.
 	oldLine := "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"
-	newLine := shell.ZshEnvExport(plan.ZDotDir) + " SHELL=/bin/zsh"
+	newLine := shell.ZshEnvExport(plan.ZDotDir)
 	distro := "# /etc/zsh/zshenv: system-wide .zshenv file for zsh(1).\nskip_global_compinit=1\n"
 	vars := map[string]string{"f": f, "zshenv_line": newLine}
 
@@ -293,6 +337,15 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 	for _, d := range p.Dotfiles {
 		assert.False(t, plan.UnderOvermount(plan.DefaultOvermountHome, d.RelocatedTo))
 	}
+	// The per-dotfile relocation variable is restored by both hooks (the
+	// login hook and the bashrc hook) after the runtime cleared the image
+	// ENV, for the zsh kind and the bash kind alike.
+	assert.Equal(t, 2, strings.Count(got, "export STARSHIP_CONFIG=/etc/xdg/starship.toml\n"), "zsh: both hooks export the dotfile variable")
+	b := shellKindPlan(t, "bash")
+	b.Dotfiles = p.Dotfiles
+	got, err = Assemble(b)
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(got, "export STARSHIP_CONFIG=/etc/xdg/starship.toml\n"), "bash: both hooks export the dotfile variable")
 }
 
 // TestDotfileContextFileInjective checks two distinct targets never share a
@@ -367,7 +420,7 @@ func TestNoGeneratedFileSourcesTheHome(t *testing.T) {
 
 // TestWorkDirFollowsOvermountHome checks the WORKDIR and the workspace
 // directory come from the plan's overmount home, the one value the guard
-// uses too (FINDING-2, FINDING-28): a base image whose workspace is mounted
+// uses too: a base image whose workspace is mounted
 // at /workspace gets that WORKDIR, a plan without the field gets /sandbox,
 // and the container target keeps the user's home.
 func TestWorkDirFollowsOvermountHome(t *testing.T) {

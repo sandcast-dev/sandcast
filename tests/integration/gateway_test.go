@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -12,24 +13,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// startGateway runs gateway.sh up and registers the teardown. It skips when
-// the podman socket or the pinned openshell CLI is unavailable.
+// startGateway runs gateway.sh up and registers the teardown. Without
+// podman, its socket or the pinned openshell CLI it skips, or fails when
+// SANDCAST_REQUIRE_TOOLS=1 or CI is set (missingTool), so a run that must
+// not skip silently does not. The gateway tests are the only check of the
+// shell hooks against the real runtime and are opt-in: ci.yml runs
+// make test-integration, not make test-gateway.
 func startGateway(t *testing.T) []string {
 	t.Helper()
 	if _, err := exec.LookPath("podman"); err != nil {
-		t.Skip("podman not on PATH")
+		missingTool(t, "podman not on PATH")
 	}
 	out, err := exec.Command("openshell", "--version").Output()
 	if err != nil || !strings.Contains(string(out), "0.1.") {
-		t.Skipf("openshell CLI 0.1.x required for the gateway test (got %q, %v)", strings.TrimSpace(string(out)), err)
+		missingTool(t, fmt.Sprintf("openshell CLI 0.1.x required for the gateway test (got %q, %v)", strings.TrimSpace(string(out)), err))
 	}
 	if sock, err := exec.Command("podman", "info", "--format", "{{.Host.RemoteSocket.Path}}").Output(); err != nil || strings.TrimSpace(string(sock)) == "" {
-		t.Skip("podman socket not available")
+		missingTool(t, "podman socket not available")
 	}
 	up := exec.Command("sh", "gateway.sh", "up")
 	endpoint, err := up.Output()
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 3 && !toolsRequired() {
 			t.Skip("podman socket not available")
 		}
 		t.Fatalf("gateway.sh up: %v\n%s", err, endpoint)
@@ -211,4 +216,14 @@ targets:
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "alias myll='ls -l'")
 	assert.Empty(t, pwned(), "the interactive bash runs no workspace startup file")
+
+	// The default login exec under a pty: the login hook replaces the login
+	// bash and keeps the command and its exit status, and the interactive
+	// bash the command starts gets the curated rcfile. A zsh image is not
+	// built here (build cost); the overmount simulation covers that kind.
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--tty", "--", "/bin/bash", "-i", "-c", "alias myll; exit 5")
+	assert.Contains(t, out, "alias myll='ls -l'")
+	require.ErrorAs(t, err, &ee, out)
+	assert.Equal(t, 5, ee.ExitCode(), "the exit status survives the pty login exec")
+	assert.Empty(t, pwned(), "the pty login exec runs no workspace startup or logout file")
 }

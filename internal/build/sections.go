@@ -236,8 +236,8 @@ const hookInstallScript = `  if grep -qsF "$hook_begin" "$sysrc"; then
 func hookTargets(p *plan.Plan) shell.HookTargets {
 	switch plan.ShellKind(p) {
 	case "zsh":
-		zsh := shell.HookTarget{Program: "/bin/zsh"}
-		return shell.HookTargets{Top: zsh, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}
+		zsh := shell.HookTarget{Program: shell.ZshProgram}
+		return shell.HookTargets{Top: zsh, TopLogin: shell.HookTarget{Program: shell.ZshProgram, Args: "-l"}, Nested: shell.PlainBash}
 	case "bash":
 		launcher := shell.HookTarget{Program: plan.ShellLoginPath}
 		return shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher}
@@ -247,12 +247,19 @@ func hookTargets(p *plan.Plan) shell.HookTargets {
 }
 
 // hookExports are the relocation variables the hooks restore after the
-// runtime cleared the image ENV.
+// runtime cleared the image ENV, plus SHELL for the zsh kind: OpenShell
+// sets SHELL=/bin/bash for its sessions, and a program that starts $SHELL
+// from the curated zsh (tmux, an editor's terminal) would get a login bash
+// that the hooks turn into the nested bare bash. The curated zsh owns SHELL
+// (see shell.ZshEnvExport).
 func hookExports(p *plan.Plan) []shell.Export {
 	env := plan.RelocationEnv(p)
-	out := make([]shell.Export, 0, len(env))
+	out := make([]shell.Export, 0, len(env)+1)
 	for _, e := range env {
 		out = append(out, shell.Export{Name: e.Name, Value: e.Value})
+	}
+	if plan.ShellKind(p) == "zsh" {
+		out = append(out, shell.Export{Name: "SHELL", Value: shell.ZshProgram})
 	}
 	return out
 }
@@ -356,7 +363,7 @@ func (s loginShellSpec) cmd() string {
 func loginShell(p *plan.Plan) loginShellSpec {
 	switch plan.ShellKind(p) {
 	case "zsh":
-		return loginShellSpec{Path: "/bin/zsh", CmdArgs: []string{"-l"}}
+		return loginShellSpec{Path: shell.ZshProgram, CmdArgs: []string{"-l"}}
 	case "bash":
 		return loginShellSpec{Path: plan.ShellLoginPath}
 	default:
@@ -383,8 +390,10 @@ func shellSection(p *plan.Plan) (string, error) {
 	}
 	exports := hookExports(p)
 	for _, e := range exports {
-		if !component.ValidEnvName(e.Name) || component.HasControl(e.Value) {
-			return "", fmt.Errorf("relocation variable %q cannot be exported by the shell hooks", e.Name)
+		// The 20-user section renders the same values through envInstruction
+		// first; this guards a hand-built plan with the same rule.
+		if err := checkEnvVar(e.Name, e.Value); err != nil {
+			return "", fmt.Errorf("shell hook export: %w", err)
 		}
 	}
 	targets := hookTargets(p)
@@ -439,18 +448,27 @@ func shellKindSection(p *plan.Plan) (string, error) {
 	}
 }
 
-// envInstruction renders the NAME=value part of an ENV instruction. A name
-// that is not a portable variable name, or a value with a control character
-// such as a line break, would add Containerfile lines, so both are refused
-// whatever produced the plan.
+// envInstruction renders the NAME=value part of an ENV instruction, refusing
+// what checkEnvVar refuses.
 func envInstruction(e plan.EnvVar) (string, error) {
-	if !component.ValidEnvName(e.Name) {
-		return "", fmt.Errorf("env name %q must match [A-Za-z_][A-Za-z0-9_]*", e.Name)
-	}
-	if component.HasControl(e.Value) {
-		return "", fmt.Errorf("env %q: value contains a control character", e.Name)
+	if err := checkEnvVar(e.Name, e.Value); err != nil {
+		return "", err
 	}
 	return e.Name + "=" + envValue(e.Value), nil
+}
+
+// checkEnvVar refuses an environment variable that cannot be written into a
+// generated file as one line: a name that is not a portable variable name,
+// or a value with a control character such as a line break, would add
+// Containerfile or hook lines, whatever produced the plan.
+func checkEnvVar(name, value string) error {
+	if !component.ValidEnvName(name) {
+		return fmt.Errorf("env name %q must match [A-Za-z_][A-Za-z0-9_]*", name)
+	}
+	if component.HasControl(value) {
+		return fmt.Errorf("env %q: value contains a control character", name)
+	}
+	return nil
 }
 
 // dirArg renders an image directory as one shell word. Quoting cannot keep a
