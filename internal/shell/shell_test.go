@@ -77,6 +77,70 @@ func TestLoginLauncherLoadsRCFile(t *testing.T) {
 	assert.NotContains(t, string(out), "PWNED", "no startup file in $HOME runs: %s", out)
 }
 
+// TestShLoginLauncher checks the sh fallback launcher text: it points $ENV at
+// the baked profile, exports it, and execs a non-login /bin/sh with the
+// filtered arguments, and it is valid sh (spec 003 FR-002, FR-011).
+func TestShLoginLauncher(t *testing.T) {
+	got := ShLoginLauncher("/etc/profile.d/sandcast.sh")
+	assert.True(t, strings.HasPrefix(got, "#!/bin/sh\n"), "has a shebang")
+	assert.Contains(t, got, "ENV=/etc/profile.d/sandcast.sh\n")
+	assert.Contains(t, got, "export ENV SANDCAST_SESSION\n")
+	assert.Contains(t, got, `exec /bin/sh "$@"`+"\n")
+	assert.NotContains(t, got, "exec /bin/sh -l", "never a login shell")
+	assert.Contains(t, ShLoginLauncher("/opt/a b/profile"), "ENV='/opt/a b/profile'\n", "the profile path is quoted")
+	if sh, err := exec.LookPath("sh"); err == nil {
+		require.NoError(t, exec.Command(sh, "-n", "-c", got).Run(), "launcher is valid sh")
+	}
+}
+
+// TestShLoginLauncherDropsLogin runs the sh launcher with the host sh and a
+// planted $HOME/.profile. A caller that passes -l, --login or -lc (an
+// editor's environment probe, su -l, a tmux default-command) must not turn
+// the shell into a login shell, which would read the workspace .profile
+// (FINDING-46). Options after the command string are the command's own
+// arguments and are kept.
+func TestShLoginLauncherDropsLogin(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".profile"), []byte("echo PWNED-profile\n"), 0o644))
+	profile := filepath.Join(dir, "profile.sh")
+	require.NoError(t, os.WriteFile(profile, []byte(""), 0o644))
+	launcher := filepath.Join(dir, "sh-login")
+	require.NoError(t, os.WriteFile(launcher, []byte(ShLoginLauncher(profile)), 0o755))
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-l", "-c", "echo CMD"}, "CMD"},
+		{[]string{"-lc", "echo CMD"}, "CMD"},
+		{[]string{"--login", "-c", "echo CMD"}, "CMD"},
+		{[]string{"-el", "-c", "echo CMD"}, "CMD"},
+		{[]string{"-o", "noglob", "-l", "-c", "echo CMD"}, "CMD"},
+		{[]string{"-c", "echo CMD -l"}, "CMD -l"},
+		{[]string{"-c", `echo "ARGS $0 $1"`, "-l", "--login"}, "ARGS -l --login"},
+		{[]string{"-c", "exit 7"}, ""},
+	} {
+		cmd := exec.Command(sh, append([]string{launcher}, tc.args...)...)
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "TERM=dumb"}
+		out, err := cmd.CombinedOutput()
+		assert.NotContains(t, string(out), "PWNED", "%v: no $HOME/.profile runs: %s", tc.args, out)
+		if tc.want == "" {
+			var ee *exec.ExitError
+			require.ErrorAs(t, err, &ee, "%v", tc.args)
+			assert.Equal(t, 7, ee.ExitCode(), "%v: the exit status is kept", tc.args)
+			continue
+		}
+		require.NoError(t, err, "%v: %s", tc.args, out)
+		assert.Equal(t, tc.want+"\n", string(out), "%v", tc.args)
+	}
+}
+
 // TestJSONHelpersBuiltinsOnly runs _jsafe with an empty PATH, so any use of
 // an external command such as sed or tr fails the test.
 func TestJSONHelpersBuiltinsOnly(t *testing.T) {

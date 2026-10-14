@@ -68,8 +68,11 @@ func LoginLauncher(rcfile string) string {
 // a login shell would auto-source a workspace .profile (spec 003 FR-002,
 // SC-002). The launcher is the created user's login shell instead: it points
 // $ENV at the baked profile script and execs a NON-login /bin/sh, which reads
-// $ENV for interactive shells and never $HOME/.profile. "$@" forwards any
-// arguments (for example a -c command).
+// $ENV for interactive shells and never $HOME/.profile. "$@" forwards the
+// arguments (for example a -c command), without -l and --login: a caller
+// that passes them (an editor's environment probe, su -l, a tmux
+// default-command) would otherwise make /bin/sh a login shell that reads the
+// workspace .profile (FINDING-46). See shOptionFilter.
 func ShLoginLauncher(profile string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: a login shell under the OpenShell home overmount\n" +
@@ -79,8 +82,51 @@ func ShLoginLauncher(profile string) string {
 		"ENV=" + QuoteIfNeeded(profile) + "\n" +
 		SessionVar + "=1\n" +
 		"export ENV " + SessionVar + "\n" +
+		shOptionFilter +
 		`exec /bin/sh "$@"` + "\n"
 }
+
+// shOptionFilter rewrites the positional parameters without the login
+// options: --login, -l, and an l inside an option cluster (-lc becomes -c,
+// -il becomes -i). It scans options the way sh does: up to "--", "-" or the
+// first operand (the -c command string or a script name); everything from
+// there on, including a "-l" passed as an argument to the command, is kept.
+// The argument of -o, +o, -O and +O is kept as is, and long options other
+// than --login (bash's --noprofile, for one) are not touched. It uses only
+// shell builtins.
+const shOptionFilter = `# Drop -l and --login (also inside a cluster such as -lc) from the options
+# before the command string, script name or "--", so the shell never becomes
+# a login shell. Arguments from there on are kept as they are.
+_sandcast_opts=1 _sandcast_oarg=
+for _sandcast_a do
+  shift
+  if [ -n "$_sandcast_oarg" ]; then
+    _sandcast_oarg=
+  elif [ -n "$_sandcast_opts" ]; then
+    case $_sandcast_a in
+    --login) continue ;;
+    -- | -) _sandcast_opts= ;;
+    --*) ;;
+    [-+]o | [-+]O) _sandcast_oarg=1 ;;
+    -*)
+      while :; do
+        case $_sandcast_a in
+        -*l*) _sandcast_a=${_sandcast_a%%l*}${_sandcast_a#*l} ;;
+        *) break ;;
+        esac
+      done
+      case $_sandcast_a in
+      -) continue ;;
+      *[oO]) _sandcast_oarg=1 ;;
+      esac
+      ;;
+    +*) case $_sandcast_a in *[oO]) _sandcast_oarg=1 ;; esac ;;
+    *) _sandcast_opts= ;;
+    esac
+  fi
+  set -- "$@" "$_sandcast_a"
+done
+`
 
 // JSONHelpers defines _jsafe, which prints its argument escaped for a JSON
 // string: backslash, double quote, tab, newline and carriage return get
