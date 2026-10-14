@@ -1,7 +1,9 @@
 package capture
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -51,11 +53,16 @@ func ProposeDotfiles(home string) (proposals []DotfileProposal, skipped []string
 const notPresent = "is not present"
 
 // proposeDotfile checks one allowlist entry and returns why it is not
-// proposed, or "" when it is.
+// proposed, or "" when it is. Only a missing entry is "not present"; any
+// other error (a parent directory that cannot be read, for one) is reported,
+// because every entry found but not proposed must leave a notice.
 func proposeDotfile(home, realHome, rel string) string {
 	src := filepath.Join(home, filepath.FromSlash(rel))
 	if _, err := os.Lstat(src); err != nil {
-		return notPresent
+		if errors.Is(err, fs.ErrNotExist) {
+			return notPresent
+		}
+		return fmt.Sprintf("cannot be checked (%v)", err)
 	}
 	// The same two checks the pipeline applies: the path as written here,
 	// the resolved path below. No allowlist entry is denied as written, so

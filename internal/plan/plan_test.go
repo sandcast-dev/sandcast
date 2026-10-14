@@ -651,6 +651,12 @@ func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
 		{"dots/.config/git/config", GitConfigPath, nil},
 		{"dots/gitconfig", GitConfigPath, nil},
 		{"conf/inputrc", InputRCPath, map[string]string{"INPUTRC": InputRCPath}},
+		// A project or absolute copy that keeps the .config/ layout lands
+		// where XDG consumers search, like the home original would.
+		{"dotfiles/.config/nvim/init.lua", XDGConfigDir + "/nvim/init.lua", nil},
+		{"/work/p/dotfiles/.config/nvim/lua/plugins.lua", XDGConfigDir + "/nvim/lua/plugins.lua", nil},
+		{"./dotfiles/.config/ghostty/config", XDGConfigDir + "/ghostty/config", nil},
+		{"dots/.configs/x.conf", XDGConfigDir + "/dots/.configs/x.conf", nil},
 	} {
 		target, env := relocateDotfile(tt.host)
 		assert.Equal(t, tt.target, target, tt.host)

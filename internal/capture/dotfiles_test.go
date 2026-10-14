@@ -88,3 +88,30 @@ func TestProposeDotfilesUnresolvableHome(t *testing.T) {
 	require.Len(t, skipped, 1)
 	assert.Contains(t, skipped[0], "cannot be resolved")
 }
+
+// TestProposeDotfilesReportsUnreadableParent checks an allowlist entry
+// below a directory that cannot be read is reported as skipped, not
+// silently treated as absent: components match promises a notice for every
+// entry found but not proposed. Root reads any directory, so the test skips
+// there.
+func TestProposeDotfilesReportsUnreadableParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read any directory")
+	}
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".config")
+	require.NoError(t, os.MkdirAll(cfg, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cfg, "starship.toml"), []byte("add_newline = false\n"), 0o644))
+	require.NoError(t, os.Chmod(cfg, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(cfg, 0o755) })
+
+	props, skipped := ProposeDotfiles(home)
+	assert.Empty(t, props)
+	require.Len(t, skipped, 2, "starship.toml and git/config below the unreadable ~/.config: %v", skipped)
+	for _, s := range skipped {
+		assert.Contains(t, s, "cannot be checked")
+		assert.Contains(t, s, "permission denied")
+	}
+	assert.Contains(t, skipped[0], "~/.config/git/config")
+	assert.Contains(t, skipped[1], "~/.config/starship.toml")
+}

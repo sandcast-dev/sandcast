@@ -126,11 +126,18 @@ func relocateDotfile(hostPath string) (target string, env map[string]string) {
 	case base == ".inputrc" || base == "inputrc":
 		return InputRCPath, map[string]string{"INPUTRC": InputRCPath}
 	default:
-		// Generic: the system XDG directory, preserving a .config/ subpath
-		// so a tool that searches XDG_CONFIG_DIRS finds it. A leading dot of
-		// the remaining path is dropped (.editorconfig becomes editorconfig).
-		rel := strings.TrimPrefix(strings.TrimPrefix(norm, ".config/"), ".")
-		return XDGConfigDir + "/" + strings.TrimPrefix(rel, "/"), nil
+		// Generic: the system XDG directory, keeping the part below a
+		// .config/ segment wherever it sits in the source path (~/.config/x,
+		// or a project copy such as dotfiles/.config/x), so a tool that
+		// searches XDG_CONFIG_DIRS finds it. Without such a segment the
+		// whole path is kept, with a leading dot dropped (.editorconfig
+		// becomes editorconfig).
+		rel := norm
+		if i := strings.Index("/"+norm, "/.config/"); i >= 0 {
+			rel = norm[i+len(".config/"):]
+		}
+		rel = strings.TrimPrefix(strings.TrimPrefix(rel, "."), "/")
+		return XDGConfigDir + "/" + rel, nil
 	}
 }
 
