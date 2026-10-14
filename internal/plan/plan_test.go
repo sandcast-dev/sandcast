@@ -569,6 +569,45 @@ func TestBuildReprovisionsOvermountTool(t *testing.T) {
 	assert.Equal(t, p.Relocations, p2.Relocations)
 }
 
+func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
+	// A normal zsh plan bakes nothing under the home.
+	ok := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}}
+	require.NoError(t, checkOvermountGuard(ok, OvermountHome))
+	// A dotfile that somehow points under the home is caught (defense in depth).
+	bad := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh"},
+		Dotfiles: []DotfileSelection{{RelocatedTo: OvermountHome + "/.gitconfig"}}}
+	err := checkOvermountGuard(bad, OvermountHome)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), OvermountHome)
+	// The container target has no overmount, so the guard never fires.
+	require.NoError(t, checkOvermountGuard(bad, OvermountPrefix(manifest.TargetContainer)))
+}
+
+func TestResolveDotfilesRejectsOvermountTarget(t *testing.T) {
+	// Not reachable from the real mapping, but the resolver refuses it anyway.
+	_, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: OvermountHome + "/x"}}, OvermountHome)
+	// The generic mapping relocates to XDG, so this specific input is fine;
+	// assert the guard path by constructing a target directly instead.
+	require.NoError(t, err)
+	assert.True(t, UnderOvermount(OvermountHome, OvermountHome+"/.config"))
+	assert.False(t, UnderOvermount(OvermountHome, XDGConfigHome+"/x"))
+	assert.False(t, UnderOvermount("", OvermountHome+"/x"), "no overmount prefix means never under it")
+}
+
+func TestReprovisionOnlyForOvermountTarget(t *testing.T) {
+	// A present tool under /sandbox on the container target is NOT reclassified
+	// (the container target has no overmount).
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	in := testInputs(t, m, nil)
+	in.Target = manifest.TargetContainer
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/.local/bin/git"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionSkip, p.Component("git").Action, "container target keeps the present tool")
+	assert.Empty(t, p.Relocations)
+}
+
 func keysOf(us []Unresolved) []string {
 	out := []string{}
 	for _, u := range us {

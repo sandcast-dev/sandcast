@@ -75,9 +75,9 @@ description: "Task list for runtime home model and shell initialization"
 
 **Independent test**: probe a base image whose only copy of a tool is under `/sandbox`; confirm the plan reports a reprovision and installs it elsewhere.
 
-- [ ] T020 [US4] In the `internal/plan` delta, reclassify a component whose probe `status==present` but whose `Path` is under the overmount home prefix as missing (schedule install to a persistent location) and emit a `reprovisioned` notice (R7); do not change probe caching.
-- [ ] T021 [US4] Add a plan guard that asserts no sandcast-managed baked path resolves under the overmount home, emitting a `relocated` notice where it corrects one.
-- [ ] T022 [P] [US4] Unit tests in `internal/plan/plan_test.go`: reclassification of a `/sandbox` probe hit, notice emission, and the no-baked-path-under-overmount guard.
+- [x] T020 [US4] In the `internal/plan` delta, reclassify a component whose probe `status==present` but whose `Path` is under the overmount home prefix as missing (schedule install to a persistent location) and emit a `reprovisioned` notice (R7); do not change probe caching.
+- [x] T021 [US4] Add a plan guard that asserts no sandcast-managed baked path resolves under the overmount home, emitting a `relocated` notice where it corrects one.
+- [x] T022 [P] [US4] Unit tests in `internal/plan/plan_test.go`: reclassification of a `/sandbox` probe hit, notice emission, and the no-baked-path-under-overmount guard.
 
 ## Phase 7: Polish and cross-cutting
 
