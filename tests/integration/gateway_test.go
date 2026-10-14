@@ -195,6 +195,17 @@ targets:
 	assert.Equal(t, 3, ee.ExitCode(), "the exit status survives the login hook")
 	assert.Empty(t, pwned(), "the login exec runs no workspace startup or logout file")
 
+	// The caller's options survive the replacement: a login bash with -e
+	// (started inside the login exec) stops at the failing command.
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--", "bash", "-le", "-c", "false; echo X-LE; exit 3")
+	assert.NotContains(t, out, "X-LE", "-e survives the login hook")
+	require.ErrorAs(t, err, &ee)
+	assert.Equal(t, 1, ee.ExitCode(), "the -e exit status survives the login hook")
+	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--", "bash", "-l", "-o", "pipefail", "-c", "false | true")
+	require.ErrorAs(t, err, &ee, out)
+	assert.Equal(t, 1, ee.ExitCode(), "pipefail survives the login hook")
+	assert.Empty(t, pwned(), "the option cases run no workspace startup or logout file")
+
 	// An interactive bash under a pty gets the curated rcfile, not ~/.bashrc.
 	out, err = openshell(t, env, "sandbox", "exec", "-n", "sc-hooks", "--tty", "--no-login-shell", "--", "/bin/bash", "-i", "-c", "alias myll")
 	require.NoError(t, err, out)

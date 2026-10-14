@@ -64,6 +64,12 @@ func TestShellSectionBashLauncher(t *testing.T) {
 	assert.Contains(t, got, "exec bash --noprofile --rcfile /opt/sandcast/bashrc")
 	assert.NotContains(t, got, "--norc --rcfile", "the launcher must not pass --norc")
 	assert.Contains(t, got, "cat > /opt/sandcast/shell-login")
+	// The build bakes the absolute path of the image's bash into the
+	// launcher, found on the system directories only, so the launcher never
+	// resolves bash through a PATH that a curated rc extended with $HOME/bin.
+	assert.Contains(t, got, "bash_bin=$(PATH=/usr/local/bin:/usr/bin:/bin command -v bash)\n")
+	assert.Contains(t, got, `sed -i "s|^exec bash |exec $bash_bin |" /opt/sandcast/shell-login`+"\n")
+	assert.Contains(t, got, `grep -q "^exec $bash_bin " /opt/sandcast/shell-login`+"\n", "the build fails when the substitution did not happen")
 	assert.Contains(t, got, "COPY shell/sandcast.sh /opt/sandcast/bashrc")
 	// The launcher, not /bin/bash, is the login shell and the CMD.
 	assert.Contains(t, got, "-s /opt/sandcast/shell-login")

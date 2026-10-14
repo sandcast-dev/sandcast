@@ -5,15 +5,16 @@ import "strings"
 // The shell hooks close the startup-file vector for shells that a runtime
 // starts directly. OpenShell v0.1.x runs /bin/bash (or /bin/sh when the image
 // has no bash) with -i under a pty, with -lc or -c for a command, and as -l
-// for its default agent, always after clearing the environment. It never uses
-// the image CMD, the passwd shell or the image ENV, so neither the launcher
-// nor the relocation variables reach these shells. bash reads two kinds of
-// startup files before any file in the home: the system bashrc
-// (/etc/bash.bashrc on Debian and Ubuntu) for interactive non-login shells,
-// and /etc/profile, which sources /etc/profile.d/*.sh, for login shells. The
-// hooks live there and replace the shell before bash reaches the workspace
-// ~/.bashrc, ~/.bash_profile, ~/.profile or ~/.bash_logout (spec 003 FR-001,
-// FR-002, SC-002).
+// for its default agent. It never uses the image CMD or the passwd shell, so
+// the launcher does not reach these shells. Exec and terminal sessions start
+// with a cleared environment, while the default agent inherits the image ENV;
+// the hooks export the relocation variables again so both cases agree. bash
+// reads two kinds of startup files before any file in the home: the system
+// bashrc (/etc/bash.bashrc on Debian and Ubuntu) for interactive non-login
+// shells, and /etc/profile, which sources /etc/profile.d/*.sh, for login
+// shells. The hooks live there and replace the shell before bash reaches the
+// workspace ~/.bashrc, ~/.bash_profile, ~/.profile or ~/.bash_logout (spec
+// 003 FR-001, FR-002, SC-002).
 
 // HookBegin and HookEnd delimit the block sandcast prepends to the system
 // bashrc, so the build can recognize an image that already carries it.
@@ -28,19 +29,39 @@ type Export struct {
 	Name, Value string
 }
 
-// HookTargets are the commands an interactive bash is replaced with, each
-// rendered as shell words that the hook passes further arguments to.
+// HookTarget is one command an interactive bash is replaced with: the
+// program as a shell word (an absolute path, or "$BASH" for the running
+// bash) and the options the hook passes before its own.
+type HookTarget struct {
+	Program string
+	Args    string
+}
+
+// String renders the target as shell words.
+func (t HookTarget) String() string {
+	if t.Args == "" {
+		return t.Program
+	}
+	return t.Program + " " + t.Args
+}
+
+// PlainBash is the running bash without any startup file: the fallback when
+// a curated target cannot be executed, and the nested target of images
+// whose curated shell is not bash.
+var PlainBash = HookTarget{Program: `"$BASH"`, Args: "--noprofile --norc"}
+
+// HookTargets are the commands an interactive bash is replaced with.
 type HookTargets struct {
 	// Top is the curated interactive shell for an interactive non-login bash
 	// that does not run inside a curated session: the shell OpenShell opens.
-	Top string
+	Top HookTarget
 	// TopLogin is the curated shell for an interactive login bash outside a
 	// curated session (the OpenShell default agent under a pty).
-	TopLogin string
+	TopLogin HookTarget
 	// Nested is the shell for an interactive bash that the user starts inside
 	// a curated session (SANDCAST_SESSION is set). It keeps bash, but never
 	// reads a startup file from the home.
-	Nested string
+	Nested HookTarget
 }
 
 // SessionVar marks a process tree that runs inside a curated shell session.
@@ -62,16 +83,39 @@ func exportLines(exports []Export, indent string) string {
 }
 
 // interactiveExec renders the branch that replaces an interactive bash with
-// target, keeping a -c command string and its arguments ($0 "$@").
-func interactiveExec(target, indent string) string {
-	return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec ` + target + ` -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi` + "\n" +
-		indent + "exec " + target + " -i\n"
+// target, keeping a -c command string and its arguments ($0 "$@"). The
+// target may be missing (a layered image removed it) or denied (a runtime
+// policy stricter than the image policy; a test with [ -x ] cannot see a
+// landlock denial), and a failed exec in a startup file would otherwise end
+// the session with status 126 and bash's one-line error. With execfail the
+// exec returns instead: one sandcast: line names the target and the policy
+// grant, and PlainBash takes over, so the session stays usable and still
+// reads no workspace file. PlainBash itself needs no fallback.
+func interactiveExec(t HookTarget, indent string) string {
+	withCmd := func(t HookTarget) string {
+		return "exec " + t.String() + ` -i -c "$BASH_EXECUTION_STRING" "$0" "$@"`
+	}
+	bare := func(t HookTarget) string { return "exec " + t.String() + " -i" }
+	if t == PlainBash {
+		return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then ` + withCmd(t) + "; fi\n" +
+			indent + bare(t) + "\n"
+	}
+	msg := `echo "sandcast: cannot execute ` + t.Program + `, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2`
+	return indent + "shopt -s execfail\n" +
+		indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		indent + "  " + withCmd(t) + "\n" +
+		indent + "  " + msg + "\n" +
+		indent + "  " + withCmd(PlainBash) + "\n" +
+		indent + "fi\n" +
+		indent + bare(t) + "\n" +
+		indent + msg + "\n" +
+		indent + bare(PlainBash) + "\n"
 }
 
 // redirect renders the interactive branch: a bash inside a curated session
 // goes to nested, any other to top, which marks the new session first. When
 // both are the same command the session check is left out.
-func redirect(top, nested, indent string) string {
+func redirect(top, nested HookTarget, indent string) string {
 	var b strings.Builder
 	if nested != top {
 		b.WriteString(indent + `if [ -n "${` + SessionVar + `-}" ]; then` + "\n")
@@ -84,13 +128,76 @@ func redirect(top, nested, indent string) string {
 	return b.String()
 }
 
-// plainBash replaces a non-interactive bash with one that reads no startup
-// file at all, keeping the -c command string or the script and its
-// arguments, bash's posix mode, the pid and the exit status.
-func plainBash(indent string) string {
-	return indent + "_sandcast_posix=\n" +
-		indent + "case :${SHELLOPTS-}: in *:posix:*) _sandcast_posix=--posix ;; esac\n" +
-		indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" $_sandcast_posix --noprofile --norc -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi` + "\n"
+// plainBashOptions rebuilds, as positional parameters, the options of the
+// running bash for a replacement bash: every set -o option in SHELLOPTS as
+// -o name (posix included; bash takes no long option after a short one, so
+// --posix could not follow them) and every shopt option in BASHOPTS as -O
+// name, so -e, -u, -x, -o pipefail and the like survive the replacement.
+// Left out are the options bash sets on its own for the kind of shell it
+// is, which the replacement is not or sets itself: interactive, login_shell,
+// monitor, history, emacs, vi and interactive-comments. The original
+// positional parameters are kept behind the options; the caller appends the
+// command form, then rotates them back behind it (plainBashExec). Word
+// splitting is never used, so a name cannot be split or globbed.
+func plainBashOptions(indent string) string {
+	return indent + "_sandcast_argc=$#\n" +
+		indent + "_sandcast_rest=${SHELLOPTS-}\n" +
+		indent + `while [ -n "$_sandcast_rest" ]; do` + "\n" +
+		indent + "  case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac\n" +
+		indent + "  case $_sandcast_opt in\n" +
+		indent + "  interactive | login_shell | monitor | history | emacs | vi | interactive-comments) ;;\n" +
+		indent + `  *) set -- "$@" -o "$_sandcast_opt" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "done\n" +
+		indent + "_sandcast_rest=${BASHOPTS-}\n" +
+		indent + `while [ -n "$_sandcast_rest" ]; do` + "\n" +
+		indent + "  case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac\n" +
+		indent + "  case $_sandcast_opt in\n" +
+		indent + "  login_shell | interactive_comments) ;;\n" +
+		indent + `  *) set -- "$@" -O "$_sandcast_opt" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "done\n"
+}
+
+// plainBashExec rotates the original arguments behind the options and the
+// command form that the caller appended, and execs the replacement bash with
+// no startup files. The options follow --noprofile --norc; bash accepts
+// them in that order.
+func plainBashExec(indent string) string {
+	return indent + `while [ "$_sandcast_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _sandcast_argc=$((_sandcast_argc - 1)); done` + "\n" +
+		indent + `exec "$BASH" --noprofile --norc "$@"` + "\n"
+}
+
+// plainBashCommand replaces a non-interactive bash that runs a -c command
+// string with one that reads no startup file at all, keeping the command,
+// its arguments and $0, the options, the pid and the exit status. Without a
+// command string it does nothing.
+func plainBashCommand(indent string) string {
+	return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		plainBashOptions(indent+"  ") +
+		indent + `  set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"` + "\n" +
+		plainBashExec(indent+"  ") +
+		indent + "fi\n"
+}
+
+// plainBashLogin replaces a non-interactive login bash the same way, for all
+// three forms: a -c command string, a script (passed after "--", so a script
+// named like an option is not read as one), and the standard input. bash
+// reads its input when $0 is the name it was invoked by: the path in $BASH,
+// its base name, that with a login "-" prefix, or sh. A script literally
+// named like the shell (bash -l ./sh) is the one case this cannot tell
+// apart; it is read as input.
+func plainBashLogin(indent string) string {
+	return plainBashOptions(indent) +
+		indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		indent + `  set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"` + "\n" +
+		indent + "else\n" +
+		indent + "  case $0 in\n" +
+		indent + `  "$BASH" | "-$BASH" | "${BASH##*/}" | "-${BASH##*/}" | sh | -sh) set -- "$@" -s ;;` + "\n" +
+		indent + `  *) set -- "$@" -- "$0" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "fi\n" +
+		plainBashExec(indent)
 }
 
 // BashrcHook returns the block sandcast prepends to the system bashrc. For
@@ -117,7 +224,7 @@ func BashrcHook(exports []Export, t HookTargets) string {
 		redirect(t.Top, t.Nested, "      ") +
 		"      ;;\n" +
 		"    *)\n" +
-		plainBash("      ") +
+		plainBashCommand("      ") +
 		"      ;;\n" +
 		"    esac\n" +
 		"  fi\n" +
@@ -134,8 +241,10 @@ func BashrcHook(exports []Export, t HookTargets) string {
 //     nor ~/.bash_logout is read.
 //   - bash, not interactive (bash -lc 'cmd', bash -l script, bash -l reading
 //     stdin): execs a bash with no startup files that runs the same command,
-//     script or input, with the same pid and exit status. Returning instead
-//     would let bash read ~/.bash_profile next and ~/.bash_logout on exit.
+//     script or input with the same arguments, options (-e, -u, -x, -o
+//     pipefail and every other set -o and shopt option), pid and exit
+//     status. Returning instead would let bash read ~/.bash_profile next and
+//     ~/.bash_logout on exit.
 //   - other POSIX shells (dash, busybox ash, ksh): they read $HOME/.profile
 //     next and expand $HOME at that moment, and they have no logout file, so
 //     HOME points at redirectHome until the baked .profile there restores it.
@@ -156,11 +265,7 @@ func LoginHook(exports []Export, t HookTargets, redirectHome string) string {
 		redirect(t.TopLogin, t.Nested, "      ") +
 		"      ;;\n" +
 		"    *)\n" +
-		plainBash("      ") +
-		"      case ${0##*/} in\n" +
-		`      bash | -bash | sh | -sh) exec "$BASH" $_sandcast_posix --noprofile --norc -s "$@" ;;` + "\n" +
-		"      esac\n" +
-		`      exec "$BASH" $_sandcast_posix --noprofile --norc "$0" "$@"` + "\n" +
+		plainBashLogin("      ") +
 		"      ;;\n" +
 		"    esac\n" +
 		"  fi\n" +

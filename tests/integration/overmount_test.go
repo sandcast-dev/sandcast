@@ -29,6 +29,7 @@ shell:
   rc: |
     alias myll='ls -l'
     export SANDCAST_OVERMOUNT_OK=1
+    export PATH=$HOME/bin:$PATH
 dotfiles:
   - path: ` + gitconfig + `
   - path: ` + gitXDG + `
@@ -39,6 +40,10 @@ targets:
 `
 }
 
+// bashOvermountManifest builds a bash image with a baked alias. Like the
+// zsh one, its rc prepends $HOME/bin to the PATH, the common pattern that a
+// planted workspace bin/bash wrapper would exploit (see
+// workspaceWithPlantedRC).
 func bashOvermountManifest(image string) string {
 	return `schema_version: 1
 name: sc-overmount-bash
@@ -48,6 +53,7 @@ shell:
   rc: |
     alias myll='ls -l'
     export SANDCAST_OVERMOUNT_OK=1
+    export PATH=$HOME/bin:$PATH
 targets:
   openshell:
     image: ` + image + `
@@ -63,13 +69,18 @@ func runEngine(t *testing.T, name string, args ...string) (string, error) {
 }
 
 // workspaceWithPlantedRC creates a host directory to mount over the home that
-// contains hostile startup files; each writes a sentinel when sourced.
+// contains hostile startup files; each writes a sentinel when sourced. It
+// also plants bin/bash, a wrapper that leaves a sentinel and runs the real
+// bash: the curated rc puts $HOME/bin first on the PATH, so any bash that
+// a hook or launcher resolved through the PATH would run it.
 func workspaceWithPlantedRC(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
 	for _, rc := range []string{".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, rc), []byte("touch /tmp/pwned-"+strings.TrimPrefix(rc, ".")+"\n"), 0o644))
 	}
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "bin", "bash"), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-bash\nexec /bin/bash \"$@\"\n"), 0o755))
 	return ws
 }
 
@@ -92,6 +103,12 @@ report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
 $E /bin/bash -lc 'exit 3'; echo "OUT lc rc=$?"
 report lc
+$E /bin/bash -le -c 'false; echo X-LE; exit 3' | sed 's/^/OUT le /'; echo "OUT le rc=$?"
+$E /bin/bash -le -c 'false; echo X-LE; exit 3'; echo "OUT le rc=$?"
+$E /bin/bash -l -o pipefail -c 'false | true'; echo "OUT pipefail rc=$?"
+printf '#!/bin/bash -le\nfalse\necho X-SCRIPT\nexit 3\n' > /tmp/le.sh; chmod +x /tmp/le.sh
+$E /tmp/le.sh | sed 's/^/OUT le-script /'; $E /tmp/le.sh; echo "OUT le-script rc=$?"; rm -f /tmp/le.sh
+report options
 $E /bin/bash -c 'echo C-OK' | sed 's/^/OUT c /'
 report c
 printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
@@ -101,6 +118,8 @@ printf 'exit 4\n' | $E /bin/bash -l; echo "OUT pipe-l rc=$?"
 report pipe-l
 printf 'bash -i -c "echo NESTED-BASH=\\$BASH_VERSION"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT nested /'
 report nested
+printf '/bin/bash -i -c "alias myll; echo NESTED-ABS=\\$BASH_VERSION"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT abs-bash /'
+report abs-bash
 $E /bin/sh -lc 'echo "SH-HOME=$HOME"; exit 6' | sed 's/^/OUT sh-lc /'
 $E /bin/sh -lc 'exit 6'; echo "OUT sh-lc rc=$?"
 report sh-lc
@@ -144,7 +163,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
-	cases := []string{"pty-i", "lc", "c", "pty-l", "pipe-l", "nested", "sh-lc", "ssh"}
+	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "pipe-l", "abs-bash", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
@@ -152,6 +171,14 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 		require.Contains(t, results, c, "case %s ran", c)
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
 	}
+	// A bare "bash" inside the curated session resolves through the curated
+	// PATH, which starts with the workspace $HOME/bin, so the planted wrapper
+	// runs: that is the user's own PATH choice and the positive control that
+	// the wrapper is first on the PATH. The real bash it execs is hooked, so
+	// no startup file runs. The abs-bash case above starts /bin/bash by its
+	// path and must not reach the wrapper through the hook or the launcher.
+	require.Contains(t, results, "nested", "case nested ran")
+	assert.Equal(t, "[pwned-planted-bash ]", results["nested"], "case nested: the wrapper is on the PATH, no startup file runs")
 	has("pty-i", alias)
 	has("pty-l", alias)
 	if zdotdir != "" {
@@ -160,10 +187,26 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 	has("lc", "LC 0=zero @=a b")
 	has("lc", "rc=3")
+	// The replacement keeps the caller's options: -e stops at the failing
+	// command (no X, status 1), pipefail fails the pipeline, and a
+	// "#!/bin/bash -le" script behaves the same.
+	has("le", "rc=1")
+	assert.NotContains(t, strings.Join(lines["le"], "\n"), "X-LE", "-e survives the login hook")
+	has("pipefail", "rc=1")
+	has("le-script", "rc=1")
+	assert.NotContains(t, strings.Join(lines["le-script"], "\n"), "X-SCRIPT", "-e survives in a shebang script")
 	has("c", "C-OK")
 	has("pipe-l", "FROM-STDIN")
 	has("pipe-l", "rc=4")
 	has("nested", "NESTED-BASH=5.")
+	// An explicit /bin/bash inside the curated session, whose PATH starts
+	// with the workspace $HOME/bin: the hook and the launcher reach the real
+	// bash by its absolute path, never the planted wrapper (the report line
+	// above checks its sentinel).
+	has("abs-bash", "NESTED-ABS=5.")
+	if zdotdir == "" {
+		has("abs-bash", alias)
+	}
 	has("sh-lc", "SH-HOME=/sandbox")
 	has("sh-lc", "rc=6")
 	has("ssh", "SSH-OK")

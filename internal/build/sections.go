@@ -86,6 +86,11 @@ RUN install -d {{.ZDotDir}} /etc/zsh
 {{- end}}
 `))
 
+// The bash launcher is written with "exec bash" and the build substitutes
+// the absolute path of the image's bash, found with a PATH of the system
+// directories only. The hooks replace an interactive bash with the launcher,
+// and a curated rc commonly prepends $HOME/bin to the PATH, so a PATH lookup
+// at run time could pick a bash wrapper committed into the workspace.
 var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
 USER root
 RUN install -d {{.Prefix}}
@@ -100,6 +105,9 @@ set -eu
 cat > {{.ShellLoginPath}} <<'SANDCAST_LAUNCH'
 {{.Launcher}}
 SANDCAST_LAUNCH
+bash_bin=$(PATH=/usr/local/bin:/usr/bin:/bin command -v bash)
+sed -i "s|^exec bash |exec $bash_bin |" {{.ShellLoginPath}}
+grep -q "^exec $bash_bin " {{.ShellLoginPath}}
 chmod 0755 {{.ShellLoginPath}}
 SANDCAST_EOF
 `))
@@ -193,14 +201,15 @@ SANDCAST_EOF
 // user starts inside a curated session, bash itself without home startup
 // files (the launcher for the bash kind, a bash without any rc otherwise).
 func hookTargets(p *plan.Plan) shell.HookTargets {
-	plainBash := `"$BASH" --noprofile --norc`
 	switch plan.ShellKind(p) {
 	case "zsh":
-		return shell.HookTargets{Top: "/bin/zsh", TopLogin: "/bin/zsh -l", Nested: plainBash}
+		zsh := shell.HookTarget{Program: "/bin/zsh"}
+		return shell.HookTargets{Top: zsh, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}
 	case "bash":
-		return shell.HookTargets{Top: plan.ShellLoginPath, TopLogin: plan.ShellLoginPath, Nested: plan.ShellLoginPath}
+		launcher := shell.HookTarget{Program: plan.ShellLoginPath}
+		return shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher}
 	default:
-		return shell.HookTargets{Top: plainBash, TopLogin: plainBash, Nested: plainBash}
+		return shell.HookTargets{Top: shell.PlainBash, TopLogin: shell.PlainBash, Nested: shell.PlainBash}
 	}
 }
 

@@ -116,17 +116,44 @@ if [ -n "${BASH_VERSION-}" ]; then
       fi
       SANDCAST_SESSION=1
       export SANDCAST_SESSION
-      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec /bin/zsh -l -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      shopt -s execfail
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
+        exec /bin/zsh -l -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
+        echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
+        exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
+      fi
       exec /bin/zsh -l -i
+      echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
+      exec "$BASH" --noprofile --norc -i
       ;;
     *)
-      _sandcast_posix=
-      case :${SHELLOPTS-}: in *:posix:*) _sandcast_posix=--posix ;; esac
-      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" $_sandcast_posix --noprofile --norc -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
-      case ${0##*/} in
-      bash | -bash | sh | -sh) exec "$BASH" $_sandcast_posix --noprofile --norc -s "$@" ;;
-      esac
-      exec "$BASH" $_sandcast_posix --noprofile --norc "$0" "$@"
+      _sandcast_argc=$#
+      _sandcast_rest=${SHELLOPTS-}
+      while [ -n "$_sandcast_rest" ]; do
+        case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac
+        case $_sandcast_opt in
+        interactive | login_shell | monitor | history | emacs | vi | interactive-comments) ;;
+        *) set -- "$@" -o "$_sandcast_opt" ;;
+        esac
+      done
+      _sandcast_rest=${BASHOPTS-}
+      while [ -n "$_sandcast_rest" ]; do
+        case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac
+        case $_sandcast_opt in
+        login_shell | interactive_comments) ;;
+        *) set -- "$@" -O "$_sandcast_opt" ;;
+        esac
+      done
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
+        set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"
+      else
+        case $0 in
+        "$BASH" | "-$BASH" | "${BASH##*/}" | "-${BASH##*/}" | sh | -sh) set -- "$@" -s ;;
+        *) set -- "$@" -- "$0" ;;
+        esac
+      fi
+      while [ "$_sandcast_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _sandcast_argc=$((_sandcast_argc - 1)); done
+      exec "$BASH" --noprofile --norc "$@"
       ;;
     esac
   fi
@@ -164,13 +191,39 @@ if [ -n "${BASH_VERSION-}" ]; then
       fi
       SANDCAST_SESSION=1
       export SANDCAST_SESSION
-      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec /bin/zsh -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      shopt -s execfail
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
+        exec /bin/zsh -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
+        echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
+        exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
+      fi
       exec /bin/zsh -i
+      echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
+      exec "$BASH" --noprofile --norc -i
       ;;
     *)
-      _sandcast_posix=
-      case :${SHELLOPTS-}: in *:posix:*) _sandcast_posix=--posix ;; esac
-      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" $_sandcast_posix --noprofile --norc -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
+      if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
+        _sandcast_argc=$#
+        _sandcast_rest=${SHELLOPTS-}
+        while [ -n "$_sandcast_rest" ]; do
+          case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac
+          case $_sandcast_opt in
+          interactive | login_shell | monitor | history | emacs | vi | interactive-comments) ;;
+          *) set -- "$@" -o "$_sandcast_opt" ;;
+          esac
+        done
+        _sandcast_rest=${BASHOPTS-}
+        while [ -n "$_sandcast_rest" ]; do
+          case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac
+          case $_sandcast_opt in
+          login_shell | interactive_comments) ;;
+          *) set -- "$@" -O "$_sandcast_opt" ;;
+          esac
+        done
+        set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"
+        while [ "$_sandcast_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _sandcast_argc=$((_sandcast_argc - 1)); done
+        exec "$BASH" --noprofile --norc "$@"
+      fi
       ;;
     esac
   fi
