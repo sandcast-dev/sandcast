@@ -63,23 +63,51 @@ func ZshEnvExport(zdotdir string) string {
 // sourced (spec 003 research R1, FR-002). --noprofile keeps ~/.bash_profile,
 // ~/.bash_login and ~/.profile out, and --rcfile replaces ~/.bashrc. It must
 // not pass --norc: bash ignores --rcfile whenever --norc is set, which would
-// leave the shell unconfigured. The system bashrc (/etc/bash.bashrc on
-// Debian and Ubuntu) lies outside the home and is still read; the launcher
-// exports GuardVar with its own pid, which bash keeps across exec, so the
-// bashrc hook lets this bash continue to the rcfile instead of replacing it
-// again. It also exports SessionVar (see BashrcHook). It is the user's login
-// shell and the image CMD for the bash case, and the target of the shell
-// hooks; "$@" forwards any arguments (for example -i or a -c command) to bash.
+// leave the shell unconfigured. It is the user's login shell and the image
+// CMD for the bash case, and the target of the shell hooks. "$@" forwards
+// the arguments (for example -i or a -c command) without -l and --login: a
+// login bash reads no rcfile, so the curated configuration would be lost,
+// and an interactive login bash runs the workspace ~/.bash_logout on exit
+// (see shOptionFilter).
+//
+// The system bashrc (/etc/bash.bashrc on Debian and Ubuntu) lies outside the
+// home and is still read by an interactive bash; the bashrc hook there
+// recognizes the launcher's bash by GuardVar, its own pid, which bash keeps
+// across exec, and lets it continue to the rcfile instead of replacing it
+// again. The guard is exported only when the bash will be interactive (bash's
+// own rule: -i, or neither -c nor a script operand with stdin and stderr on a
+// terminal), because only that bash reads the hook that unsets it. A
+// non-interactive bash would pass the guard on to every descendant, and an
+// exec chain from its command that ends in an interactive bash keeps the pid,
+// so that bash would be waved through to the workspace ~/.bashrc. The
+// launcher also exports SessionVar (see BashrcHook).
 func LoginLauncher(rcfile string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: bash under the OpenShell home overmount must never\n" +
 		"# read a startup file from the workspace home. Launch bash with no profile\n" +
 		"# files and the baked rcfile in place of the home .bashrc.\n" +
-		GuardVar + "=$$\n" +
 		SessionVar + "=1\n" +
-		"export " + GuardVar + " " + SessionVar + "\n" +
+		"export " + SessionVar + "\n" +
+		shOptionFilter +
+		guardExport +
 		"exec bash --noprofile --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
 }
+
+// guardExport is the launcher block that exports GuardVar for an interactive
+// bash and removes it (also an inherited value) for any other, using the
+// flags shOptionFilter recorded. bash itself decides interactivity the same
+// way: -i, or no -c and no operand (unless -s) with stdin and stderr both
+// terminals.
+const guardExport = `# Export the pid guard only for a bash that will be interactive: only that
+# bash reads the system bashrc, whose hook unsets the guard again. Any other
+# bash would pass it on to every descendant.
+if [ -n "$_sandcast_i" ] || { [ -z "$_sandcast_c" ] && { [ -n "$_sandcast_s" ] || [ -z "$_sandcast_arg" ]; } && [ -t 0 ] && [ -t 2 ]; }; then
+  ` + GuardVar + `=$$
+  export ` + GuardVar + `
+else
+  unset ` + GuardVar + `
+fi
+`
 
 // ShLoginLauncher returns the POSIX sh fallback launcher used when the login
 // shell is neither zsh nor bash. A POSIX login shell reads $HOME/.profile, and
@@ -107,16 +135,20 @@ func ShLoginLauncher(profile string) string {
 
 // shOptionFilter rewrites the positional parameters without the login
 // options: --login, -l, and an l inside an option cluster (-lc becomes -c,
-// -il becomes -i). It scans options the way sh does: up to "--", "-" or the
-// first operand (the -c command string or a script name); everything from
-// there on, including a "-l" passed as an argument to the command, is kept.
-// The argument of -o, +o, -O and +O is kept as is, and long options other
-// than --login (bash's --noprofile, for one) are not touched. It uses only
-// shell builtins.
+// -il becomes -i). It scans options the way sh and bash do: up to "--", "-"
+// or the first operand (the -c command string or a script name); everything
+// from there on, including a "-l" passed as an argument to the command, is
+// kept. The argument of -o, +o, -O, +O, --rcfile and --init-file is kept as
+// is, and long options other than --login (bash's --noprofile, for one) are
+// not touched. While scanning it records whether -i, -c and -s were given
+// and whether an operand followed the options (_sandcast_i, _sandcast_c,
+// _sandcast_s, _sandcast_arg), which the bash launcher's guard needs. It
+// uses only shell builtins.
 const shOptionFilter = `# Drop -l and --login (also inside a cluster such as -lc) from the options
 # before the command string, script name or "--", so the shell never becomes
-# a login shell. Arguments from there on are kept as they are.
-_sandcast_opts=1 _sandcast_oarg=
+# a login shell. Arguments from there on are kept as they are. The scan also
+# records -i, -c, -s and whether an operand was given.
+_sandcast_opts=1 _sandcast_oarg= _sandcast_i= _sandcast_c= _sandcast_s= _sandcast_arg=
 for _sandcast_a do
   shift
   if [ -n "$_sandcast_oarg" ]; then
@@ -125,6 +157,7 @@ for _sandcast_a do
     case $_sandcast_a in
     --login) continue ;;
     -- | -) _sandcast_opts= ;;
+    --rcfile | --init-file) _sandcast_oarg=1 ;;
     --*) ;;
     [-+]o | [-+]O) _sandcast_oarg=1 ;;
     -*)
@@ -134,14 +167,19 @@ for _sandcast_a do
         *) break ;;
         esac
       done
+      case $_sandcast_a in -*i*) _sandcast_i=1 ;; esac
+      case $_sandcast_a in -*c*) _sandcast_c=1 ;; esac
+      case $_sandcast_a in -*s*) _sandcast_s=1 ;; esac
       case $_sandcast_a in
       -) continue ;;
       *[oO]) _sandcast_oarg=1 ;;
       esac
       ;;
     +*) case $_sandcast_a in *[oO]) _sandcast_oarg=1 ;; esac ;;
-    *) _sandcast_opts= ;;
+    *) _sandcast_opts= _sandcast_arg=1 ;;
     esac
+  else
+    _sandcast_arg=1
   fi
   set -- "$@" "$_sandcast_a"
 done

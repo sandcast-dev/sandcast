@@ -45,11 +45,145 @@ func TestLoginLauncher(t *testing.T) {
 	assert.Contains(t, got, "--rcfile /opt/sandcast/bashrc")
 	assert.Contains(t, got, `"$@"`, "forwards arguments")
 	assert.Contains(t, got, "SANDCAST_SHELL_PID=$$\n", "the bashrc hook recognizes this bash by its pid")
-	assert.Contains(t, got, "export SANDCAST_SHELL_PID SANDCAST_SESSION\n")
+	assert.Contains(t, got, "export SANDCAST_SHELL_PID\n")
+	assert.Contains(t, got, "unset SANDCAST_SHELL_PID\n", "a non-interactive bash gets no guard")
+	assert.Contains(t, got, "export SANDCAST_SESSION\n")
 	assert.Contains(t, got, "exec bash")
+	assert.Contains(t, got, "--login) continue ;;", "the login options are filtered")
 	// The launcher must be runnable: a POSIX shell parses it without error.
 	if sh, err := exec.LookPath("sh"); err == nil {
 		require.NoError(t, exec.Command(sh, "-n", "-c", got).Run(), "launcher is valid sh")
+	}
+}
+
+// launcherHome returns a temp home with planted startup and logout files that
+// each print a PWNED marker, so a test can assert none of them ran.
+func launcherHome(t *testing.T, dir string) string {
+	t.Helper()
+	home := filepath.Join(dir, "home")
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	for _, f := range []string{".bashrc", ".bash_profile", ".bash_login", ".profile", ".bash_logout"} {
+		require.NoError(t, os.WriteFile(filepath.Join(home, f), []byte("echo PWNED-"+f+"\n"), 0o644))
+	}
+	return home
+}
+
+// TestLoginLauncherDropsLogin runs the bash launcher with -l, --login and
+// -ilc (an editor's environment probe, su -l, a tmux default-command) and a
+// planted $HOME/.bash_logout. A login bash never reads --rcfile, so the
+// curated configuration would be lost, and an interactive login bash runs
+// the workspace ~/.bash_logout on exit. The launcher drops the login options
+// so bash stays a non-login shell with the baked rcfile; arguments after the
+// command string are the command's own and are kept.
+func TestLoginLauncherDropsLogin(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	home := launcherHome(t, dir)
+	rc := filepath.Join(dir, "bashrc")
+	require.NoError(t, os.WriteFile(rc, []byte("alias myll='ls -l'\n"), 0o644))
+	launcher := filepath.Join(dir, "shell-login")
+	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc)), 0o755))
+
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"-l", "-i", "-c", "alias myll; echo CMD"}, []string{"myll='ls -l'", "CMD"}},
+		{[]string{"-ilc", "alias myll; echo CMD"}, []string{"myll='ls -l'", "CMD"}},
+		{[]string{"--login", "-i", "-c", "alias myll; echo CMD"}, []string{"myll='ls -l'", "CMD"}},
+		{[]string{"-o", "noglob", "-l", "-ic", "alias myll; echo CMD"}, []string{"myll='ls -l'", "CMD"}},
+		{[]string{"-i", "-c", `echo "ARGS $0 $1"`, "-l", "--login"}, []string{"ARGS -l --login"}},
+		{[]string{"-lc", "echo LC; exit 7"}, nil},
+	} {
+		cmd := exec.Command(sh, append([]string{launcher}, tc.args...)...)
+		cmd.Env = []string{"HOME=" + home, "PATH=" + filepath.Dir(bash) + ":/usr/bin:/bin", "TERM=dumb"}
+		out, err := cmd.CombinedOutput()
+		assert.NotContains(t, string(out), "PWNED", "%v: no $HOME startup or logout file runs: %s", tc.args, out)
+		for _, w := range tc.want {
+			assert.Contains(t, string(out), w, "%v: %s", tc.args, out)
+		}
+		if tc.want == nil {
+			var ee *exec.ExitError
+			require.ErrorAs(t, err, &ee, "%v", tc.args)
+			assert.Equal(t, 7, ee.ExitCode(), "%v: the exit status is kept", tc.args)
+			assert.Contains(t, string(out), "LC", "%v: %s", tc.args, out)
+		}
+	}
+}
+
+// TestLoginLauncherGuardForInteractiveOnly checks the launcher exports the
+// pid guard only for a bash that will be interactive (-i, or no -c and no
+// script operand on a terminal) and removes it, an inherited value included,
+// for every other form: -c, a script, -s or no operand with stdin piped. A
+// guard that a non-interactive bash passes on would wave a later interactive
+// bash with the same pid past the bashrc hook into the workspace ~/.bashrc.
+func TestLoginLauncherGuardForInteractiveOnly(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	home := launcherHome(t, dir)
+	rc := filepath.Join(dir, "bashrc")
+	require.NoError(t, os.WriteFile(rc, []byte(""), 0o644))
+	launcher := filepath.Join(dir, "shell-login")
+	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc)), 0o755))
+	const probe = `echo "GUARD=${SANDCAST_SHELL_PID-unset} PID=$$"`
+	script := filepath.Join(dir, "probe.sh")
+	require.NoError(t, os.WriteFile(script, []byte(probe+"\n"), 0o644))
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+		// guarded means the guard names the bash itself.
+		guarded bool
+	}{
+		{"-i -c", []string{"-i", "-c", probe}, "", true},
+		{"-ic", []string{"-ic", probe}, "", true},
+		{"-i after --rcfile", []string{"--rcfile", rc, "-i", "-c", probe}, "", true},
+		{"-c", []string{"-c", probe}, "", false},
+		{"-lc", []string{"-lc", probe}, "", false},
+		{"script operand", []string{script}, "", false},
+		{"-- script", []string{"--", script}, "", false},
+		{"-s piped", []string{"-s"}, probe + "\n", false},
+		{"no operand piped", nil, probe + "\n", false},
+	} {
+		cmd := exec.Command(sh, append([]string{launcher}, tc.args...)...)
+		// An inherited guard must be removed too.
+		cmd.Env = []string{"HOME=" + home, "PATH=" + filepath.Dir(bash) + ":/usr/bin:/bin", "TERM=dumb", "SANDCAST_SHELL_PID=999999"}
+		if tc.stdin != "" {
+			cmd.Stdin = strings.NewReader(tc.stdin)
+		}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", tc.name, out)
+		assert.NotContains(t, string(out), "PWNED", "%s: %s", tc.name, out)
+		line := ""
+		for _, l := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(l, "GUARD=") {
+				line = l
+			}
+		}
+		require.NotEmpty(t, line, "%s: the probe ran: %s", tc.name, out)
+		f := strings.Fields(line)
+		require.Len(t, f, 2, line)
+		guard, pid := strings.TrimPrefix(f[0], "GUARD="), strings.TrimPrefix(f[1], "PID=")
+		if tc.guarded {
+			assert.Equal(t, pid, guard, "%s: the guard names the launcher's own bash", tc.name)
+		} else {
+			assert.Equal(t, "unset", guard, "%s: a non-interactive bash gets no guard", tc.name)
+		}
 	}
 }
 

@@ -106,6 +106,10 @@ $E /bin/sh -lc 'exit 6'; echo "OUT sh-lc rc=$?"
 report sh-lc
 env -i SSH_CLIENT='192.0.2.1 1 22' HOME=/sandbox PATH=/usr/bin:/bin /bin/bash -c 'echo SSH-OK' | sed 's/^/OUT ssh /'
 report ssh
+if [ -x /opt/sandcast/shell-login ]; then
+  printf 'echo "GUARD=[${SANDCAST_SHELL_PID-unset}]"; alias myll; exit\n' | script -qec "$E /opt/sandcast/shell-login -c 'exec bash -i'" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT launcher-c /'
+  report launcher-c
+fi
 `
 
 // assertOpenShellSpawns runs openShellSpawnScript in image with the planted
@@ -114,7 +118,8 @@ report ssh
 // logout file runs (FR-002, SC-002), the curated configuration is active in
 // interactive sessions (FR-001), and commands keep their output, arguments
 // and exit status. alias is how the shell prints the curated alias; zdotdir
-// is the expected ZDOTDIR in interactive sessions ("" for bash).
+// is the expected ZDOTDIR in interactive sessions ("" for bash, which also
+// selects the launcher cases: a bash image has /opt/sandcast/shell-login).
 func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -139,7 +144,11 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
-	for _, c := range []string{"pty-i", "lc", "c", "pty-l", "pipe-l", "nested", "sh-lc", "ssh"} {
+	cases := []string{"pty-i", "lc", "c", "pty-l", "pipe-l", "nested", "sh-lc", "ssh"}
+	if zdotdir == "" {
+		cases = append(cases, "launcher-c")
+	}
+	for _, c := range cases {
 		require.Contains(t, results, c, "case %s ran", c)
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
 	}
@@ -158,6 +167,13 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	has("sh-lc", "SH-HOME=/sandbox")
 	has("sh-lc", "rc=6")
 	has("ssh", "SSH-OK")
+	if zdotdir == "" {
+		// A non-interactive launcher run exports no pid guard, so an
+		// interactive bash its command execs (same pid) is not waved past
+		// the bashrc hook: it goes through the launcher and gets the rcfile.
+		has("launcher-c", "GUARD=[unset]")
+		has("launcher-c", alias)
+	}
 }
 
 // TestOvermountZshSurvives covers quickstart scenarios 1, 2 and 3 for zsh: the
