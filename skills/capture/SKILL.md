@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.2
+sandcast_version: 0.1.3
 ---
 
 # sandcast capture
@@ -262,9 +262,16 @@ The image baked configuration must survive the OpenShell home overmount: at runt
 
 `sandcast components match` reports the host dotfiles from a bounded allowlist under `dotfiles` in its JSON (git, the prompt tool, tmux and readline basics; the shell configuration is already handled in Step 4, so it is not repeated here). Present them with a multi-select, exactly as you do for MCP servers and plugins, and let the user confirm which to bake. Add nothing the user did not confirm.
 
-The user may also name dotfiles the allowlist omits. Accept any path they give and record it as an explicit entry. A path that does not exist at build time is reported and skipped, never fatal.
+The user may also name dotfiles the allowlist omits, within these bounds, which sandcast enforces at plan time:
 
-Record the confirmed entries under `dotfiles` in the manifest as a list of `{path: ...}` entries. A `~/`-prefixed or home-relative path resolves against the host home; a project-relative or absolute path is taken as given. Record only the source path, never the contents: sandcast reads the file at build time, redacts any credential shape, and bakes it to a persistent location outside the home (for example `/etc/gitconfig` or `/opt/sandcast/xdg/...`). Do not add a relocation target by hand; the plan chooses it.
+- From the home, only allowlist entries and files under `~/.config` (for example `~/.config/ghostty/config`). Use `~/`, never `~user/`.
+- Any project-relative path inside the project. An absolute path only when it lies inside the project.
+- Never a credential store (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh`), `.netrc`, a history file, or a file whose name looks like a key, token, secret or certificate. Do not propose these, and tell the user why when they ask for one.
+- Only regular files up to 256 KiB.
+
+For a file outside these bounds, suggest copying it into the project and listing the project-relative path. sandcast skips an entry outside the bounds, or one that does not exist at build time, with a notice; it never fails the build.
+
+Record the confirmed entries under `dotfiles` in the manifest as a list of `{path: ...}` entries. A `~/` path resolves against the host home; a project-relative path resolves against the project root and must stay inside it. Record only the source path, never the contents: sandcast reads the file at build time, redacts any credential shape, and bakes it to a persistent location outside the home (for example `/etc/gitconfig` or `/opt/sandcast/xdg/...`). Do not add a relocation target by hand; the plan chooses it.
 
 ## Step 6: Write the components and harnesses, then validate
 

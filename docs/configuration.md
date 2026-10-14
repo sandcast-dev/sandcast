@@ -84,9 +84,11 @@ See the [build guide](guides/build.md#the-home-model-and-shell-initialization) f
 
 Non-shell home dotfiles to bake into the image. Capture proposes a bounded host-home allowlist (git, the prompt tool, tmux and readline basics) and you may add explicit paths. Each entry records only a source path; its contents are read at build time, passed through credential redaction, and baked to a persistent location outside the home.
 
+The sources are bounded because a manifest is committed with the project: a manifest in a project you did not write must not be able to pull your credentials into an image. There is deliberately no option to widen the bounds. Copy a file into the project to bake one that lives elsewhere.
+
 | Field | Type | Rules |
 |-------|------|-------|
-| `path` | string | Required. The host source. A `~`-prefixed or home-relative path resolves against the host home; a project-relative or absolute path is taken as given. A path that does not exist at build time is reported and skipped, never fatal. |
+| `path` | string | Required. The host source. A `~/` path resolves against the host home and must be a dotfile allowlist entry (`.gitconfig`, `.config/git/config`, `.config/starship.toml`, `.tmux.conf`, `.inputrc`) or a file under `~/.config`. A project-relative path resolves against the project root and must stay inside it, and an absolute path is accepted only when it resolves inside the project. `~user` paths are not supported. Credential stores (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `.config/gh`), `.netrc`, history files and credential-looking names are refused, both as written and after following symlinks, and only regular files of at most 256 KiB are read. An entry outside these bounds, missing, or unreadable is reported and skipped, never fatal. |
 
 The plan chooses the relocation target per dotfile (there is no override in v1): git goes to `/etc/gitconfig`, starship to `/opt/sandcast/xdg/starship.toml` with `STARSHIP_CONFIG`, tmux under `/opt/sandcast/xdg` with `XDG_CONFIG_HOME`, readline to `/opt/sandcast/inputrc` with `INPUTRC`, and anything else under the `XDG_CONFIG_HOME` tree. When two entries resolve to the same target, the explicit manifest path wins over an allowlist proposal, deterministically, and the plan reports the resolution. No credential value is ever written: a detected credential becomes a `${SANDCAST_SECRET_N}` placeholder.
 

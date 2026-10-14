@@ -14,8 +14,9 @@ import (
 )
 
 // zshOvermountManifest builds a zsh image with a baked alias and two dotfiles
-// (git and tmux). The dotfile sources are absolute paths the test writes, so
-// the run is deterministic and never reads the developer's real home.
+// (git and tmux). The dotfile sources are project-relative files the test
+// writes (dotfile sources must stay inside the home bounds or the project),
+// so the run is deterministic and never reads the developer's real home.
 func zshOvermountManifest(image, gitconfig, tmuxconf string) string {
 	return `schema_version: 1
 name: sc-overmount
@@ -169,13 +170,10 @@ func TestOvermountZshSurvives(t *testing.T) {
 	image := repo + ":latest"
 	removeImages(t, engine, image)
 
-	src := t.TempDir()
-	gitconfig := filepath.Join(src, ".gitconfig")
-	require.NoError(t, os.WriteFile(gitconfig, []byte("[user]\n\temail = captured@example.com\n"), 0o644))
-	tmuxconf := filepath.Join(src, ".tmux.conf")
-	require.NoError(t, os.WriteFile(tmuxconf, []byte("set -g history-limit 99999\n"), 0o644))
-
-	dir := project(t, zshOvermountManifest(repo, gitconfig, tmuxconf))
+	dir := project(t, zshOvermountManifest(repo, "dotfiles-src/.gitconfig", "dotfiles-src/.tmux.conf"))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "dotfiles-src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".gitconfig"), []byte("[user]\n\temail = captured@example.com\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".tmux.conf"), []byte("set -g history-limit 99999\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)

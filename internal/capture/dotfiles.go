@@ -19,6 +19,48 @@ var DotfileAllowlist = []string{
 	".inputrc",
 }
 
+// HomeDotfileAllowed reports whether a home-relative dotfile path (slash
+// separated, without the "~/" prefix) may be baked: an allowlist entry or a
+// file under ~/.config. Anything else in the host home (credential stores,
+// shell history, documents) is never read, whatever a committed manifest
+// lists (spec 003 R6, FR-007). The path is cleaned first, so ".." cannot
+// leave ~/.config.
+func HomeDotfileAllowed(rel string) bool {
+	rel = path.Clean(rel)
+	if IsAllowlisted(rel) {
+		return true
+	}
+	return strings.HasPrefix(rel, ".config/")
+}
+
+// deniedDirs are home or project directories that hold credentials; no file
+// below them is ever baked.
+var deniedDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config/gh"}
+
+// DotfileDenied reports why a dotfile path (slash separated, relative to the
+// home or the project) must never be baked, or "" when it may: a credential
+// store directory (.ssh, .aws, .gnupg, .kube, .docker, .config/gh), .netrc,
+// a shell or tool history file (*_history), or a credential-looking name.
+// It is applied to the path as written and to the path it resolves to.
+func DotfileDenied(rel string) string {
+	rel = path.Clean(rel)
+	for _, d := range deniedDirs {
+		if rel == d || strings.HasPrefix(rel, d+"/") || strings.Contains(rel, "/"+d+"/") {
+			return "it is in the credential store " + d
+		}
+	}
+	base := strings.ToLower(path.Base(rel))
+	switch {
+	case base == ".netrc" || base == "_netrc":
+		return "it is a credential file (.netrc)"
+	case strings.HasSuffix(base, "_history") || strings.HasSuffix(base, "history"):
+		return "it is a history file"
+	case isCredentialName(rel):
+		return "its name looks like a credential file"
+	}
+	return ""
+}
+
 // DotfileProposal is one host dotfile capture found and offers to bake.
 type DotfileProposal struct {
 	// Path is the "~/"-prefixed source path written into the manifest.

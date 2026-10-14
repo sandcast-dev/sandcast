@@ -8,8 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -379,83 +381,124 @@ func writePlan(env Env, planned *Planned) error {
 	return plan.WriteOutputs(planned.Dir, planned.Plan, planned.LockData)
 }
 
+// maxDotfileSize caps a dotfile read from the host. Dotfiles are small
+// configuration files; the cap keeps a huge file or a device out of plan.yaml.
+const maxDotfileSize = 256 << 10
+
 // dotfileInputs reads the manifest's dotfiles from the host for the plan to
-// redact and relocate (spec 003 US3). A "~"-prefixed or home-relative path
-// resolves against the host home, a project-relative path against the project
-// root, and an absolute path as is. A path that does not exist, or a
-// home-relative symlink that leaves the home, is reported and skipped rather
-// than failing the plan (spec Edge Cases, R6). Contents are redacted later in
+// redact and relocate (spec 003 US3). A committed manifest in an untrusted
+// project must not be able to pull host secrets into the image, so the
+// sources are bounded (readDotfile); an entry outside the bounds, missing,
+// unreadable or not a regular file is reported and skipped rather than
+// failing the plan (spec Edge Cases, R6). Contents are redacted later in
 // plan.Build.
 func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string) {
 	var out []plan.DotfileInput
 	var notices []string
 	for _, d := range m.Dotfiles {
-		homeRel := strings.HasPrefix(d.Path, "~")
-		projRel := isProjectRelative(d.Path)
-		src, ok := resolveDotfilePath(env, d.Path)
-		if !ok {
-			notices = append(notices, fmt.Sprintf("dotfile %s could not be resolved (no home or project directory); skipped", d.Path))
-			continue
-		}
-		real, err := filepath.EvalSymlinks(src)
+		content, err := readDotfile(env, d.Path)
 		if err != nil {
-			notices = append(notices, fmt.Sprintf("dotfile %s does not exist on this host; skipped", d.Path))
-			continue
-		}
-		// Containment: a home-relative dotfile must stay under the home and a
-		// project-relative one under the project root, so a symlink cannot pull
-		// file content from outside into the image. This matches the skill-copy
-		// safety rule (R6, spec Edge Cases). An absolute path is taken as given.
-		switch {
-		case homeRel && env.Home != "":
-			if realHome, herr := filepath.EvalSymlinks(env.Home); herr == nil && !withinDir(realHome, real) {
-				notices = append(notices, fmt.Sprintf("dotfile %s resolves to %s outside the home; skipped", d.Path, real))
-				continue
-			}
-		case projRel && env.Layout.Root != "":
-			if realRoot, rerr := filepath.EvalSymlinks(env.Layout.Root); rerr == nil && !withinDir(realRoot, real) {
-				notices = append(notices, fmt.Sprintf("dotfile %s resolves to %s outside the project; skipped", d.Path, real))
-				continue
-			}
-		}
-		data, err := os.ReadFile(real)
-		if err != nil {
-			notices = append(notices, fmt.Sprintf("dotfile %s could not be read (%v); skipped", d.Path, err))
+			notices = append(notices, fmt.Sprintf("dotfile %s %v; skipped", d.Path, err))
 			continue
 		}
 		out = append(out, plan.DotfileInput{
 			HostPath:      d.Path,
-			Content:       string(data),
+			Content:       content,
 			FromAllowlist: capture.IsAllowlisted(d.Path),
 		})
 	}
 	return out, notices
 }
 
-// isProjectRelative reports a path that is neither "~"-prefixed nor absolute,
-// i.e. one resolved against the project root.
-func isProjectRelative(p string) bool {
-	return !strings.HasPrefix(p, "~") && !filepath.IsAbs(p)
+// readDotfile resolves one manifest dotfile and reads it within these bounds,
+// failing closed:
+//
+//   - A "~/" path must be a dotfile allowlist entry or a file under ~/.config
+//     and must resolve inside the home.
+//   - A project-relative or absolute path must resolve inside the project.
+//   - Neither the path as written nor the path it resolves to may name a
+//     credential store, .netrc, a history file or a credential-looking file.
+//   - The file must be a regular file of at most maxDotfileSize bytes.
+//
+// An error that the home or project directory, or the entry itself, cannot
+// be resolved skips the entry; a missing file is told apart from other
+// errors. The error text completes "dotfile <path> ...".
+func readDotfile(env Env, p string) (string, error) {
+	kind, src, err := fsutil.ResolveHostPath(p, env.Home, env.Layout.Root)
+	if err != nil {
+		return "", fmt.Errorf("could not be resolved (%w)", err)
+	}
+	root, rootName := env.Layout.Root, "project"
+	if kind == fsutil.HostPathHome {
+		rel := path.Clean(strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
+		if !capture.HomeDotfileAllowed(rel) {
+			return "", errors.New("is not baked: from the home, only the dotfile allowlist and ~/.config are read")
+		}
+		root, rootName = env.Home, "home"
+	}
+	if root == "" {
+		return "", fmt.Errorf("could not be resolved (the %s directory is unknown)", rootName)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("could not be checked: the %s directory %s cannot be resolved (%w)", rootName, root, err)
+	}
+	real, err := filepath.EvalSymlinks(src)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", errors.New("does not exist on this host")
+	case err != nil:
+		return "", fmt.Errorf("could not be resolved (%w)", err)
+	}
+	if !withinDir(realRoot, real) {
+		return "", fmt.Errorf("resolves to %s outside the %s", real, rootName)
+	}
+	// The path as written (cleaned by ResolveHostPath), relative to the
+	// directory it names, and the resolved path, relative to the resolved
+	// directory.
+	for _, c := range []struct{ base, p string }{{root, src}, {realRoot, real}} {
+		rel, rerr := filepath.Rel(c.base, c.p)
+		if rerr != nil {
+			continue
+		}
+		if why := capture.DotfileDenied(filepath.ToSlash(rel)); why != "" {
+			return "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
+		}
+	}
+	return readRegularFile(real)
 }
 
-// resolveDotfilePath resolves a manifest dotfile path against the home, the
-// project or as an absolute path. It returns false when a needed directory is
-// unknown.
-func resolveDotfilePath(env Env, p string) (string, bool) {
-	switch {
-	case p == "~" || strings.HasPrefix(p, "~/"):
-		if env.Home == "" {
-			return "", false
-		}
-		return filepath.Join(env.Home, strings.TrimPrefix(p, "~")), true
-	case filepath.IsAbs(p):
-		return filepath.Clean(p), true
-	default:
-		if env.Layout.Root == "" {
-			return "", false
-		}
-		return filepath.Join(env.Layout.Root, p), true
+// readRegularFile reads a regular file of at most maxDotfileSize bytes. It
+// checks the type before opening, so a FIFO cannot block the plan, and again
+// on the open file, so a swap in between is caught.
+func readRegularFile(name string) (string, error) {
+	fi, err := os.Stat(name)
+	if err != nil {
+		return "", fmt.Errorf("could not be read (%w)", err)
 	}
+	if !fi.Mode().IsRegular() {
+		return "", errors.New("is not a regular file")
+	}
+	if fi.Size() > maxDotfileSize {
+		return "", fmt.Errorf("is larger than %d KiB", maxDotfileSize>>10)
+	}
+	f, err := os.Open(name)
+	if err != nil {
+		return "", fmt.Errorf("could not be read (%w)", err)
+	}
+	defer func() { _ = f.Close() }()
+	ofi, err := f.Stat()
+	if err != nil || !ofi.Mode().IsRegular() || !os.SameFile(fi, ofi) {
+		return "", errors.New("changed while it was read")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxDotfileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("could not be read (%w)", err)
+	}
+	if len(data) > maxDotfileSize {
+		return "", fmt.Errorf("is larger than %d KiB", maxDotfileSize>>10)
+	}
+	return string(data), nil
 }
 
 // withinDir reports whether p is root itself or below it.

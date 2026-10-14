@@ -52,9 +52,15 @@ type Manifest struct {
 // records only the source path, never contents: contents are redacted when
 // the plan bakes them (FR-007).
 type Dotfile struct {
-	// Path is the host source. A "~"-prefixed or home-relative path resolves
-	// against the host home; a project-relative or absolute path is taken as
-	// given. The relocation target is chosen by the plan (no override in v1).
+	// Path is the host source. A "~/" path resolves against the host home
+	// and must be a dotfile allowlist entry or a file under ~/.config; a
+	// project-relative path resolves against the project root and must stay
+	// inside it; an absolute path is accepted only when it resolves inside
+	// the project. Credential stores, .netrc, history files and
+	// credential-looking names are refused, and only regular files up to
+	// 256 KiB are read. An entry outside these bounds is skipped with a
+	// notice. The relocation target is chosen by the plan (no override in
+	// v1).
 	Path string `yaml:"path" json:"path"`
 }
 

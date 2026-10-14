@@ -3,7 +3,10 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,7 +61,7 @@ func TestDotfileInputsAllowlistAndExplicit(t *testing.T) {
 // (spec 003 Edge Cases).
 func TestDotfileInputsMissingSkipped(t *testing.T) {
 	home := t.TempDir()
-	out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.does-not-exist"))
+	out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.config/does-not-exist"))
 	assert.Empty(t, out)
 	require.Len(t, notices, 1)
 	assert.Contains(t, notices[0], "does not exist")
@@ -116,4 +119,116 @@ func TestDotfileInputsProjectRelativeInsideKept(t *testing.T) {
 	assert.Equal(t, "sub/tool.conf", out[0].HostPath)
 	assert.False(t, out[0].FromAllowlist)
 	assert.Equal(t, "ok\n", out[0].Content)
+}
+
+// skippedWith asserts that dotfileInputs bakes nothing for paths and reports
+// one notice per path containing want.
+func skippedWith(t *testing.T, env Env, want string, paths ...string) {
+	t.Helper()
+	out, notices := dotfileInputs(env, mdotfiles(paths...))
+	assert.Empty(t, out, "nothing is baked for %v", paths)
+	require.Len(t, notices, len(paths), "%v", notices)
+	for _, n := range notices {
+		assert.Contains(t, n, want)
+	}
+}
+
+// TestDotfileInputsHomeBounded checks a committed manifest cannot pull host
+// secrets into the image: a home-relative dotfile must be an allowlist entry
+// or a file under ~/.config, and credential stores and history files are
+// refused even there (FINDING-22).
+func TestDotfileInputsHomeBounded(t *testing.T) {
+	home := t.TempDir()
+	for _, f := range []string{".aws/credentials", ".netrc", ".kube/config", ".docker/config.json", ".ssh/config", ".bash_history", "notes.txt"} {
+		writeFile(t, filepath.Join(home, f), "secret\n")
+	}
+	env := dotfileEnv(home, t.TempDir())
+	skippedWith(t, env, "only the dotfile allowlist and ~/.config", "~/.aws/credentials", "~/.netrc", "~/.kube/config", "~/.docker/config.json", "~/.ssh/config", "~/.bash_history", "~/notes.txt", "~/.config/../.ssh/config")
+
+	for _, f := range []string{".config/gh/hosts.yml", ".config/tool/api_token", ".config/foo/.zsh_history", ".config/app/server.pem"} {
+		writeFile(t, filepath.Join(home, f), "secret\n")
+	}
+	skippedWith(t, env, "credential", "~/.config/gh/hosts.yml", "~/.config/tool/api_token", "~/.config/foo/.zsh_history", "~/.config/app/server.pem")
+
+	writeFile(t, filepath.Join(home, ".config", "tool", "settings.toml"), "theme = dark\n")
+	out, notices := dotfileInputs(env, mdotfiles("~/.config/tool/settings.toml"))
+	require.Empty(t, notices)
+	require.Len(t, out, 1)
+	assert.Equal(t, "theme = dark\n", out[0].Content)
+}
+
+// TestDotfileInputsHomeSymlinkToCredentialSkipped checks the denylist also
+// applies to the resolved path: an allowed name that links to a credential
+// store inside the home is refused.
+func TestDotfileInputsHomeSymlinkToCredentialSkipped(t *testing.T) {
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".ssh", "config"), "Host x\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".config"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "config"), filepath.Join(home, ".config", "innocent.conf")))
+	skippedWith(t, dotfileEnv(home, t.TempDir()), "credential", "~/.config/innocent.conf")
+}
+
+// TestDotfileInputsAbsoluteOutsideProjectSkipped checks an absolute path is
+// baked only when it resolves inside the project.
+func TestDotfileInputsAbsoluteOutsideProjectSkipped(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "hosts")
+	writeFile(t, outside, "127.0.0.1 localhost\n")
+	skippedWith(t, dotfileEnv(t.TempDir(), t.TempDir()), "outside the project", outside)
+}
+
+// TestDotfileInputsProjectCredentialSkipped checks the denylist covers
+// project files too.
+func TestDotfileInputsProjectCredentialSkipped(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".aws", "credentials"), "k\n")
+	writeFile(t, filepath.Join(root, "conf", "deploy.key"), "k\n")
+	skippedWith(t, dotfileEnv(t.TempDir(), root), "credential", ".aws/credentials", "conf/deploy.key")
+}
+
+// TestDotfileInputsTildeUserSkipped checks "~user" forms are refused rather
+// than resolved one way and checked another (FINDING-23).
+func TestDotfileInputsTildeUserSkipped(t *testing.T) {
+	skippedWith(t, dotfileEnv(t.TempDir(), t.TempDir()), "only ~/ names the home", "~root/.gitconfig")
+}
+
+// TestDotfileInputsNotRegularOrTooLargeSkipped checks only regular files up
+// to the size cap are read: a FIFO would block the plan forever and a huge
+// file would be embedded in plan.yaml (FINDING-25).
+func TestDotfileInputsNotRegularOrTooLargeSkipped(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "pipe.conf"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "dir.conf"), 0o755))
+	writeFile(t, filepath.Join(root, "big.conf"), strings.Repeat("x", maxDotfileSize+1))
+	writeFile(t, filepath.Join(root, "ok.conf"), strings.Repeat("x", maxDotfileSize))
+	env := dotfileEnv(t.TempDir(), root)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		skippedWith(t, env, "not a regular file", "pipe.conf", "dir.conf")
+		skippedWith(t, env, "larger than 256 KiB", "big.conf")
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("reading a FIFO dotfile blocked")
+	}
+	out, notices := dotfileInputs(env, mdotfiles("ok.conf"))
+	require.Empty(t, notices)
+	require.Len(t, out, 1)
+}
+
+// TestDotfileInputsResolveErrorsAreDistinct checks a symlink loop is not
+// reported as a missing file (FINDING-24) and that an unresolvable home fails
+// closed.
+func TestDotfileInputsResolveErrorsAreDistinct(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.Symlink("loop.conf", filepath.Join(root, "loop.conf")))
+	out, notices := dotfileInputs(dotfileEnv(t.TempDir(), root), mdotfiles("loop.conf"))
+	assert.Empty(t, out)
+	require.Len(t, notices, 1)
+	assert.Contains(t, notices[0], "could not be resolved")
+	assert.NotContains(t, notices[0], "does not exist")
+
+	skippedWith(t, dotfileEnv(filepath.Join(t.TempDir(), "missing-home"), root), "home directory", "~/.gitconfig")
 }
