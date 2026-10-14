@@ -24,6 +24,29 @@ func QuoteIfNeeded(s string) string {
 	return Quote(s)
 }
 
+// ZshEnvExport returns the single line sandcast adds to /etc/zshenv to
+// relocate zsh's startup files out of the overmounted home. zsh reads
+// /etc/zshenv first and unconditionally, before any $HOME file, so setting
+// ZDOTDIR there means zsh never sources a workspace $HOME/.zshrc (spec 003
+// research R1, FR-002). The caller quotes the line for the Containerfile.
+func ZshEnvExport(zdotdir string) string {
+	return "export ZDOTDIR=" + zdotdir
+}
+
+// LoginLauncher returns the /opt/sandcast/shell-login script: a POSIX sh
+// launcher that execs bash with neither profile nor rc files and an explicit
+// baked rcfile, so no $HOME startup file in the mounted workspace is ever
+// sourced (spec 003 research R1, FR-002). It is the created user's login
+// shell and the image CMD for the bash case; "$@" forwards any arguments (for
+// example a -c command) to bash.
+func LoginLauncher(rcfile string) string {
+	return "#!/bin/sh\n" +
+		"# Written by sandcast: bash under the OpenShell home overmount must never\n" +
+		"# read a startup file from the workspace home. Launch bash with no profile\n" +
+		"# and no rc, and an explicit baked rcfile.\n" +
+		"exec bash --noprofile --norc --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
+}
+
 // JSONHelpers defines _jsafe, which prints its argument escaped for a JSON
 // string: backslash, double quote, tab, newline and carriage return get
 // their short escapes, other control characters become \u00XX. It also sets

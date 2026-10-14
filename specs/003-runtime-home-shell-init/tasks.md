@@ -19,13 +19,13 @@ description: "Task list for runtime home model and shell initialization"
 
 ## Phase 1: Setup
 
-- [ ] T001 Add the relocation-prefix constants (`/opt/sandcast/zdotdir`, `/opt/sandcast/xdg`, `/opt/sandcast/bashrc`, `/opt/sandcast/shell-login`, `/etc/zshenv`) and the base-image overmount-home prefix accessor in `internal/plan/plan.go` (near the existing `ZshRCPath`/`BashRCPath` constants), with doc comments referencing the spec.
+- [x] T001 Add the relocation-prefix constants (`/opt/sandcast/zdotdir`, `/opt/sandcast/xdg`, `/opt/sandcast/bashrc`, `/opt/sandcast/shell-login`, `/etc/zshenv`) and the base-image overmount-home prefix accessor in `internal/plan/plan.go` (near the existing `ZshRCPath`/`BashRCPath` constants), with doc comments referencing the spec.
 
 ## Phase 2: Foundational (blocking prerequisites)
 
-- [ ] T002 Add a `RelocationEnv` helper in `internal/plan/plan.go` that returns the deterministic, sorted relocation environment variables (`ZDOTDIR`, `XDG_CONFIG_HOME`, and per-tool vars) to emit as image `ENV`, and wire it into the plan's `ImageSetup.Env` emission so the variables are set image-wide (not only in shell rc). Reference the `CLAUDE_CONFIG_DIR` precedent in `internal/harness/claudecode/scaffold.go`.
-- [ ] T003 [P] Add a `RelocationNotice` type and a sorted notices accumulator to `internal/plan/plan.go` per `contracts/relocation-notice.md` (kind relocated|reprovisioned, subject, from, to), surfaced in the plan output.
-- [ ] T004 [P] Unit test the relocation env and notice ordering determinism in `internal/plan/plan_test.go`.
+- [x] T002 Add a `RelocationEnv` helper in `internal/plan/plan.go` that returns the deterministic, sorted relocation environment variables (`ZDOTDIR`, `XDG_CONFIG_HOME`, and per-tool vars) to emit as image `ENV`, and wire it into the plan's `ImageSetup.Env` emission so the variables are set image-wide (not only in shell rc). Reference the `CLAUDE_CONFIG_DIR` precedent in `internal/harness/claudecode/scaffold.go`.
+- [x] T003 [P] Add a `RelocationNotice` type and a sorted notices accumulator to `internal/plan/plan.go` per `contracts/relocation-notice.md` (kind relocated|reprovisioned, subject, from, to), surfaced in the plan output.
+- [x] T004 [P] Unit test the relocation env and notice ordering determinism in `internal/plan/plan_test.go`.
 
 ## Phase 3: User Story 1 - Curated shell survives the overmount (P1) 🎯 MVP
 
@@ -33,12 +33,12 @@ description: "Task list for runtime home model and shell initialization"
 
 **Independent test**: build an image, run it with a volume over `/sandbox`, open zsh and bash, confirm curated prompt/aliases/completions/env are active.
 
-- [ ] T005 [US1] Extend `internal/shell/shell.go` to render the curated zsh configuration as a `ZDOTDIR` tree (`.zshrc`, and `.zshenv`/`.zprofile` as needed) instead of only a single rc fragment, keeping the curated content identical.
-- [ ] T006 [US1] Extend `internal/shell/shell.go` to render the curated bash configuration as a standalone baked rcfile (`/opt/sandcast/bashrc`) suitable for `--rcfile`.
-- [ ] T007 [US1] In `internal/build/sections.go`, change the shell section to: write `/etc/zshenv` that sets `ZDOTDIR`; `COPY` the zdotdir tree to `/opt/sandcast/zdotdir`; bake `/opt/sandcast/bashrc`; stop appending source lines into `~/.zshrc`/`~/.bashrc` fallbacks.
-- [ ] T008 [US1] In `internal/build/sections.go` (extend the `loginShell` helper at line ~104 and the `CMD` template), bake the `/opt/sandcast/shell-login` launcher that execs `bash --noprofile --norc --rcfile /opt/sandcast/bashrc` for the bash case, set it as the created user's login shell and image `CMD`; for zsh, keep zsh as the login shell (ZDOTDIR handles relocation).
-- [ ] T009 [P] [US1] Unit test the shell rendering (zdotdir tree + bash rcfile) in `internal/shell/shell_test.go`.
-- [ ] T010 [US1] Regenerate and review the Containerfile golden files (`internal/build/testdata/Containerfile*.golden`, `internal/plan/testdata/plan.yaml.golden`) with `UPDATE_GOLDEN=1 go test ./...`; confirm only shell/ENV/launcher lines changed.
+- [x] T005 [US1] Extend `internal/shell/shell.go` to render the curated zsh configuration as a `ZDOTDIR` tree (`.zshrc`, and `.zshenv`/`.zprofile` as needed) instead of only a single rc fragment, keeping the curated content identical.
+- [x] T006 [US1] Extend `internal/shell/shell.go` to render the curated bash configuration as a standalone baked rcfile (`/opt/sandcast/bashrc`) suitable for `--rcfile`.
+- [x] T007 [US1] In `internal/build/sections.go`, change the shell section to: write `/etc/zshenv` that sets `ZDOTDIR`; `COPY` the zdotdir tree to `/opt/sandcast/zdotdir`; bake `/opt/sandcast/bashrc`; stop appending source lines into `~/.zshrc`/`~/.bashrc` fallbacks.
+- [x] T008 [US1] In `internal/build/sections.go` (extend the `loginShell` helper at line ~104 and the `CMD` template), bake the `/opt/sandcast/shell-login` launcher that execs `bash --noprofile --norc --rcfile /opt/sandcast/bashrc` for the bash case, set it as the created user's login shell and image `CMD`; for zsh, keep zsh as the login shell (ZDOTDIR handles relocation).
+- [x] T009 [P] [US1] Unit test the shell rendering (zdotdir tree + bash rcfile) in `internal/shell/shell_test.go`.
+- [x] T010 [US1] Regenerate and review the Containerfile golden files (`internal/build/testdata/Containerfile*.golden`, `internal/plan/testdata/plan.yaml.golden`) with `UPDATE_GOLDEN=1 go test ./...`; confirm only shell/ENV/launcher lines changed.
 
 **Checkpoint**: zsh and bash load baked config; US1 independently testable.
 
@@ -48,9 +48,9 @@ description: "Task list for runtime home model and shell initialization"
 
 **Independent test**: plant `~/.zshrc`/`~/.bashrc` that touch a sentinel in the workspace; open shells; confirm no sentinel.
 
-- [ ] T011 [US2] Verify and lock in that `ZDOTDIR` (zsh) and `--noprofile --norc --rcfile` via the launcher (bash) prevent sourcing any `$HOME` startup file; add explicit assertions in a build-package test (new file `internal/build/sections_test.go`, or the existing `internal/build/assemble_test.go`) that the generated bash launcher carries `--noprofile --norc` and the zsh path sets `ZDOTDIR`.
-- [ ] T012 [US2] Implement the minimal safe default for non-zsh/bash login shells in `internal/build/sections.go` / `internal/plan/plan.go`: login shell `/bin/sh`, curated env via `/etc/profile.d/sandcast.sh`, and a capture notice; add a unit test.
-- [ ] T013 [P] [US2] Unit test (in `internal/plan/plan_test.go` or the build-package test from T011) that no generated image file sources a path under the overmount home, across zsh/bash/sh.
+- [x] T011 [US2] Verify and lock in that `ZDOTDIR` (zsh) and `--noprofile --norc --rcfile` via the launcher (bash) prevent sourcing any `$HOME` startup file; add explicit assertions in a build-package test (new file `internal/build/sections_test.go`, or the existing `internal/build/assemble_test.go`) that the generated bash launcher carries `--noprofile --norc` and the zsh path sets `ZDOTDIR`.
+- [x] T012 [US2] Implement the minimal safe default for non-zsh/bash login shells in `internal/build/sections.go` / `internal/plan/plan.go`: login shell `/bin/sh`, curated env via `/etc/profile.d/sandcast.sh`, and a capture notice; add a unit test.
+- [x] T013 [P] [US2] Unit test (in `internal/plan/plan_test.go` or the build-package test from T011) that no generated image file sources a path under the overmount home, across zsh/bash/sh.
 
 **Checkpoint**: US1 + US2 together = MVP (shell init correct and safe).
 

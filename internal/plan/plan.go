@@ -17,11 +17,68 @@ import (
 	"github.com/rhuss/sandcast/internal/version"
 )
 
-// Shell configuration paths inside the image (R-10).
+// Relocation layout: every file sandcast bakes for the interactive
+// environment lives under this prefix or another /etc path, outside the
+// workspace volume that OpenShell mounts over the home. See spec 003
+// (FR-001, FR-003, FR-008) and research R1/R3.
 const (
-	ZshRCPath  = "/etc/zsh/zshrc.d/sandcast.zsh"
-	BashRCPath = "/etc/profile.d/sandcast.sh"
+	// RelocationPrefix holds all image-baked shell and dotfile configuration,
+	// outside the overmounted home.
+	RelocationPrefix = "/opt/sandcast"
+	// ZDotDir is the zsh ZDOTDIR tree. With ZDOTDIR set (in /etc/zshenv and
+	// as image ENV) zsh reads its startup files here and never from $HOME, so
+	// a workspace $HOME/.zshrc is never sourced (research R1, spec US2).
+	ZDotDir = RelocationPrefix + "/zdotdir"
+	// ZshRCPath is the curated zsh configuration, baked inside the ZDOTDIR
+	// tree rather than under /etc/zsh so it survives the overmount.
+	ZshRCPath = ZDotDir + "/.zshrc"
+	// ZshEnvPath is read by zsh first and unconditionally, before any $HOME
+	// file; sandcast sets ZDOTDIR there.
+	ZshEnvPath = "/etc/zshenv"
+	// BashRCPath is the curated bash configuration, loaded only through the
+	// baked launcher with --rcfile (bash has no ZDOTDIR equivalent).
+	BashRCPath = RelocationPrefix + "/bashrc"
+	// ShellLoginPath is the bash login launcher: it execs bash with
+	// --noprofile --norc and the baked --rcfile, so no $HOME startup file in
+	// the mounted workspace is ever sourced (research R1, spec US2).
+	ShellLoginPath = RelocationPrefix + "/shell-login"
+	// XDGConfigHome is the baked XDG_CONFIG_HOME tree for relocated dotfiles.
+	XDGConfigHome = RelocationPrefix + "/xdg"
+	// GitConfigPath is git's system configuration, read natively outside the
+	// home.
+	GitConfigPath = "/etc/gitconfig"
+	// InputRCPath is the baked readline configuration (pointed at by INPUTRC).
+	InputRCPath = RelocationPrefix + "/inputrc"
+	// ProfileScriptPath is the minimal safe default for sh logins and an env
+	// fallback (research R2, FR-011).
+	ProfileScriptPath = "/etc/profile.d/sandcast.sh"
+	// OvermountHome is the path OpenShell mounts the workspace volume over at
+	// runtime on the sandbox base images. Anything baked under it is hidden
+	// once the volume is mounted (spec US4, FR-008/FR-009). It is a property
+	// of the base image; the current base images use /sandbox.
+	OvermountHome = "/sandbox"
 )
+
+// OvermountPrefix returns the overmount home prefix for a target, or "" when
+// the target applies no sandbox mount. The container target keeps the base
+// image home and is never overmounted (FR-040), so only the OpenShell target
+// has a prefix.
+func OvermountPrefix(target string) string {
+	if target == manifest.TargetOpenShell {
+		return OvermountHome
+	}
+	return ""
+}
+
+// UnderOvermount reports whether an absolute image path would resolve under
+// the overmount home prefix (and therefore be hidden at runtime). An empty
+// prefix (no overmount) is never under it.
+func UnderOvermount(prefix, p string) bool {
+	if prefix == "" {
+		return false
+	}
+	return p == prefix || strings.HasPrefix(p, prefix+"/")
+}
 
 // LockPathRel is the committed lockfile path recorded in the plan.
 const LockPathRel = ".sandcast/mise.lock"
@@ -54,6 +111,9 @@ type Inputs struct {
 	StoredFragments map[string]StoredFragment
 	Harnesses       []Harness
 	Notices         []string
+	// Dotfiles are the non-shell dotfiles the pipeline read from the host for
+	// the plan to redact, relocate and bake (spec 003 US3).
+	Dotfiles []DotfileInput
 }
 
 // LockError reports lockfile gaps for the selected platform; plan exits 2.
@@ -120,6 +180,7 @@ func Build(in Inputs) (*Plan, error) {
 		p.BaseImage.Notes = []string{}
 	}
 
+	overmount := OvermountPrefix(in.Target)
 	var (
 		packages   []string
 		packageIdx []int
@@ -129,6 +190,9 @@ func Build(in Inputs) (*Plan, error) {
 		installed  []*component.Component
 		// fragmentDirs are the /opt/<key> trees of fragment installs.
 		fragmentDirs []string
+		// reprovisioned collects the notices for base tools found only under
+		// the overmount home (FR-009).
+		reprovisioned []RelocationNotice
 	)
 	for _, w := range in.Wanted {
 		stored, anyStored := in.StoredFragments[w.Key]
@@ -150,6 +214,19 @@ func Build(in Inputs) (*Plan, error) {
 		check, ok := in.Probe.Checks[w.Key]
 		if !ok {
 			return nil, fmt.Errorf("%w %s", ErrMissingCheck, w.Key)
+		}
+		// A base-image tool whose only copy lives under the overmount home is
+		// hidden once the workspace volume is mounted, so it is treated as not
+		// present and re-provisioned to a persistent location (FR-009, R7).
+		// The probe cache keeps the raw result; this is a pure function of the
+		// cached result plus the known overmount prefix, applied at plan time.
+		if overmount != "" && check.Status == probe.StatusPresent && UnderOvermount(overmount, check.Path) {
+			to := reprovisionTarget(w.Def)
+			reprovisioned = append(reprovisioned, RelocationNotice{
+				Kind: NoticeReprovisioned, Subject: w.Key, From: check.Path, To: to,
+			})
+			check.Status = probe.StatusMissing
+			check.Path = ""
 		}
 		entry, reason := DeltaFor(w.Def, w.Selector(), check, facts.PackageManager)
 		p.ProbeDelta = append(p.ProbeDelta, entry)
@@ -241,6 +318,48 @@ func Build(in Inputs) (*Plan, error) {
 
 	p.Image = imageSetupOf(installed)
 	mergeHarnessNeeds(&p.Image, in.Harnesses)
+
+	// Resolve the non-shell dotfiles: redact, pick a relocation target outside
+	// the home, dedup, and record one notice per dotfile (US3).
+	dotfiles, relocated, dedup, err := resolveDotfiles(in.Dotfiles, overmount)
+	if err != nil {
+		return nil, err
+	}
+	p.Dotfiles = dotfiles
+
+	// Relocation variables are set image-wide so non-shell processes read the
+	// baked configuration too (research R3).
+	mergeEnv(&p.Image, RelocationEnv(p))
+
+	// Every overmount decision is reported in the plan output and the build
+	// log, sorted by subject so rebuilds are byte-identical (FR-010, SC-005).
+	p.Relocations = append(p.Relocations, reprovisioned...)
+	p.Relocations = append(p.Relocations, relocated...)
+	sort.Slice(p.Relocations, func(i, j int) bool {
+		if p.Relocations[i].Subject != p.Relocations[j].Subject {
+			return p.Relocations[i].Subject < p.Relocations[j].Subject
+		}
+		return p.Relocations[i].Kind < p.Relocations[j].Kind
+	})
+	for _, n := range p.Relocations {
+		p.Notices = append(p.Notices, n.String())
+	}
+	p.Notices = append(p.Notices, dedup...)
+
+	// The minimal safe default: a login shell that is neither zsh nor bash
+	// gets /bin/sh with baked env, and capture (and the plan) report that the
+	// shell was not curated (FR-011, research R2).
+	if ShellKind(p) == "sh" {
+		p.Notices = append(p.Notices, fmt.Sprintf(
+			"the login shell is neither zsh nor bash; the image uses /bin/sh with a minimal baked default (%s) and the curated shell is not applied",
+			ProfileScriptPath))
+	}
+
+	// Defense in depth: nothing sandcast bakes may land under the overmount
+	// home (SC-004).
+	if err := checkOvermountGuard(p, overmount); err != nil {
+		return nil, err
+	}
 
 	profiles, err := profilesOf(installed, in.Profiles)
 	if err != nil {
@@ -414,6 +533,21 @@ func profilesOf(installed []*component.Component, set profile.Set) ([]Profile, e
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// reprovisionTarget names the persistent install location sandcast reports
+// for a base tool that was found only under the overmount home (FR-009). It
+// is the installer's natural destination so the notice points the user at a
+// real path.
+func reprovisionTarget(def *component.Component) string {
+	switch def.Kind() {
+	case component.KindMise:
+		return MiseDataDir
+	case component.KindPackage:
+		return "/usr"
+	default:
+		return OptDir(def.Key)
+	}
 }
 
 // OptDir is where the build skill tells fragments to unpack trees and

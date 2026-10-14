@@ -61,20 +61,50 @@ ENV {{env .}}
 {{- end}}
 `))
 
-var shellTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated {{.Program}} configuration
+// The shell section relocates the interactive environment out of the
+// overmounted home (spec 003, research R1/R2). zsh sets ZDOTDIR in
+// /etc/zshenv so it never reads $HOME; bash gets a baked rcfile launched with
+// --noprofile --norc so it never reads any workspace startup file; any other
+// login shell gets /bin/sh with a minimal baked default.
+var shellZshTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
 USER root
-{{- if eq .Program "zsh"}}
-COPY {{.ContextFile}} {{.Path}}
-RUN chmod 0644 {{.Path}} \
- && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
- && (grep -qs '{{.Path}}' "$rc" || printf '\n[ -r {{.Path}} ] && . {{.Path}}\n' >> "$rc")
-{{- else}}
-COPY {{.ContextFile}} {{.Path}}
-RUN chmod 0644 {{.Path}} \
- && for rc in /etc/bash.bashrc /etc/bashrc; do \
-      if [ -f "$rc" ]; then grep -qs '{{.Path}}' "$rc" || printf '\n[ -r {{.Path}} ] && . {{.Path}}\n' >> "$rc"; fi; \
-    done
+{{- if .RCPath}}
+COPY {{.ContextFile}} {{.RCPath}}
+RUN chmod 0644 {{.RCPath}}
 {{- end}}
+RUN install -d {{.ZDotDir}} \
+ && (grep -qs 'ZDOTDIR={{.ZDotDir}}' {{.ZshEnvPath}} 2>/dev/null \
+     || printf '%s\n' {{.ZshEnvLine}} >> {{.ZshEnvPath}}) \
+ && chmod 0644 {{.ZshEnvPath}}
+`))
+
+var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
+USER root
+{{- if .RCPath}}
+COPY {{.ContextFile}} {{.RCPath}}
+RUN chmod 0644 {{.RCPath}}
+{{- else}}
+RUN : > {{.RCPath0}} && chmod 0644 {{.RCPath0}}
+{{- end}}
+RUN <<'SANDCAST_EOF'
+set -eu
+cat > {{.ShellLoginPath}} <<'SANDCAST_LAUNCH'
+{{.Launcher}}
+SANDCAST_LAUNCH
+chmod 0755 {{.ShellLoginPath}}
+SANDCAST_EOF
+`))
+
+var shellShTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: minimal default environment (the login shell is neither zsh nor bash)
+USER root
+RUN <<'SANDCAST_EOF'
+set -eu
+cat > {{.ProfileScriptPath}} <<'SANDCAST_PROFILE'
+# Written by sandcast: minimal login environment for sh under the home overmount.
+# The relocation variables are also set as image ENV; this is the sh-login fallback.
+SANDCAST_PROFILE
+chmod 0644 {{.ProfileScriptPath}}
+SANDCAST_EOF
 `))
 
 var policyTemplate = template.Must(template.New("80-policy").Parse(`# 80-policy: OpenShell sandbox policy (filesystem, landlock, process; no network entries)
@@ -101,25 +131,44 @@ func execTemplate(t *template.Template, data any) (string, error) {
 	return buf.String(), nil
 }
 
-// loginShell picks the shell for the created user and CMD.
+// loginShell picks the shell for the created user and CMD. The bash case uses
+// the baked launcher (not /bin/bash) so no $HOME startup file is ever sourced
+// (spec 003 US2, research R1).
 func loginShell(p *plan.Plan) string {
-	switch p.Shell.Program {
+	switch plan.ShellKind(p) {
 	case "zsh":
 		return "/bin/zsh"
 	case "bash":
-		return "/bin/bash"
+		return plan.ShellLoginPath
+	default:
+		return "/bin/sh"
 	}
-	for _, c := range p.Components {
-		if c.Key == "zsh" {
-			return "/bin/zsh"
-		}
+}
+
+// shellSection renders the 60-shell section for the plan's shell kind.
+func shellSection(p *plan.Plan) (string, error) {
+	switch plan.ShellKind(p) {
+	case "zsh":
+		return execTemplate(shellZshTemplate, map[string]any{
+			"RCPath":      p.Shell.RCPath,
+			"ContextFile": ShellContextFile(p.Shell.Program),
+			"ZDotDir":     plan.ZDotDir,
+			"ZshEnvPath":  plan.ZshEnvPath,
+			"ZshEnvLine":  shell.Quote(shell.ZshEnvExport(plan.ZDotDir)),
+		})
+	case "bash":
+		return execTemplate(shellBashTemplate, map[string]any{
+			"RCPath":         p.Shell.RCPath,
+			"RCPath0":        plan.BashRCPath,
+			"ContextFile":    ShellContextFile(p.Shell.Program),
+			"ShellLoginPath": plan.ShellLoginPath,
+			"Launcher":       strings.TrimRight(shell.LoginLauncher(plan.BashRCPath), "\n"),
+		})
+	default:
+		return execTemplate(shellShTemplate, map[string]any{
+			"ProfileScriptPath": plan.ProfileScriptPath,
+		})
 	}
-	for _, s := range p.ImageFacts.Shells {
-		if strings.HasSuffix(s, "/bash") {
-			return "/bin/bash"
-		}
-	}
-	return "/bin/sh"
 }
 
 // envInstruction renders the NAME=value part of an ENV instruction. A name
@@ -163,6 +212,13 @@ func envValue(v string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`).Replace(v) + `"`
 }
 
-func cmdFor(shell string) string {
-	return fmt.Sprintf("%q, %q", shell, "-l")
+// cmdFor renders the image CMD argv. The bash launcher makes bash interactive
+// itself and must not be passed -l (a login bash would read profile files,
+// not the baked --rcfile), so it is the sole argument; zsh and sh start as
+// login shells with -l.
+func cmdFor(sh string) string {
+	if sh == plan.ShellLoginPath {
+		return fmt.Sprintf("%q", sh)
+	}
+	return fmt.Sprintf("%q, %q", sh, "-l")
 }

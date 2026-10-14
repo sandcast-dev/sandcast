@@ -105,7 +105,8 @@ func TestLoginShell(t *testing.T) {
 	assert.Equal(t, "/bin/zsh", loginShell(p))
 	p.Shell = plan.Shell{Program: "none"}
 	p.Components = nil
-	assert.Equal(t, "/bin/bash", loginShell(p))
+	// A bash login shell uses the baked launcher, never /bin/bash directly.
+	assert.Equal(t, plan.ShellLoginPath, loginShell(p))
 	p.ImageFacts.Shells = []string{"/bin/sh"}
 	assert.Equal(t, "/bin/sh", loginShell(p))
 }

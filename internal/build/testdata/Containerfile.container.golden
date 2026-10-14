@@ -59,12 +59,14 @@ USER root
 RUN echo other
 USER sandbox
 
-# 60-shell: curated zsh configuration
+# 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
 USER root
-COPY shell/sandcast.zsh /etc/zsh/zshrc.d/sandcast.zsh
-RUN chmod 0644 /etc/zsh/zshrc.d/sandcast.zsh \
- && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
- && (grep -qs '/etc/zsh/zshrc.d/sandcast.zsh' "$rc" || printf '\n[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh\n' >> "$rc")
+COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
+RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
+RUN install -d /opt/sandcast/zdotdir \
+ && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zshenv 2>/dev/null \
+     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir' >> /etc/zshenv) \
+ && chmod 0644 /etc/zshenv
 
 # 90-footer
 WORKDIR /root

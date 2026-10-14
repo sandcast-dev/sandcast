@@ -171,7 +171,9 @@ func TestBuildContent(t *testing.T) {
 	assert.Contains(t, p.Policy, "/opt/go")
 	assert.Contains(t, p.Policy, "run_as_user: sandbox")
 	assert.Equal(t, ZshRCPath, p.Shell.RCPath)
-	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, p.Image.Env)
+	// The relocation env sets ZDOTDIR image-wide for the zsh shell (R3),
+	// merged with the component env and sorted by name.
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}, {Name: "ZDOTDIR", Value: ZDotDir}}, p.Image.Env)
 	assert.Equal(t, []Dir{{Path: "/opt/go", Owner: "user"}}, p.Image.Dirs)
 	assert.False(t, p.FinalUser.Created)
 }
@@ -494,6 +496,79 @@ func TestWriteOutputs(t *testing.T) {
 	assert.Equal(t, p.Target, loaded.Target)
 }
 
+func TestRelocationEnvForZshAndBash(t *testing.T) {
+	zsh := &Plan{Shell: Shell{Program: "zsh"}}
+	assert.Equal(t, []EnvVar{{Name: "ZDOTDIR", Value: ZDotDir}}, RelocationEnv(zsh))
+	// bash relocates through the launcher, not an env var, so no ZDOTDIR.
+	bash := &Plan{Shell: Shell{Program: "bash"}}
+	assert.Empty(t, RelocationEnv(bash))
+	// per-dotfile env is merged and sorted.
+	zsh.Dotfiles = []DotfileSelection{{Env: map[string]string{"STARSHIP_CONFIG": "/opt/sandcast/xdg/starship.toml"}}}
+	assert.Equal(t, []EnvVar{
+		{Name: "STARSHIP_CONFIG", Value: "/opt/sandcast/xdg/starship.toml"},
+		{Name: "ZDOTDIR", Value: ZDotDir},
+	}, RelocationEnv(zsh))
+}
+
+func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n"},
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true},   // -> /etc/gitconfig (allowlist)
+		{HostPath: "~/.config/git/config", Content: "[core]\n\tpager = less\n"},                 // also -> /etc/gitconfig (explicit)
+	}
+	sels, notices, dedup, err := resolveDotfiles(inputs, OvermountHome)
+	require.NoError(t, err)
+	var targets []string
+	for _, s := range sels {
+		targets = append(targets, s.RelocatedTo)
+		assert.False(t, UnderOvermount(OvermountHome, s.RelocatedTo), "never baked under the home")
+	}
+	assert.Equal(t, []string{GitConfigPath, XDGConfigHome + "/tmux/tmux.conf"}, targets, "sorted by relocated_to")
+	// The explicit manifest entry wins the /etc/gitconfig collision.
+	assert.Equal(t, "~/.config/git/config", sels[0].HostPath)
+	assert.Equal(t, DotfileSourceManifest, sels[0].Source)
+	assert.NotEmpty(t, dedup, "a collision is reported")
+	assert.Len(t, notices, 2, "one relocated notice per baked dotfile")
+	sels2, _, dedup2, _ := resolveDotfiles(inputs, OvermountHome)
+	assert.Equal(t, sels, sels2, "deterministic")
+	assert.Equal(t, dedup, dedup2)
+}
+
+func TestResolveDotfilesRedactsCredential(t *testing.T) {
+	token := "ghp_" + strings.Repeat("x", 36)
+	inputs := []DotfileInput{{HostPath: "~/.gitconfig", Content: "[github]\n\ttoken = " + token + "\n"}}
+	sels, _, _, err := resolveDotfiles(inputs, OvermountHome)
+	require.NoError(t, err)
+	require.Len(t, sels, 1)
+	assert.NotContains(t, sels[0].Content, token, "the credential is redacted")
+	assert.Contains(t, sels[0].Content, "SANDCAST_SECRET")
+}
+
+func TestBuildReprovisionsOvermountTool(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	// git is present, but only under the overmounted home: it must be
+	// reclassified as missing and re-provisioned (FR-009).
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/.local/bin/git"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionInstall, p.Component("git").Action, "reclassified from present to install")
+	var found *RelocationNotice
+	for i := range p.Relocations {
+		if p.Relocations[i].Kind == NoticeReprovisioned && p.Relocations[i].Subject == "git" {
+			found = &p.Relocations[i]
+		}
+	}
+	require.NotNil(t, found, "a reprovisioned notice for git: %v", p.Relocations)
+	assert.Equal(t, "/sandbox/.local/bin/git", found.From)
+	assert.Equal(t, "/usr", found.To)
+	// The notices are sorted by subject deterministically.
+	in2 := testInputs(t, testManifest(), nil)
+	in2.Probe.Checks["git"] = in.Probe.Checks["git"]
+	p2, err := Build(in2)
+	require.NoError(t, err)
+	assert.Equal(t, p.Relocations, p2.Relocations)
+}
+
 func keysOf(us []Unresolved) []string {
 	out := []string{}
 	for _, u := range us {
@@ -513,7 +588,7 @@ func TestBuildMergesHarnessNeeds(t *testing.T) {
 	}}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Equal(t, []EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: "/opt/sandcast/claude-code"}, {Name: "GOPATH", Value: "/opt/go"}}, p.Image.Env, "component env wins on a clash")
+	assert.Equal(t, []EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: "/opt/sandcast/claude-code"}, {Name: "GOPATH", Value: "/opt/go"}, {Name: "ZDOTDIR", Value: ZDotDir}}, p.Image.Env, "component env wins on a clash; relocation ZDOTDIR is added")
 	assert.Contains(t, p.Image.Dirs, Dir{Path: "/opt/sandcast/claude-code", Owner: "user"})
 	assert.Contains(t, p.Policy, "/opt/sandcast/claude-code")
 	require.Len(t, p.Harnesses, 1)

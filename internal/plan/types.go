@@ -1,6 +1,8 @@
 package plan
 
 import (
+	"fmt"
+
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
 )
@@ -47,6 +49,71 @@ type Plan struct {
 	Unresolved      []Unresolved         `yaml:"unresolved" json:"unresolved"`
 	Conflicts       []component.Conflict `yaml:"conflicts" json:"conflicts"`
 	Notices         []string             `yaml:"notices" json:"notices"`
+	// Dotfiles are the resolved non-shell dotfiles baked outside the home
+	// (spec 003 US3). Empty when the manifest lists none.
+	Dotfiles []DotfileSelection `yaml:"dotfiles,omitempty" json:"dotfiles,omitempty"`
+	// Relocations are the structured decisions sandcast made because of the
+	// home overmount (spec 003 US4, contracts/relocation-notice.md). Each one
+	// also appears as a human-readable line in Notices.
+	Relocations []RelocationNotice `yaml:"relocations,omitempty" json:"relocations,omitempty"`
+}
+
+// DotfileSelection is one resolved non-shell dotfile baked outside the
+// overmounted home (spec 003 data-model "DotfileSelection"). The content is
+// already passed through internal/redact, so no credential value is stored.
+type DotfileSelection struct {
+	// Source records how the entry entered the plan: "allowlist" (a host
+	// dotfile capture proposed) or "manifest" (an explicit manifest path).
+	Source string `yaml:"source" json:"source"`
+	// HostPath is the manifest path the content came from, kept for notices.
+	HostPath string `yaml:"host_path" json:"host_path"`
+	// RelocatedTo is the image path the content is baked to; never under the
+	// overmount home.
+	RelocatedTo string `yaml:"relocated_to" json:"relocated_to"`
+	// Env holds the relocation variables this dotfile needs (for example
+	// STARSHIP_CONFIG). It may be empty when the tool reads a system path
+	// natively (for example /etc/gitconfig).
+	Env map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	// Content is the redacted file content baked into the image.
+	Content string `yaml:"content" json:"content"`
+}
+
+// Dotfile source values.
+const (
+	DotfileSourceAllowlist = "allowlist"
+	DotfileSourceManifest  = "manifest"
+)
+
+// RelocationNotice is one decision sandcast reported because of the home
+// overmount (spec 003 contracts/relocation-notice.md).
+type RelocationNotice struct {
+	// Kind is NoticeRelocated or NoticeReprovisioned.
+	Kind string `yaml:"kind" json:"kind"`
+	// Subject is the component key or dotfile path the decision is about.
+	Subject string `yaml:"subject" json:"subject"`
+	// From is the overmount-shadowed location (the probed path for a
+	// reprovision, the home-relative source for a relocation).
+	From string `yaml:"from" json:"from"`
+	// To is the persistent location chosen outside the home.
+	To string `yaml:"to" json:"to"`
+}
+
+// Relocation notice kinds.
+const (
+	NoticeRelocated     = "relocated"
+	NoticeReprovisioned = "reprovisioned"
+)
+
+// String renders the notice as the one human-readable line that appears in
+// the plan output and the build log (contracts/relocation-notice.md).
+func (n RelocationNotice) String() string {
+	switch n.Kind {
+	case NoticeReprovisioned:
+		return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); it is provisioned to %s instead",
+			n.Subject, n.From, n.To)
+	default:
+		return fmt.Sprintf("%s relocated to %s so it survives the workspace mount over the home", n.Subject, n.To)
+	}
 }
 
 // Selected is a value with the source that selected it.

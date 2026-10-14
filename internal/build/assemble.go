@@ -52,14 +52,8 @@ func Assemble(p *plan.Plan) (string, error) {
 			}
 		}
 	}
-	if p.Shell.RCPath != "" {
-		if err := add(execTemplate(shellTemplate, map[string]any{
-			"Program":     p.Shell.Program,
-			"Path":        p.Shell.RCPath,
-			"ContextFile": ShellContextFile(p.Shell.Program),
-		})); err != nil {
-			return "", err
-		}
+	if err := add(shellSection(p)); err != nil {
+		return "", err
 	}
 	for _, h := range p.Harnesses {
 		sections = append(sections, h.Fragment)
