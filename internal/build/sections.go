@@ -107,6 +107,18 @@ chmod 0644 {{.ProfileScriptPath}}
 SANDCAST_EOF
 `))
 
+// The dotfiles section bakes each redacted non-shell dotfile to its
+// relocation target outside the home (spec 003 US3). The relocation env
+// variables are set image-wide in the 20-user section via the plan's
+// RelocationEnv, so this section only copies files.
+var dotfilesTemplate = template.Must(template.New("62-dotfiles").Parse(`# 62-dotfiles: baked configuration relocated out of the overmounted home
+USER root
+{{- range .Dotfiles}}
+COPY {{.Context}} {{.Target}}
+RUN chmod 0644 {{.Target}}
+{{- end}}
+`))
+
 var policyTemplate = template.Must(template.New("80-policy").Parse(`# 80-policy: OpenShell sandbox policy (filesystem, landlock, process; no network entries)
 USER root
 COPY policy.yaml {{.Path}}
@@ -122,6 +134,29 @@ USER {{.User}}
 ENTRYPOINT []
 CMD [{{.Cmd}}]
 `))
+
+// DotfileContextFile is the build-context path a baked dotfile is staged at.
+// It is derived deterministically from the (unique) relocation target so two
+// builds of the same plan stage the same files.
+func DotfileContextFile(target string) string {
+	s := strings.TrimPrefix(target, "/")
+	s = strings.ReplaceAll(s, "/", "_")
+	return "dotfiles/" + s
+}
+
+// dotfilesSection renders the 62-dotfiles section, empty when the plan bakes
+// no dotfiles.
+func dotfilesSection(p *plan.Plan) (string, error) {
+	if len(p.Dotfiles) == 0 {
+		return "", nil
+	}
+	type row struct{ Context, Target string }
+	rows := make([]row, 0, len(p.Dotfiles))
+	for _, d := range p.Dotfiles {
+		rows = append(rows, row{Context: DotfileContextFile(d.RelocatedTo), Target: d.RelocatedTo})
+	}
+	return execTemplate(dotfilesTemplate, map[string]any{"Dotfiles": rows})
+}
 
 func execTemplate(t *template.Template, data any) (string, error) {
 	var buf bytes.Buffer

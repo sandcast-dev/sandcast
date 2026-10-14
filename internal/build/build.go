@@ -431,6 +431,16 @@ func writeContext(dir string, p *plan.Plan, containerfile string) error {
 			return err
 		}
 	}
+	dotfilesDir := filepath.Join(dir, "dotfiles")
+	if err := os.RemoveAll(dotfilesDir); err != nil {
+		return err
+	}
+	for _, d := range p.Dotfiles {
+		file := filepath.Join(dir, filepath.FromSlash(DotfileContextFile(d.RelocatedTo)))
+		if err := fsutil.AtomicWriteFile(file, []byte(d.Content), 0o644); err != nil {
+			return err
+		}
+	}
 	if err := os.RemoveAll(filepath.Join(dir, HarnessContextDir)); err != nil {
 		return err
 	}

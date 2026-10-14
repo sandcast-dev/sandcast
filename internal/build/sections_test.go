@@ -72,6 +72,26 @@ func TestShellSectionMinimalDefault(t *testing.T) {
 	assert.NotContains(t, got, "/opt/sandcast/shell-login")
 }
 
+// TestDotfilesSectionBakesToRelocationTargets checks baked dotfiles are
+// copied to their relocation targets outside the home (spec 003 US3).
+func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
+	p := shellKindPlan(t, "zsh")
+	p.Dotfiles = []plan.DotfileSelection{
+		{Source: plan.DotfileSourceAllowlist, HostPath: "~/.gitconfig", RelocatedTo: "/etc/gitconfig", Content: "[user]\n"},
+		{Source: plan.DotfileSourceAllowlist, HostPath: "~/.config/starship.toml", RelocatedTo: plan.XDGConfigHome + "/starship.toml", Env: map[string]string{"STARSHIP_CONFIG": plan.XDGConfigHome + "/starship.toml"}, Content: "add_newline=false\n"},
+	}
+	got, err := Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "# 62-dotfiles")
+	assert.Contains(t, got, "COPY dotfiles/etc_gitconfig /etc/gitconfig")
+	assert.Contains(t, got, "COPY dotfiles/opt_sandcast_xdg_starship.toml /opt/sandcast/xdg/starship.toml")
+	assert.Equal(t, "dotfiles/etc_gitconfig", DotfileContextFile("/etc/gitconfig"))
+	// No dotfile target may be under the overmount home.
+	for _, d := range p.Dotfiles {
+		assert.False(t, plan.UnderOvermount(plan.OvermountHome, d.RelocatedTo))
+	}
+}
+
 // TestNoGeneratedFileSourcesTheHome is the core US2 guarantee: across every
 // shell kind, no instruction in the generated Containerfile sources, copies to
 // or launches from a path under the overmounted home (/sandbox), so a startup

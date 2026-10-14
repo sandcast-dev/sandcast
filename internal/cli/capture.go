@@ -42,8 +42,13 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 					return usageErr("%v", err)
 				}
 			}
+			home := ""
+			if host && !noHost {
+				home, _ = os.UserHomeDir()
+			}
 			res, err := capture.Match(cmd.Context(), abs, set.All(), capture.Options{
 				Host:      host && !noHost,
+				Home:      home,
 				Harnesses: harnesses,
 				LookPath:  a.LookPath,
 				Version:   a.HostVersion,
@@ -69,6 +74,13 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 				names = append(names, av.Key)
 			}
 			_, _ = fmt.Fprintf(a.Stdout, "\navailable: %s\n", strings.Join(names, ", "))
+			if len(res.Dotfiles) > 0 {
+				paths := make([]string, 0, len(res.Dotfiles))
+				for _, d := range res.Dotfiles {
+					paths = append(paths, d.Path)
+				}
+				_, _ = fmt.Fprintf(a.Stdout, "dotfiles: %s\n", strings.Join(paths, ", "))
+			}
 			return nil
 		},
 	}

@@ -42,7 +42,20 @@ type Manifest struct {
 	Components    []ComponentRef `yaml:"components" json:"components"`
 	Harnesses     []HarnessRef   `yaml:"harnesses,omitempty" json:"harnesses,omitempty"`
 	Shell         *Shell         `yaml:"shell,omitempty" json:"shell,omitempty"`
+	Dotfiles      []Dotfile      `yaml:"dotfiles,omitempty" json:"dotfiles,omitempty"`
 	Targets       Targets        `yaml:"targets" json:"targets"`
+}
+
+// Dotfile is one non-shell home dotfile to bake, by its source path. Capture
+// writes entries from a bounded host allowlist and the user may add explicit
+// paths (spec 003 FR-005/FR-006, contracts/manifest-dotfiles.md). The entry
+// records only the source path, never contents: contents are redacted when
+// the plan bakes them (FR-007).
+type Dotfile struct {
+	// Path is the host source. A "~"-prefixed or home-relative path resolves
+	// against the host home; a project-relative or absolute path is taken as
+	// given. The relocation target is chosen by the plan (no override in v1).
+	Path string `yaml:"path" json:"path"`
 }
 
 // ComponentRef selects one component by key.
@@ -305,6 +318,16 @@ func (m *Manifest) Validate() []Diagnostic {
 	}
 	if m.Shell != nil && m.Shell.Program != "zsh" && m.Shell.Program != "bash" {
 		add("$.shell.program", "%s is not zsh or bash", safeValue(m.Shell.Program))
+	}
+	for i, d := range m.Dotfiles {
+		p := fmt.Sprintf("$.dotfiles[%d].path", i)
+		if strings.TrimSpace(d.Path) == "" {
+			add(p, "required: the host path of the dotfile to bake")
+			continue
+		}
+		if strings.ContainsFunc(d.Path, func(r rune) bool { return unicode.IsControl(r) }) {
+			add(p, "%s must not contain control characters", safeValue(d.Path))
+		}
 	}
 	if m.Targets.OpenShell == nil && m.Targets.Container == nil {
 		add("$.targets", "at least one target (openshell or container) is required")

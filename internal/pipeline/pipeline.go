@@ -15,6 +15,7 @@ import (
 
 	"github.com/rhuss/sandcast"
 	"github.com/rhuss/sandcast/internal/build"
+	"github.com/rhuss/sandcast/internal/capture"
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/fsutil"
@@ -291,6 +292,9 @@ func Plan(ctx context.Context, env Env, opts PlanOptions) (*Planned, error) {
 		return nil, err
 	}
 
+	dotfiles, dotfileNotices := dotfileInputs(env, m)
+	notices = append(notices, dotfileNotices...)
+
 	p, err := plan.Build(plan.Inputs{
 		Manifest:        m,
 		Target:          target,
@@ -305,6 +309,7 @@ func Plan(ctx context.Context, env Env, opts PlanOptions) (*Planned, error) {
 		StoredFragments: stored,
 		Harnesses:       harnesses,
 		Notices:         notices,
+		Dotfiles:        dotfiles,
 	})
 	if err != nil {
 		var le *plan.LockError
@@ -372,6 +377,82 @@ func writePlan(env Env, planned *Planned) error {
 		return err
 	}
 	return plan.WriteOutputs(planned.Dir, planned.Plan, planned.LockData)
+}
+
+// dotfileInputs reads the manifest's dotfiles from the host for the plan to
+// redact and relocate (spec 003 US3). A "~"-prefixed or home-relative path
+// resolves against the host home, a project-relative path against the project
+// root, and an absolute path as is. A path that does not exist, or a
+// home-relative symlink that leaves the home, is reported and skipped rather
+// than failing the plan (spec Edge Cases, R6). Contents are redacted later in
+// plan.Build.
+func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string) {
+	var out []plan.DotfileInput
+	var notices []string
+	for _, d := range m.Dotfiles {
+		homeRel := strings.HasPrefix(d.Path, "~") || !filepath.IsAbs(d.Path) && !isProjectRelative(d.Path)
+		src, ok := resolveDotfilePath(env, d.Path)
+		if !ok {
+			notices = append(notices, fmt.Sprintf("dotfile %s could not be resolved (no home or project directory); skipped", d.Path))
+			continue
+		}
+		real, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			notices = append(notices, fmt.Sprintf("dotfile %s does not exist on this host; skipped", d.Path))
+			continue
+		}
+		// A home-relative dotfile that resolves outside the home is refused,
+		// matching the skill-copy safety rule (R6).
+		if homeRel && env.Home != "" {
+			if realHome, herr := filepath.EvalSymlinks(env.Home); herr == nil && !withinDir(realHome, real) {
+				notices = append(notices, fmt.Sprintf("dotfile %s resolves to %s outside the home; skipped", d.Path, real))
+				continue
+			}
+		}
+		data, err := os.ReadFile(real)
+		if err != nil {
+			notices = append(notices, fmt.Sprintf("dotfile %s could not be read (%v); skipped", d.Path, err))
+			continue
+		}
+		out = append(out, plan.DotfileInput{
+			HostPath:      d.Path,
+			Content:       string(data),
+			FromAllowlist: capture.IsAllowlisted(d.Path),
+		})
+	}
+	return out, notices
+}
+
+// isProjectRelative reports a path that is neither "~"-prefixed nor absolute,
+// i.e. one resolved against the project root.
+func isProjectRelative(p string) bool {
+	return !strings.HasPrefix(p, "~") && !filepath.IsAbs(p)
+}
+
+// resolveDotfilePath resolves a manifest dotfile path against the home, the
+// project or as an absolute path. It returns false when a needed directory is
+// unknown.
+func resolveDotfilePath(env Env, p string) (string, bool) {
+	switch {
+	case p == "~" || strings.HasPrefix(p, "~/"):
+		if env.Home == "" {
+			return "", false
+		}
+		return filepath.Join(env.Home, strings.TrimPrefix(p, "~")), true
+	case filepath.IsAbs(p):
+		return filepath.Clean(p), true
+	default:
+		if env.Layout.Root == "" {
+			return "", false
+		}
+		return filepath.Join(env.Layout.Root, p), true
+	}
+}
+
+// withinDir reports whether p is root itself or below it.
+func withinDir(root, p string) bool {
+	rel, err := filepath.Rel(root, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // storedFragments reads .sandcast/fragments for plan; the first invalid

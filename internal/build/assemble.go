@@ -55,6 +55,9 @@ func Assemble(p *plan.Plan) (string, error) {
 	if err := add(shellSection(p)); err != nil {
 		return "", err
 	}
+	if err := add(dotfilesSection(p)); err != nil {
+		return "", err
+	}
 	for _, h := range p.Harnesses {
 		sections = append(sections, h.Fragment)
 	}
