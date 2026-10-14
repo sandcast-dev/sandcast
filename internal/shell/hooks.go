@@ -17,7 +17,8 @@ import "strings"
 // 003 FR-001, FR-002, SC-002).
 
 // HookBegin and HookEnd delimit the block sandcast prepends to the system
-// bashrc, so the build can recognize an image that already carries it.
+// bashrc, so a build on an image that already carries one (a base image
+// sandcast built, or a rebuild) can replace that block with the current one.
 const (
 	HookBegin = "# >>> sandcast shell hook >>>"
 	HookEnd   = "# <<< sandcast shell hook <<<"

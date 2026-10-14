@@ -79,13 +79,22 @@ USER sandbox
 USER root
 COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
 RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
-RUN install -d /opt/sandcast/zdotdir /etc/zsh \
- && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zsh/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zsh/zshenv) \
- && chmod 0644 /etc/zsh/zshenv \
- && (grep -qs 'ZDOTDIR=/opt/sandcast/zdotdir' /etc/zshenv 2>/dev/null \
-     || printf '%s\n' 'export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1' >> /etc/zshenv) \
- && chmod 0644 /etc/zshenv
+RUN <<'SANDCAST_EOF'
+set -eu
+install -d /opt/sandcast/zdotdir /etc/zsh
+zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1'
+for f in /etc/zsh/zshenv /etc/zshenv; do
+  if grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
+    echo "sandcast: replacing the ZDOTDIR export of a previous sandcast build in $f" >&2
+    awk 'index($0, "export ZDOTDIR=") != 1 || index($0, " SANDCAST_SESSION=1") == 0' "$f" > "$f.sandcast"
+  else
+    cat "$f" > "$f.sandcast" 2>/dev/null || :
+  fi
+  printf '%s\n' "$zshenv_line" >> "$f.sandcast"
+  mv "$f.sandcast" "$f"
+  chmod 0644 "$f"
+done
+SANDCAST_EOF
 RUN <<'SANDCAST_EOF'
 set -eu
 PATH="$PATH:/usr/sbin:/sbin"
@@ -238,11 +247,17 @@ if [ -n "$bash_bin" ]; then
   done
 fi
 if [ -n "$sysrc" ]; then
-  if ! grep -qsF '# >>> sandcast shell hook >>>' "$sysrc"; then
-    install -d "$(dirname "$sysrc")"
-    { cat /tmp/sandcast-bashrc-hook; cat "$sysrc" 2>/dev/null || true; } > "$sysrc.sandcast"
-    mv "$sysrc.sandcast" "$sysrc"
+  install -d "$(dirname "$sysrc")"
+  hook=/tmp/sandcast-bashrc-hook hook_begin='# >>> sandcast shell hook >>>' hook_end='# <<< sandcast shell hook <<<'
+  if grep -qsF "$hook_begin" "$sysrc"; then
+    echo "sandcast: replacing the shell hook block of a previous sandcast build in $sysrc" >&2
+    awk -v b="$hook_begin" -v e="$hook_end" '$0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }' "$sysrc" > "$sysrc.sandcast.rest"
+  else
+    cat "$sysrc" > "$sysrc.sandcast.rest" 2>/dev/null || :
   fi
+  { cat "$hook"; cat "$sysrc.sandcast.rest"; } > "$sysrc.sandcast"
+  rm -f "$sysrc.sandcast.rest"
+  mv "$sysrc.sandcast" "$sysrc"
   chmod 0644 "$sysrc"
 elif [ -n "$bash_bin" ]; then
   echo "sandcast: $bash_bin reads no system bashrc, so an interactive non-login bash that a runtime starts directly cannot be hooked" >&2

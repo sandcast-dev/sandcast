@@ -78,13 +78,31 @@ USER root
 COPY {{.ContextFile}} {{.RCPath}}
 RUN chmod 0644 {{.RCPath}}
 {{- end}}
-RUN install -d {{.ZDotDir}} /etc/zsh
-{{- range .ZshEnvPaths}} \
- && (grep -qs 'ZDOTDIR={{$.ZDotDir}}' {{.}} 2>/dev/null \
-     || printf '%s\n' {{$.ZshEnvLine}} >> {{.}}) \
- && chmod 0644 {{.}}
-{{- end}}
+RUN <<'SANDCAST_EOF'
+set -eu
+install -d {{.ZDotDir}} /etc/zsh
+zshenv_line={{.ZshEnvLine}}
+for f in{{range .ZshEnvPaths}} {{.}}{{end}}; do
+{{.ZshEnvInstall}}done
+SANDCAST_EOF
 `))
+
+// zshEnvInstallScript appends the export line $zshenv_line to the global
+// zshenv $f. The line of a previous sandcast build (a base image that
+// sandcast built, or a rebuild after an upgrade) is replaced rather than
+// kept, so the file always carries the current line once; the build log
+// says when that happened. A sandcast line is one that starts with
+// "export ZDOTDIR=" and carries SANDCAST_SESSION=1.
+const zshEnvInstallScript = `  if grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
+    echo "sandcast: replacing the ZDOTDIR export of a previous sandcast build in $f" >&2
+    awk 'index($0, "export ZDOTDIR=") != 1 || index($0, " SANDCAST_SESSION=1") == 0' "$f" > "$f.sandcast"
+  else
+    cat "$f" > "$f.sandcast" 2>/dev/null || :
+  fi
+  printf '%s\n' "$zshenv_line" >> "$f.sandcast"
+  mv "$f.sandcast" "$f"
+  chmod 0644 "$f"
+`
 
 // The bash launcher is written with "exec bash" and the build substitutes
 // the absolute path of the image's bash, found with a PATH of the system
@@ -154,13 +172,13 @@ SANDCAST_EOF
 `))
 
 // hookTemplate bakes the shell hooks for shells that OpenShell starts
-// directly, after clearing the environment, instead of the CMD or the passwd
-// shell (see shell.BashrcHook and shell.LoginHook). The login hook goes to
-// /etc/profile.d, the redirect home holds the .profile that restores HOME for
-// other POSIX login shells, and the bashrc hook is prepended to the system
-// bashrc the image's bash was compiled with, found by its path string in the
-// bash binary. A bash without a system bashrc (Fedora, RHEL) cannot be
-// hooked for interactive non-login shells; the build log says so.
+// directly, instead of the CMD or the passwd shell (see shell.BashrcHook and
+// shell.LoginHook). The login hook goes to /etc/profile.d, the redirect home
+// holds the .profile that restores HOME for other POSIX login shells, and
+// the bashrc hook is prepended to the system bashrc the image's bash was
+// compiled with, found by its path string in the bash binary
+// (hookInstallScript). A bash without a system bashrc (Fedora, RHEL) cannot
+// be hooked for interactive non-login shells; the build log says so.
 var hookTemplate = template.Must(template.New("60-shell-hooks").Parse(`RUN <<'SANDCAST_EOF'
 set -eu
 install -d /etc/profile.d {{.RedirectHome}}
@@ -183,18 +201,33 @@ if [ -n "$bash_bin" ]; then
   done
 fi
 if [ -n "$sysrc" ]; then
-  if ! grep -qsF '{{.HookBegin}}' "$sysrc"; then
-    install -d "$(dirname "$sysrc")"
-    { cat /tmp/sandcast-bashrc-hook; cat "$sysrc" 2>/dev/null || true; } > "$sysrc.sandcast"
-    mv "$sysrc.sandcast" "$sysrc"
-  fi
-  chmod 0644 "$sysrc"
-elif [ -n "$bash_bin" ]; then
+  install -d "$(dirname "$sysrc")"
+  hook=/tmp/sandcast-bashrc-hook hook_begin='{{.HookBegin}}' hook_end='{{.HookEnd}}'
+{{.HookInstall}}elif [ -n "$bash_bin" ]; then
   echo "sandcast: $bash_bin reads no system bashrc, so an interactive non-login bash that a runtime starts directly cannot be hooked" >&2
 fi
 rm -f /tmp/sandcast-bashrc-hook
 SANDCAST_EOF
 `))
+
+// hookInstallScript prepends the hook block in the file $hook to the system
+// bashrc $sysrc. A block of a previous sandcast build between $hook_begin
+// and $hook_end (a base image that sandcast built with other targets, or a
+// rebuild after an upgrade that changed the hook) is stripped first rather
+// than kept, so the file always carries the block of the current plan once;
+// the build log says when that happened. Prepending keeps the block before
+// the distribution's early return for non-interactive shells.
+const hookInstallScript = `  if grep -qsF "$hook_begin" "$sysrc"; then
+    echo "sandcast: replacing the shell hook block of a previous sandcast build in $sysrc" >&2
+    awk -v b="$hook_begin" -v e="$hook_end" '$0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }' "$sysrc" > "$sysrc.sandcast.rest"
+  else
+    cat "$sysrc" > "$sysrc.sandcast.rest" 2>/dev/null || :
+  fi
+  { cat "$hook"; cat "$sysrc.sandcast.rest"; } > "$sysrc.sandcast"
+  rm -f "$sysrc.sandcast.rest"
+  mv "$sysrc.sandcast" "$sysrc"
+  chmod 0644 "$sysrc"
+`
 
 // hookTargets returns the commands the shell hooks replace an interactive
 // bash with: the curated shell for a top-level shell, and for a bash the
@@ -363,6 +396,8 @@ func shellSection(p *plan.Plan) (string, error) {
 		"BashrcHook":        strings.TrimRight(shell.BashrcHook(exports, targets), "\n"),
 		"SystemBashrcPaths": plan.SystemBashrcPaths,
 		"HookBegin":         shell.HookBegin,
+		"HookEnd":           shell.HookEnd,
+		"HookInstall":       hookInstallScript,
 	})
 	if err != nil {
 		return "", err
@@ -375,11 +410,12 @@ func shellKindSection(p *plan.Plan) (string, error) {
 	switch plan.ShellKind(p) {
 	case "zsh":
 		return execTemplate(shellZshTemplate, map[string]any{
-			"RCPath":      p.Shell.RCPath,
-			"ContextFile": ShellContextFile(p.Shell.Program),
-			"ZDotDir":     plan.ZDotDir,
-			"ZshEnvPaths": plan.ZshEnvPaths,
-			"ZshEnvLine":  shell.Quote(shell.ZshEnvExport(plan.ZDotDir)),
+			"RCPath":        p.Shell.RCPath,
+			"ContextFile":   ShellContextFile(p.Shell.Program),
+			"ZDotDir":       plan.ZDotDir,
+			"ZshEnvPaths":   plan.ZshEnvPaths,
+			"ZshEnvLine":    shell.Quote(shell.ZshEnvExport(plan.ZDotDir)),
+			"ZshEnvInstall": zshEnvInstallScript,
 		})
 	case "bash":
 		// The launcher always reads plan.BashRCPath: the curated

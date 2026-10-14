@@ -1,8 +1,12 @@
 package build
 
 import (
+	"bytes"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/shell"
 )
 
 // shellKindPlan returns a minimal OpenShell plan whose shell resolves to kind.
@@ -47,8 +52,8 @@ func TestShellSectionZshRelocates(t *testing.T) {
 	// Debian and Ubuntu build zsh with /etc/zsh as its global rc directory and
 	// never read /etc/zshenv; other builds read /etc/zshenv. Both are written
 	// so ZDOTDIR is set even when a runtime clears the image ENV (env -i).
-	assert.Contains(t, got, ">> /etc/zsh/zshenv")
-	assert.Contains(t, got, ">> /etc/zshenv")
+	assert.Contains(t, got, "for f in /etc/zsh/zshenv /etc/zshenv; do")
+	assert.Contains(t, got, "zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1")
 	assert.Contains(t, got, "install -d /opt/sandcast/zdotdir /etc/zsh")
 	assert.Contains(t, got, "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc")
 	assert.Contains(t, got, `CMD ["/bin/zsh", "-l"]`)
@@ -141,7 +146,8 @@ func TestShellSectionBakesSpawnHooks(t *testing.T) {
 		assert.Contains(t, got, "cat > "+plan.RedirectHome+"/.profile <<'SANDCAST_HOOK'", kind)
 		assert.Contains(t, got, "for f in /etc/bash.bashrc /etc/bash/bashrc; do", kind)
 		assert.Contains(t, got, `grep -qsF "$f" "$bash_bin"`, "%s: the system bashrc is the one compiled into bash", kind)
-		assert.Contains(t, got, "{ cat /tmp/sandcast-bashrc-hook; cat \"$sysrc\"", "%s: the hook is prepended", kind)
+		assert.Contains(t, got, `{ cat "$hook"; cat "$sysrc.sandcast.rest"; } > "$sysrc.sandcast"`, "%s: the hook is prepended", kind)
+		assert.Contains(t, got, "replacing the shell hook block of a previous sandcast build", "%s: a previous block is replaced, not kept", kind)
 		assert.Contains(t, got, top, kind)
 	}
 	zsh, err := shellSection(shellKindPlan(t, "zsh"))
@@ -154,6 +160,103 @@ func TestShellSectionBakesSpawnHooks(t *testing.T) {
 	got, err := shellSection(p)
 	require.NoError(t, err)
 	assert.NotContains(t, got, plan.LoginHookPath, "the container target gets no hooks")
+}
+
+// runInstallScript runs one of the install snippets with the host sh and the
+// given variables, returning its stderr.
+func runInstallScript(t *testing.T, script string, vars map[string]string) string {
+	t.Helper()
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	var pre strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(vars)) {
+		pre.WriteString(k + "=" + shell.Quote(vars[k]) + "\n")
+	}
+	cmd := exec.Command(sh, "-eu", "-c", pre.String()+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	require.NoError(t, cmd.Run(), stderr.String())
+	return stderr.String()
+}
+
+// TestHookInstallReplacesPreviousBlock runs the bashrc hook install snippet
+// twice with different targets, as a build on a base image that sandcast
+// itself built does: the block of the previous build is replaced, not kept,
+// so only the new targets remain, the distribution's content follows once,
+// the build log says so, and the result is idempotent. A first install
+// prepends without a notice, and a missing file is created.
+func TestHookInstallReplacesPreviousBlock(t *testing.T) {
+	dir := t.TempDir()
+	sysrc := filepath.Join(dir, "bash.bashrc")
+	hook := filepath.Join(dir, "hook")
+	launcher := shell.HookTarget{Program: plan.ShellLoginPath}
+	oldBlock := shell.BashrcHook(nil, shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher})
+	newBlock := shell.BashrcHook([]shell.Export{{Name: "ZDOTDIR", Value: plan.ZDotDir}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash})
+	distro := "# System-wide .bashrc file for interactive bash(1) shells.\n[ -z \"$PS1\" ] && return\nshopt -s checkwinsize\n"
+	vars := map[string]string{"sysrc": sysrc, "hook": hook, "hook_begin": shell.HookBegin, "hook_end": shell.HookEnd}
+	require.NoError(t, os.WriteFile(hook, []byte(newBlock), 0o644))
+
+	require.NoError(t, os.WriteFile(sysrc, []byte(oldBlock+distro), 0o644))
+	stderr := runInstallScript(t, hookInstallScript, vars)
+	got, err := os.ReadFile(sysrc)
+	require.NoError(t, err)
+	assert.Equal(t, newBlock+distro, string(got), "the previous block is replaced by the new one")
+	assert.NotContains(t, string(got), plan.ShellLoginPath, "no old target remains")
+	assert.Equal(t, 1, strings.Count(string(got), shell.HookBegin))
+	assert.Contains(t, stderr, "replacing the shell hook block of a previous sandcast build in "+sysrc)
+
+	stderr = runInstallScript(t, hookInstallScript, vars)
+	got, err = os.ReadFile(sysrc)
+	require.NoError(t, err)
+	assert.Equal(t, newBlock+distro, string(got), "a second install is idempotent")
+	assert.Contains(t, stderr, "replacing")
+
+	require.NoError(t, os.WriteFile(sysrc, []byte(distro), 0o644))
+	stderr = runInstallScript(t, hookInstallScript, vars)
+	got, err = os.ReadFile(sysrc)
+	require.NoError(t, err)
+	assert.Equal(t, newBlock+distro, string(got), "a first install prepends")
+	assert.Empty(t, stderr)
+
+	require.NoError(t, os.Remove(sysrc))
+	runInstallScript(t, hookInstallScript, vars)
+	got, err = os.ReadFile(sysrc)
+	require.NoError(t, err)
+	assert.Equal(t, newBlock, string(got), "a missing file is created")
+	assert.NoFileExists(t, sysrc+".sandcast.rest")
+}
+
+// TestZshEnvInstallReplacesPreviousLine runs the zshenv install snippet on a
+// file that carries the export line of a previous sandcast build: the line
+// is replaced by the current one, other content is kept, the build log says
+// so, a second run is idempotent, and a missing file is created.
+func TestZshEnvInstallReplacesPreviousLine(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "zshenv")
+	oldLine := "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"
+	newLine := shell.ZshEnvExport(plan.ZDotDir) + " SHELL=/bin/zsh"
+	distro := "# /etc/zsh/zshenv: system-wide .zshenv file for zsh(1).\nskip_global_compinit=1\n"
+	vars := map[string]string{"f": f, "zshenv_line": newLine}
+
+	require.NoError(t, os.WriteFile(f, []byte(distro+oldLine), 0o644))
+	stderr := runInstallScript(t, zshEnvInstallScript, vars)
+	got, err := os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Equal(t, distro+newLine+"\n", string(got), "the previous line is replaced")
+	assert.Contains(t, stderr, "replacing the ZDOTDIR export of a previous sandcast build in "+f)
+
+	runInstallScript(t, zshEnvInstallScript, vars)
+	got, err = os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Equal(t, distro+newLine+"\n", string(got), "a second install is idempotent")
+
+	require.NoError(t, os.Remove(f))
+	stderr = runInstallScript(t, zshEnvInstallScript, vars)
+	got, err = os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Equal(t, newLine+"\n", string(got), "a missing file is created")
+	assert.Empty(t, stderr)
 }
 
 // TestShellSectionMinimalDefault checks a login shell that is neither zsh nor
