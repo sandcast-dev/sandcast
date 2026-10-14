@@ -69,7 +69,7 @@ func Assemble(p *plan.Plan) (string, error) {
 	if err := add(execTemplate(footerTemplate, map[string]any{
 		"WorkDir": workDir(p),
 		"User":    p.FinalUser.Name,
-		"Cmd":     cmdFor(loginShell(p)),
+		"Cmd":     loginShell(p).cmd(),
 	})); err != nil {
 		return "", err
 	}
@@ -136,7 +136,7 @@ func userSection(p *plan.Plan) (string, error) {
 	}
 	return execTemplate(userTemplate, map[string]any{
 		"User":       p.FinalUser,
-		"LoginShell": loginShell(p),
+		"LoginShell": loginShell(p).Path,
 		"WorkDir":    sandboxDir,
 		"UserDirs":   userDirs,
 		"RootDirs":   rootDirs,

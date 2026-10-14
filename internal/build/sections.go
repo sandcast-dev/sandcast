@@ -94,11 +94,11 @@ RUN install -d {{.ZDotDir}} /etc/zsh
 var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
 USER root
 RUN install -d {{.Prefix}}
-{{- if .RCPath}}
+{{- if .HasRC}}
 COPY {{.ContextFile}} {{.RCPath}}
 RUN chmod 0644 {{.RCPath}}
 {{- else}}
-RUN : > {{.RCPath0}} && chmod 0644 {{.RCPath0}}
+RUN : > {{.RCPath}} && chmod 0644 {{.RCPath}}
 {{- end}}
 RUN <<'SANDCAST_EOF'
 set -eu
@@ -291,19 +291,39 @@ func execTemplate(t *template.Template, data any) (string, error) {
 	return buf.String(), nil
 }
 
-// loginShell picks the shell for the created user and CMD. The bash and sh
-// cases use a baked launcher (not /bin/bash or a login /bin/sh) so no $HOME
-// startup file in the mounted workspace is ever sourced (spec 003 US2,
-// FR-002, research R1/R2). zsh is safe as a real login shell because ZDOTDIR
-// (set in /etc/zshenv) relocates its startup files out of $HOME.
-func loginShell(p *plan.Plan) string {
+// loginShellSpec is the final user's login shell and the image CMD.
+type loginShellSpec struct {
+	// Path is the passwd login shell of the final user.
+	Path string
+	// CmdArgs follow Path in the image CMD.
+	CmdArgs []string
+}
+
+// cmd renders the image CMD argv.
+func (s loginShellSpec) cmd() string {
+	argv := make([]string, 0, 1+len(s.CmdArgs))
+	for _, a := range append([]string{s.Path}, s.CmdArgs...) {
+		argv = append(argv, fmt.Sprintf("%q", a))
+	}
+	return strings.Join(argv, ", ")
+}
+
+// loginShell picks the shell for the final user and the CMD in one switch
+// on the shell kind. The bash and sh cases use a baked launcher (not
+// /bin/bash or a login /bin/sh) so no $HOME startup file in the mounted
+// workspace is ever sourced (spec 003 US2, FR-002, research R1/R2); a
+// launcher sets up the environment itself and must not get -l, so it is the
+// sole CMD argument. zsh starts as a login shell with -l, which is safe
+// because ZDOTDIR (set in the global zshenv) relocates its startup files out
+// of $HOME.
+func loginShell(p *plan.Plan) loginShellSpec {
 	switch plan.ShellKind(p) {
 	case "zsh":
-		return "/bin/zsh"
+		return loginShellSpec{Path: "/bin/zsh", CmdArgs: []string{"-l"}}
 	case "bash":
-		return plan.ShellLoginPath
+		return loginShellSpec{Path: plan.ShellLoginPath}
 	default:
-		return plan.ShLoginPath
+		return loginShellSpec{Path: plan.ShLoginPath}
 	}
 }
 
@@ -317,7 +337,7 @@ func shellSection(p *plan.Plan) (string, error) {
 		return body, err
 	}
 	login, err := execTemplate(loginShellTemplate, map[string]any{
-		"Shell":  loginShell(p),
+		"Shell":  loginShell(p).Path,
 		"User":   p.FinalUser.Name,
 		"UserRe": strings.ReplaceAll(p.FinalUser.Name, ".", `\.`),
 	})
@@ -358,10 +378,13 @@ func shellKindSection(p *plan.Plan) (string, error) {
 			"ZshEnvLine":  shell.Quote(shell.ZshEnvExport(plan.ZDotDir)),
 		})
 	case "bash":
+		// The launcher always reads plan.BashRCPath: the curated
+		// configuration when the manifest has one, an empty file otherwise
+		// (bash chosen from the image facts).
 		return execTemplate(shellBashTemplate, map[string]any{
 			"Prefix":         plan.RelocationPrefix,
-			"RCPath":         p.Shell.RCPath,
-			"RCPath0":        plan.BashRCPath,
+			"RCPath":         plan.BashRCPath,
+			"HasRC":          p.Shell.RCPath != "",
 			"ContextFile":    ShellContextFile(p.Shell.Program),
 			"ShellLoginPath": plan.ShellLoginPath,
 			"Launcher":       strings.TrimRight(shell.LoginLauncher(plan.BashRCPath), "\n"),
@@ -415,16 +438,4 @@ func envValue(v string) string {
 		return v
 	}
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`).Replace(v) + `"`
-}
-
-// cmdFor renders the image CMD argv. The bash and sh launchers set up the
-// environment themselves and must not be passed -l (a login shell would read
-// $HOME startup files from the mounted workspace), so each is the sole
-// argument; zsh starts as a login shell with -l (ZDOTDIR keeps it out of
-// $HOME).
-func cmdFor(sh string) string {
-	if sh == plan.ShellLoginPath || sh == plan.ShLoginPath {
-		return fmt.Sprintf("%q", sh)
-	}
-	return fmt.Sprintf("%q, %q", sh, "-l")
 }

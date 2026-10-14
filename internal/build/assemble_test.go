@@ -102,15 +102,19 @@ func TestEnvValue(t *testing.T) {
 
 func TestLoginShell(t *testing.T) {
 	p := testPlan(t)
-	assert.Equal(t, "/bin/zsh", loginShell(p))
+	assert.Equal(t, loginShellSpec{Path: "/bin/zsh", CmdArgs: []string{"-l"}}, loginShell(p))
+	assert.Equal(t, `"/bin/zsh", "-l"`, loginShell(p).cmd(), "zsh starts as a login shell")
 	p.Shell = plan.Shell{Program: "none"}
 	p.Components = nil
-	// A bash login shell uses the baked launcher, never /bin/bash directly.
-	assert.Equal(t, plan.ShellLoginPath, loginShell(p))
+	// A bash login shell uses the baked launcher, never /bin/bash directly,
+	// and the launcher is the sole CMD argument (no -l).
+	assert.Equal(t, loginShellSpec{Path: plan.ShellLoginPath}, loginShell(p))
+	assert.Equal(t, `"/opt/sandcast/shell-login"`, loginShell(p).cmd())
 	p.ImageFacts.Shells = []string{"/bin/sh"}
 	// The sh fallback uses the baked launcher too, so a login shell never
 	// reads a startup file from the workspace home (spec 003 FR-002/SC-002).
-	assert.Equal(t, plan.ShLoginPath, loginShell(p))
+	assert.Equal(t, loginShellSpec{Path: plan.ShLoginPath}, loginShell(p))
+	assert.Equal(t, `"/opt/sandcast/sh-login"`, loginShell(p).cmd())
 }
 
 func TestAssembleContainerTargetGolden(t *testing.T) {
