@@ -61,6 +61,11 @@ is never retried. --verify runs every component check afterwards.`,
 			for _, u := range planned.Plan.Unresolved {
 				a.logf("skipping optional unresolved component %s: %s", u.Key, u.Reason)
 			}
+			// The plan notices include every overmount relocation and
+			// re-provision, which FR-010 requires in the build output too.
+			for _, n := range planned.Plan.Notices {
+				a.logf("notice: %s", n)
+			}
 			opts := pipeline.BuildOptions{Verify: doVerify, Push: push, NoCacheLayers: noCacheLayers, KeepStage: keepStage}
 			if a.opts.verbose {
 				opts.Progress = a.Stderr

@@ -105,7 +105,8 @@ const (
 )
 
 // String renders the notice as the one human-readable line that appears in
-// the plan output and the build log (contracts/relocation-notice.md).
+// plan.yaml, the sandcast plan output and the sandcast build output
+// (contracts/relocation-notice.md).
 func (n RelocationNotice) String() string {
 	switch n.Kind {
 	case NoticeReprovisioned:

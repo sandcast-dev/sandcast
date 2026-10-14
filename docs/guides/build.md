@@ -181,7 +181,7 @@ These guarantees are verified by `make test-integration` (an OpenShell spawn sim
 
 **Known limitations.**
 
-- bash builds without a system bashrc (Fedora, RHEL and the official `bash` image) read nothing outside the home before `~/.bashrc`, so an interactive non-login bash that a runtime starts directly on such a base image reads the workspace `~/.bashrc`. Login shells, the launcher and zsh are not affected. The build log prints a notice when the image's bash has no system bashrc. The shipped OpenShell base images are Ubuntu and are covered.
+- bash builds without a system bashrc (Fedora, RHEL and the official `bash` image) read nothing outside the home before `~/.bashrc`, so an interactive non-login bash that a runtime starts directly on such a base image reads the workspace `~/.bashrc`. Login shells, the launcher and zsh are not affected. `build.log` records a line when the image's bash has no system bashrc. The shipped OpenShell base images are Ubuntu and are covered.
 - A POSIX shell other than bash that sources `/etc/profile` by hand without being a login shell keeps `HOME` pointed at `/opt/sandcast/home` until it is reset, because only a login shell reads the `.profile` that restores it.
 - The container target gets neither the hooks nor the passwd change; there the curated configuration reaches the launcher (the `CMD`) and zsh through `ZDOTDIR`, but not a bash started directly.
 

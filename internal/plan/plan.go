@@ -367,8 +367,9 @@ func Build(in Inputs) (*Plan, error) {
 	// harness env, and each replaced value is reported.
 	envNotices := mergeRelocationEnv(&p.Image, RelocationEnv(p))
 
-	// Every overmount decision is reported in the plan output and the build
-	// log, sorted by subject so rebuilds are byte-identical (FR-010, SC-005).
+	// Every overmount decision is reported in plan.yaml and in the output of
+	// sandcast plan and sandcast build, sorted by subject so rebuilds are
+	// byte-identical (FR-010, SC-005).
 	p.Relocations = append(p.Relocations, reprovisioned...)
 	p.Relocations = append(p.Relocations, relocated...)
 	sort.Slice(p.Relocations, func(i, j int) bool {
