@@ -271,7 +271,7 @@ The user may also name dotfiles the allowlist omits, within these bounds, which 
 
 For a file outside these bounds, suggest copying it into the project and listing the project-relative path. sandcast skips an entry outside the bounds, or one that does not exist at build time, with a notice; it never fails the build.
 
-Record the confirmed entries under `dotfiles` in the manifest as a list of `{path: ...}` entries. A `~/` path resolves against the host home; a project-relative path resolves against the project root and must stay inside it. Record only the source path, never the contents: sandcast reads the file at build time, redacts any credential shape, and bakes it to a persistent location outside the home (for example `/etc/gitconfig` or `/opt/sandcast/xdg/...`). Do not add a relocation target by hand; the plan chooses it.
+Record the confirmed entries under `dotfiles` in the manifest as a list of `{path: ...}` entries. A `~/` path resolves against the host home; a project-relative path resolves against the project root and must stay inside it. Record only the source path, never the contents: sandcast reads the file at build time, redacts any credential shape, and bakes it to a persistent location outside the home (for example `/etc/gitconfig`, `/etc/tmux.conf` or `/etc/xdg/...`). Do not add a relocation target by hand; the plan chooses it.
 
 ## Step 6: Write the components and harnesses, then validate
 

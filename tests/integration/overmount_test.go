@@ -210,6 +210,16 @@ func TestOvermountZshSurvives(t *testing.T) {
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "captured@example.com")
 
+	// The tmux dotfile is baked to /etc/tmux.conf, which tmux reads natively,
+	// and no image-wide XDG_CONFIG_HOME points tools at a root-owned tree:
+	// the sandbox user can still write its own XDG configuration.
+	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/bin/sh", image, "-c",
+		`cat /etc/tmux.conf; echo "XDG=[${XDG_CONFIG_HOME-unset}]"; mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/gh" && touch "${XDG_CONFIG_HOME:-$HOME/.config}/gh/config.yml" && echo XDG-WRITE-OK`)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "set -g history-limit 99999")
+	assert.Contains(t, out, "XDG=[unset]")
+	assert.Contains(t, out, "XDG-WRITE-OK")
+
 	// Edge case: the home is mounted read-only; the baked config still loads.
 	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox:ro", "--entrypoint", "/bin/zsh", image, "-ic", `echo "ZDOTDIR=$ZDOTDIR"; alias myll`)
 	require.NoError(t, err, out)

@@ -41,12 +41,21 @@ const (
 	// startup file in the mounted workspace is ever sourced (research R1,
 	// spec US2).
 	ShellLoginPath = RelocationPrefix + "/shell-login"
-	// XDGConfigHome is the baked XDG_CONFIG_HOME tree for relocated dotfiles.
-	XDGConfigHome = RelocationPrefix + "/xdg"
+	// XDGConfigDir is where generic relocated dotfiles go: the system XDG
+	// configuration directory, in the default XDG_CONFIG_DIRS search path.
+	// sandcast never sets XDG_CONFIG_HOME image-wide, because tools write
+	// their own configuration there and a root-owned baked tree would make
+	// them fail (FINDING-39).
+	XDGConfigDir = "/etc/xdg"
+	// TmuxConfPath is tmux's system configuration, read natively outside the
+	// home before any user file.
+	TmuxConfPath = "/etc/tmux.conf"
 	// GitConfigPath is git's system configuration, read natively outside the
 	// home.
 	GitConfigPath = "/etc/gitconfig"
-	// InputRCPath is the baked readline configuration (pointed at by INPUTRC).
+	// InputRCPath is the baked readline configuration (pointed at by
+	// INPUTRC). INPUTRC replaces /etc/inputrc as well as ~/.inputrc, so the
+	// baked file starts with "$include /etc/inputrc" (InputRCInclude).
 	InputRCPath = RelocationPrefix + "/inputrc"
 	// ProfileScriptPath is the minimal safe default for the sh fallback and an
 	// env fallback (research R2, FR-011).

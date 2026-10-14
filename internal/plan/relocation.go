@@ -117,35 +117,54 @@ var startupEnvVars = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 
 // relocateDotfile maps a host dotfile path to the image path it is baked to
 // and the environment variables that point the tool at it (research R5).
-// Every target is outside the home: a system path the tool reads natively, a
-// per-tool variable, or the XDG tree.
+// Every target is outside the home: a system path the tool reads natively
+// (/etc/gitconfig, /etc/tmux.conf, /etc/xdg in the default XDG_CONFIG_DIRS),
+// or a baked file named by a tool-specific variable (STARSHIP_CONFIG,
+// INPUTRC). No dotfile sets XDG_CONFIG_HOME: an image-wide value would point
+// every tool that writes its configuration there (gh, helm, glab) at a
+// root-owned tree (FINDING-39). resolveDotfiles refuses a target that is not
+// a clean, safe absolute path.
 func relocateDotfile(hostPath string) (target string, env map[string]string) {
-	norm := strings.TrimPrefix(hostPath, "~/")
-	norm = strings.TrimPrefix(norm, "./")
-	norm = path.Clean(norm)
+	norm := path.Clean(strings.TrimPrefix(hostPath, "~/"))
 	base := path.Base(norm)
 	switch {
 	case base == ".gitconfig" || norm == ".config/git/config" || base == "gitconfig":
 		// git reads /etc/gitconfig as system config natively, no env needed.
 		return GitConfigPath, nil
 	case base == "starship.toml":
-		t := XDGConfigHome + "/starship.toml"
+		t := XDGConfigDir + "/starship.toml"
 		return t, map[string]string{"STARSHIP_CONFIG": t}
 	case base == ".tmux.conf" || base == "tmux.conf":
-		return XDGConfigHome + "/tmux/tmux.conf", map[string]string{"XDG_CONFIG_HOME": XDGConfigHome}
+		// tmux reads /etc/tmux.conf natively before any user file.
+		return TmuxConfPath, nil
 	case base == ".inputrc" || base == "inputrc":
 		return InputRCPath, map[string]string{"INPUTRC": InputRCPath}
 	default:
-		// Generic: relocate under the XDG tree, preserving a .config/ subpath
-		// so a tool that already reads XDG_CONFIG_HOME finds it.
-		rel := strings.TrimPrefix(norm, ".config/")
-		rel = strings.TrimPrefix(rel, "./")
-		rel = strings.TrimPrefix(strings.TrimPrefix(rel, "."), "/")
-		if rel == "" || rel == "." {
-			rel = base
-		}
-		return XDGConfigHome + "/" + rel, map[string]string{"XDG_CONFIG_HOME": XDGConfigHome}
+		// Generic: the system XDG directory, preserving a .config/ subpath
+		// so a tool that searches XDG_CONFIG_DIRS finds it. A leading dot of
+		// the remaining path is dropped (.editorconfig becomes editorconfig).
+		rel := strings.TrimPrefix(strings.TrimPrefix(norm, ".config/"), ".")
+		return XDGConfigDir + "/" + strings.TrimPrefix(rel, "/"), nil
 	}
+}
+
+// InputRCInclude keeps the system readline defaults in the baked inputrc:
+// INPUTRC replaces /etc/inputrc as well as ~/.inputrc.
+const InputRCInclude = "$include /etc/inputrc\n"
+
+// safeTarget reports whether a relocation target is a clean absolute path
+// of safe segments. safeTargetRe alone accepts "." and ".." segments, which
+// would let a target escape its tree and the overmount guard (FINDING-33).
+func safeTarget(t string) bool {
+	if !safeTargetRe.MatchString(t) || path.Clean(t) != t {
+		return false
+	}
+	for _, seg := range strings.Split(t[1:], "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveDotfiles maps the dotfile inputs to baked selections, redacting each
@@ -162,13 +181,16 @@ func resolveDotfiles(inputs []DotfileInput, overmount string) ([]DotfileSelectio
 		if UnderOvermount(overmount, target) {
 			return nil, nil, nil, fmt.Errorf("dotfile %s would relocate to %s, under the overmount home %s", in.HostPath, target, overmount)
 		}
-		if !safeTargetRe.MatchString(target) {
+		if !safeTarget(target) {
 			dedup = append(dedup, fmt.Sprintf(
-				"dotfile %s relocates to an unsafe image path %q (only letters, digits, '.', '_' and '-' are allowed in a path segment); skipped",
+				"dotfile %s relocates to an unsafe image path %q (only letters, digits, '.', '_' and '-' are allowed in a path segment, and no segment may be . or ..); skipped",
 				in.HostPath, target))
 			continue
 		}
 		content, _ := redact.Replace(in.Content)
+		if target == InputRCPath && !strings.HasPrefix(content, InputRCInclude) {
+			content = InputRCInclude + content
+		}
 		source := DotfileSourceManifest
 		if in.FromAllowlist {
 			source = DotfileSourceAllowlist

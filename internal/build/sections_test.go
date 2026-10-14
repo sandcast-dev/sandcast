@@ -172,13 +172,13 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 	p := shellKindPlan(t, "zsh")
 	p.Dotfiles = []plan.DotfileSelection{
 		{Source: plan.DotfileSourceAllowlist, HostPath: "~/.gitconfig", RelocatedTo: "/etc/gitconfig", Content: "[user]\n"},
-		{Source: plan.DotfileSourceAllowlist, HostPath: "~/.config/starship.toml", RelocatedTo: plan.XDGConfigHome + "/starship.toml", Env: map[string]string{"STARSHIP_CONFIG": plan.XDGConfigHome + "/starship.toml"}, Content: "add_newline=false\n"},
+		{Source: plan.DotfileSourceAllowlist, HostPath: "~/.config/starship.toml", RelocatedTo: plan.XDGConfigDir + "/starship.toml", Env: map[string]string{"STARSHIP_CONFIG": plan.XDGConfigDir + "/starship.toml"}, Content: "add_newline=false\n"},
 	}
 	got, err := Assemble(p)
 	require.NoError(t, err)
 	assert.Contains(t, got, "# 62-dotfiles")
 	assert.Contains(t, got, "COPY dotfiles/etc%2Fgitconfig /etc/gitconfig")
-	assert.Contains(t, got, "COPY dotfiles/opt%2Fsandcast%2Fxdg%2Fstarship.toml /opt/sandcast/xdg/starship.toml")
+	assert.Contains(t, got, "COPY dotfiles/etc%2Fxdg%2Fstarship.toml /etc/xdg/starship.toml")
 	assert.Equal(t, "dotfiles/etc%2Fgitconfig", DotfileContextFile("/etc/gitconfig"))
 	// No dotfile target may be under the overmount home.
 	for _, d := range p.Dotfiles {

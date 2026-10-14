@@ -528,9 +528,9 @@ func TestRelocationEnvForZshAndBash(t *testing.T) {
 	bash := &Plan{Shell: Shell{Program: "bash"}}
 	assert.Empty(t, RelocationEnv(bash))
 	// per-dotfile env is merged and sorted.
-	zsh.Dotfiles = []DotfileSelection{{Env: map[string]string{"STARSHIP_CONFIG": "/opt/sandcast/xdg/starship.toml"}}}
+	zsh.Dotfiles = []DotfileSelection{{Env: map[string]string{"STARSHIP_CONFIG": "/etc/xdg/starship.toml"}}}
 	assert.Equal(t, []EnvVar{
-		{Name: "STARSHIP_CONFIG", Value: "/opt/sandcast/xdg/starship.toml"},
+		{Name: "STARSHIP_CONFIG", Value: "/etc/xdg/starship.toml"},
 		{Name: "ZDOTDIR", Value: ZDotDir},
 	}, RelocationEnv(zsh))
 }
@@ -577,6 +577,63 @@ func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 	}
 }
 
+// TestRelocateDotfileNoImageWideXDG checks no dotfile sets XDG_CONFIG_HOME:
+// an image-wide value pointing at a root-owned tree made every tool that
+// writes its configuration there (gh, helm, glab) fail with EACCES
+// (FINDING-39). tmux goes to /etc/tmux.conf, which tmux reads natively,
+// generic files to /etc/xdg (in the default XDG_CONFIG_DIRS), and only
+// tool-specific variables remain.
+func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
+	for _, tt := range []struct {
+		host, target string
+		env          map[string]string
+	}{
+		{"~/.gitconfig", GitConfigPath, nil},
+		{"~/.config/git/config", GitConfigPath, nil},
+		{"~/.config/starship.toml", XDGConfigDir + "/starship.toml", map[string]string{"STARSHIP_CONFIG": XDGConfigDir + "/starship.toml"}},
+		{"~/.tmux.conf", TmuxConfPath, nil},
+		{"~/.config/tmux/tmux.conf", TmuxConfPath, nil},
+		{"~/.inputrc", InputRCPath, map[string]string{"INPUTRC": InputRCPath}},
+		{"~/.config/ghostty/config", XDGConfigDir + "/ghostty/config", nil},
+		{"conf/tool.conf", XDGConfigDir + "/conf/tool.conf", nil},
+		{".editorconfig", XDGConfigDir + "/editorconfig", nil},
+	} {
+		target, env := relocateDotfile(tt.host)
+		assert.Equal(t, tt.target, target, tt.host)
+		assert.Equal(t, tt.env, env, tt.host)
+		assert.NotContains(t, env, "XDG_CONFIG_HOME", tt.host)
+	}
+}
+
+// TestResolveDotfilesInputrcIncludesSystemDefaults checks the baked inputrc
+// keeps the system readline defaults: INPUTRC replaces /etc/inputrc as well
+// as ~/.inputrc, so the baked file starts with an include of /etc/inputrc.
+func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
+	sels, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: "set editing-mode vi\n"}}, OvermountHome)
+	require.NoError(t, err)
+	require.Len(t, sels, 1)
+	assert.Equal(t, "$include /etc/inputrc\nset editing-mode vi\n", sels[0].Content)
+	again, _, _, err := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: sels[0].Content}}, OvermountHome)
+	require.NoError(t, err)
+	assert.Equal(t, sels[0].Content, again[0].Content, "an existing include is not doubled")
+}
+
+// TestResolveDotfilesRejectsDotSegments checks a host path with ".." cannot
+// produce a target that escapes the relocation tree: safeTargetRe accepts
+// "." and ".." segments, so a target must also be clean (FINDING-33).
+func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
+	sels, _, extra, err := resolveDotfiles([]DotfileInput{
+		{HostPath: "~/../../../../etc/passwd", Content: "root::0:0::/:/bin/sh\n"},
+		{HostPath: "~/.config/../../x/../../etc/shadow", Content: "x\n"},
+	}, OvermountHome)
+	require.NoError(t, err)
+	assert.Empty(t, sels, "no traversal target is baked")
+	assert.Len(t, extra, 2, "%v", extra)
+	for _, n := range extra {
+		assert.Contains(t, n, "unsafe image path")
+	}
+}
+
 func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
 	inputs := []DotfileInput{
 		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n"},
@@ -590,7 +647,7 @@ func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
 		targets = append(targets, s.RelocatedTo)
 		assert.False(t, UnderOvermount(OvermountHome, s.RelocatedTo), "never baked under the home")
 	}
-	assert.Equal(t, []string{GitConfigPath, XDGConfigHome + "/tmux/tmux.conf"}, targets, "sorted by relocated_to")
+	assert.Equal(t, []string{GitConfigPath, TmuxConfPath}, targets, "sorted by relocated_to")
 	// The explicit manifest entry wins the /etc/gitconfig collision.
 	assert.Equal(t, "~/.config/git/config", sels[0].HostPath)
 	assert.Equal(t, DotfileSourceManifest, sels[0].Source)
@@ -659,7 +716,7 @@ func TestResolveDotfilesRejectsOvermountTarget(t *testing.T) {
 	assert.Contains(t, err.Error(), "/etc", "the error names the overmount prefix")
 	// Boundary behavior of the helper the guard uses.
 	assert.True(t, UnderOvermount(OvermountHome, OvermountHome+"/.config"))
-	assert.False(t, UnderOvermount(OvermountHome, XDGConfigHome+"/x"))
+	assert.False(t, UnderOvermount(OvermountHome, XDGConfigDir+"/x"))
 	assert.False(t, UnderOvermount("", OvermountHome+"/x"), "no overmount prefix means never under it")
 }
 
