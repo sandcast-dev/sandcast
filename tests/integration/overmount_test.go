@@ -174,4 +174,14 @@ func TestOvermountBashSurvives(t *testing.T) {
 	assert.Contains(t, out, "SAFE", "the planted workspace ~/.bashrc must not run")
 	assert.NotContains(t, out, "PWNED")
 	assert.Contains(t, out, "myll='ls -l'", "the baked rcfile is active")
+
+	// The base image keeps its sandbox user with /bin/bash; the build makes
+	// the launcher its passwd login shell, so a login through passwd (su -)
+	// reads no workspace profile file.
+	out, err = runEngine(t, engine, "run", "--rm", "--user", "root", "-v", ws+":/sandbox", "--entrypoint", "/bin/sh", image, "-c",
+		`getent passwd sandbox; su - sandbox -c 'echo IN_SU'; ls /tmp | grep '^pwned-' | sed 's/^/PWNED /'; true`)
+	require.NoError(t, err, out)
+	assert.Contains(t, out, ":/sandbox:/opt/sandcast/shell-login", "the kept user's login shell is the launcher")
+	assert.Contains(t, out, "IN_SU")
+	assert.NotContains(t, out, "PWNED", "su - runs no workspace startup file")
 }

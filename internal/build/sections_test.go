@@ -96,6 +96,30 @@ func TestShellSectionsCreateRelocationPrefix(t *testing.T) {
 	assert.Contains(t, got, ": > "+plan.BashRCPath, "without a curated rc the bash rcfile is created empty")
 }
 
+// TestShellSectionSetsKeptUserLoginShell checks the OpenShell image makes the
+// launcher (or zsh) the final user's passwd login shell even when the user
+// is kept from the base image. The community base keeps sandbox with
+// /bin/bash, and su - or any login through the passwd shell then sourced
+// the workspace ~/.bash_profile.
+func TestShellSectionSetsKeptUserLoginShell(t *testing.T) {
+	for kind, want := range map[string]string{"zsh": "/bin/zsh", "bash": plan.ShellLoginPath, "sh": plan.ShLoginPath} {
+		p := shellKindPlan(t, kind)
+		p.FinalUser.Created = false
+		got, err := shellSection(p)
+		require.NoError(t, err, kind)
+		assert.Contains(t, got, "usermod -s "+want+" sandbox", kind)
+		assert.Contains(t, got, "PATH=\"$PATH:/usr/sbin:/sbin\"", "%s: usermod lives in sbin, which the community base PATH lacks", kind)
+		assert.Contains(t, got, ">> /etc/shells", kind)
+		assert.Contains(t, got, "/etc/passwd", "%s: a passwd fallback for images without usermod", kind)
+	}
+	// The container target keeps the base image user untouched.
+	p := shellKindPlan(t, "bash")
+	p.Target = "container"
+	got, err := shellSection(p)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "usermod")
+}
+
 // TestShellSectionMinimalDefault checks a login shell that is neither zsh nor
 // bash gets a baked /etc/profile.d default plus a non-login sh launcher, so a
 // workspace .profile is never sourced (FR-011, FR-002/SC-002, research R2).

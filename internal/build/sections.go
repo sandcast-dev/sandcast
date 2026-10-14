@@ -7,6 +7,7 @@ import (
 	"text/template"
 
 	"github.com/rhuss/sandcast/internal/component"
+	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/shell"
 )
@@ -125,6 +126,30 @@ chmod 0755 {{.ShLoginPath}}
 SANDCAST_EOF
 `))
 
+// loginShellTemplate makes the shell from loginShell the final user's passwd
+// login shell in OpenShell images, whether sandcast created the user or kept
+// it from the base image. A kept user (the community base keeps sandbox with
+// /bin/bash) would otherwise start /bin/bash -l on su -, sshd or any other
+// login through passwd, and that reads the workspace ~/.bash_profile or
+// ~/.profile (spec 003 FR-002). usermod lives in sbin, which the community
+// base PATH lacks, so sbin is appended; images without usermod (busybox) get
+// the passwd entry rewritten. A final user without a passwd entry (a bare
+// numeric uid) is left alone. The shell is added to /etc/shells so tools
+// that check it (chsh, pam_shells) accept the launcher.
+var loginShellTemplate = template.Must(template.New("60-shell-login").Parse(`RUN <<'SANDCAST_EOF'
+set -eu
+PATH="$PATH:/usr/sbin:/sbin"
+grep -qxF {{.Shell}} /etc/shells 2>/dev/null || printf '%s\n' {{.Shell}} >> /etc/shells
+if grep -q '^{{.UserRe}}:' /etc/passwd; then
+  if command -v usermod >/dev/null 2>&1; then
+    usermod -s {{.Shell}} {{.User}}
+  else
+    sed -i 's|^\({{.UserRe}}:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*$|\1{{.Shell}}|' /etc/passwd
+  fi
+fi
+SANDCAST_EOF
+`))
+
 // The dotfiles section bakes each redacted non-shell dotfile to its
 // relocation target outside the home (spec 003 US3). The relocation env
 // variables are set image-wide in the 20-user section via the plan's
@@ -210,8 +235,28 @@ func loginShell(p *plan.Plan) string {
 	}
 }
 
-// shellSection renders the 60-shell section for the plan's shell kind.
+// shellSection renders the 60-shell section for the plan's shell kind. For
+// the OpenShell target it also makes that shell the final user's passwd
+// login shell (loginShellTemplate); the container target keeps the base
+// image user untouched.
 func shellSection(p *plan.Plan) (string, error) {
+	body, err := shellKindSection(p)
+	if err != nil || p.Target != manifest.TargetOpenShell {
+		return body, err
+	}
+	login, err := execTemplate(loginShellTemplate, map[string]any{
+		"Shell":  loginShell(p),
+		"User":   p.FinalUser.Name,
+		"UserRe": strings.ReplaceAll(p.FinalUser.Name, ".", `\.`),
+	})
+	if err != nil {
+		return "", err
+	}
+	return body + login, nil
+}
+
+// shellKindSection renders the shell-specific part of the 60-shell section.
+func shellKindSection(p *plan.Plan) (string, error) {
 	switch plan.ShellKind(p) {
 	case "zsh":
 		return execTemplate(shellZshTemplate, map[string]any{
