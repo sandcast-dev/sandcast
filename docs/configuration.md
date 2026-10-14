@@ -99,7 +99,7 @@ The plan chooses the relocation target per dotfile (there is no override in v1):
 | `targets.<target>.image` | string | | Required. Image name without tag. |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
 | `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. |
-| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
+| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`, `dotfiles`), compared without regard to case. Only the container target accepts this field. |
 
 `<target>` is `openshell` or `container`. Commands without `--target` use `openshell` when it is declared, otherwise `container`.
 
@@ -282,7 +282,7 @@ Version selectors accept `latest` (any version), a prefix such as `1.25` (1.25 o
 | Field | Meaning |
 |-------|---------|
 | `read_only`, `read_write` | Absolute paths added to the filesystem policy of OpenShell images. The upstream default policy does not cover `/opt`, so a component that installs outside `/opt/mise` and `/opt/sandcast` (which sandcast always grants read-only) lists its paths. |
-| `env` | Environment variables set in the image, before the mise install. The relocation variables sandcast sets for the shell and dotfiles (`ZDOTDIR`, `STARSHIP_CONFIG`, `INPUTRC`) win over a component value, with a notice. For the OpenShell target, a `BASH_ENV`, `ENV` or `ZDOTDIR` value under the overmounted home (`/sandbox`) fails the plan, because a shell would read its startup file from the mounted workspace. |
+| `env` | Environment variables set in the image, before the mise install. The relocation variables sandcast sets for the shell and dotfiles (`ZDOTDIR`, `STARSHIP_CONFIG`, `INPUTRC`) win over a component value, with a notice. For the OpenShell target, a `BASH_ENV`, `ENV` or `ZDOTDIR` value under the overmounted home (`/sandbox`), or one that is not a plain absolute path (`$HOME/.bashrc`, `~/.shrc`), fails the plan, because a shell would read its startup file from the mounted workspace. |
 | `dirs` | Directories to create, each with `path` and an `owner` of `user` (default) or `root`. |
 | `runtime_globs` | Absolute path globs appended to the `binaries` of every profile the component references, for interpreters and real binaries behind proxies, for example `/opt/mise/installs/node/*/bin/node`. |
 
@@ -386,6 +386,7 @@ All sandcast files in a project live under `.sandcast/`. The top level holds com
 | `Containerfile` | `build` | The pass-1 image definition. |
 | `Containerfile.final` | `build` | The pass-2 image definition that adds the adapted profiles. |
 | `shell/sandcast.zsh` or `shell/sandcast.sh` | `build` | The curated shell configuration for the build context. |
+| `dotfiles/<encoded target>` | `build` | The redacted content of each baked dotfile, staged for the build context under its relocation target with `/` and `%` percent-encoded (for example `dotfiles/etc%2Fgitconfig`). |
 | `harness/` | `build` | Harness files staged for the build context. |
 | `build.log` | `build` | The engine output of both passes. |
 | `profiles/<id>.yaml` | `build`, `profiles export` | The adapted provider profiles. |
