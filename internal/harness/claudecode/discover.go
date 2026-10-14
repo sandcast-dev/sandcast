@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rhuss/sandcast/internal/fsutil"
 	"github.com/rhuss/sandcast/internal/harness"
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/redact"
@@ -419,7 +420,7 @@ func marketplaceSource(plugin, name string, markets map[string]marketplaceJSON, 
 // displayPath shows a host path inside the project as ./<rest>, below the
 // home directory as ~/<rest>, and otherwise as is.
 func displayPath(p, home, project string) string {
-	if project != "" && strictlyInside(project, p) {
+	if project != "" && fsutil.StrictlyWithin(project, p) {
 		rel, _ := filepath.Rel(project, p)
 		return "./" + filepath.ToSlash(rel)
 	}
@@ -483,7 +484,8 @@ func listSkills(dir, prefix string) ([]harness.Extension, error) {
 
 // tildePath shows a path below home as ~/<rest>.
 func tildePath(path, home string) string {
-	if rel, err := filepath.Rel(home, path); err == nil && rel != "." && !strings.HasPrefix(rel, "..") && filepath.IsAbs(path) {
+	if filepath.IsAbs(path) && fsutil.StrictlyWithin(home, path) {
+		rel, _ := filepath.Rel(home, path)
 		return "~/" + filepath.ToSlash(rel)
 	}
 	return path

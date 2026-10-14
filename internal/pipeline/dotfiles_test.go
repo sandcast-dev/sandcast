@@ -198,8 +198,8 @@ func TestDotfileInputsNotRegularOrTooLargeSkipped(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "pipe.conf"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "dir.conf"), 0o755))
-	writeFile(t, filepath.Join(root, "big.conf"), strings.Repeat("x", maxDotfileSize+1))
-	writeFile(t, filepath.Join(root, "ok.conf"), strings.Repeat("x", maxDotfileSize))
+	writeFile(t, filepath.Join(root, "big.conf"), strings.Repeat("x", manifest.MaxDotfileSize+1))
+	writeFile(t, filepath.Join(root, "ok.conf"), strings.Repeat("x", manifest.MaxDotfileSize))
 	env := dotfileEnv(t.TempDir(), root)
 
 	done := make(chan struct{})

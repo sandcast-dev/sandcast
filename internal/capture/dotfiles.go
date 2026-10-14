@@ -3,63 +3,11 @@ package capture
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
+
+	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/manifest"
 )
-
-// DotfileAllowlist is the bounded set of host home dotfiles capture proposes
-// to bake (spec 003 R4). Paths are relative to the host home. The curated
-// shell configuration is handled separately and is not listed here.
-var DotfileAllowlist = []string{
-	".gitconfig",
-	".config/git/config",
-	".config/starship.toml",
-	".tmux.conf",
-	".inputrc",
-}
-
-// HomeDotfileAllowed reports whether a home-relative dotfile path (slash
-// separated, without the "~/" prefix) may be baked: an allowlist entry or a
-// file under ~/.config. Anything else in the host home (credential stores,
-// shell history, documents) is never read, whatever a committed manifest
-// lists (spec 003 R6, FR-007). The path is cleaned first, so ".." cannot
-// leave ~/.config.
-func HomeDotfileAllowed(rel string) bool {
-	rel = path.Clean(rel)
-	if IsAllowlisted(rel) {
-		return true
-	}
-	return strings.HasPrefix(rel, ".config/")
-}
-
-// deniedDirs are home or project directories that hold credentials; no file
-// below them is ever baked.
-var deniedDirs = []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config/gh"}
-
-// DotfileDenied reports why a dotfile path (slash separated, relative to the
-// home or the project) must never be baked, or "" when it may: a credential
-// store directory (.ssh, .aws, .gnupg, .kube, .docker, .config/gh), .netrc,
-// a shell or tool history file (*_history), or a credential-looking name.
-// It is applied to the path as written and to the path it resolves to.
-func DotfileDenied(rel string) string {
-	rel = path.Clean(rel)
-	for _, d := range deniedDirs {
-		if rel == d || strings.HasPrefix(rel, d+"/") || strings.Contains(rel, "/"+d+"/") {
-			return "it is in the credential store " + d
-		}
-	}
-	base := strings.ToLower(path.Base(rel))
-	switch {
-	case base == ".netrc" || base == "_netrc":
-		return "it is a credential file (.netrc)"
-	case strings.HasSuffix(base, "_history") || strings.HasSuffix(base, "history"):
-		return "it is a history file"
-	case isCredentialName(rel):
-		return "its name looks like a credential file"
-	}
-	return ""
-}
 
 // DotfileProposal is one host dotfile capture found and offers to bake.
 type DotfileProposal struct {
@@ -67,58 +15,30 @@ type DotfileProposal struct {
 	Path string `json:"path"`
 }
 
-// IsAllowlisted reports whether a home-relative path (as written in the
-// manifest, with an optional "~/" prefix) is in the bounded dotfile allowlist.
-// The plan uses it to mark a dotfile's source as allowlist vs explicit.
-func IsAllowlisted(p string) bool {
-	rel := strings.TrimPrefix(p, "~/")
-	rel = path.Clean(rel)
-	for _, a := range DotfileAllowlist {
-		if rel == a {
-			return true
-		}
-	}
-	return false
-}
-
-// ProposeDotfiles scans the host home for the allowlist entries that exist as
-// a regular file and are safe to copy, returning one manifest path per found
-// entry and a notice for each entry skipped. It never fails: a missing entry,
-// a symlink that leaves the home, or a credential-named file is skipped with a
-// notice rather than aborting capture (spec 003 Edge Cases, R6).
+// ProposeDotfiles scans the host home for the allowlist entries
+// (manifest.DotfileAllowlist) that exist as a regular file and are safe to
+// copy, returning one manifest path per found entry and a notice for each
+// entry skipped. It applies the same bounds the pipeline reads the entries
+// with (spec 003 R6): the whole path is resolved, so a symlinked parent such
+// as ~/.config pointing out of the home is caught as well as a symlinked
+// leaf; the resolved file must lie inside the resolved home, must not be a
+// credential or history file, and must be a regular file of at most
+// manifest.MaxDotfileSize bytes. A proposal is therefore never skipped later
+// by the plan. It never fails: a missing entry is skipped silently, anything
+// else with a notice, rather than aborting capture (spec 003 Edge Cases).
 func ProposeDotfiles(home string) (proposals []DotfileProposal, skipped []string) {
 	if home == "" {
 		return nil, nil
 	}
 	realHome, err := filepath.EvalSymlinks(home)
 	if err != nil {
-		realHome = home
+		return nil, []string{fmt.Sprintf("the home directory %s cannot be resolved (%v); dotfiles were not scanned", home, err)}
 	}
-	for _, rel := range DotfileAllowlist {
-		src := filepath.Join(home, filepath.FromSlash(rel))
-		fi, err := os.Lstat(src)
-		if err != nil {
-			continue // not present: skip silently, it is the common case
-		}
-		if isCredentialName(rel) {
-			skipped = append(skipped, fmt.Sprintf("~/%s looks like a credential file; not proposed", rel))
-			continue
-		}
-		real := src
-		if fi.Mode()&os.ModeSymlink != 0 {
-			real, err = filepath.EvalSymlinks(src)
-			if err != nil {
-				skipped = append(skipped, fmt.Sprintf("~/%s is a broken symlink; skipped", rel))
-				continue
+	for _, rel := range manifest.DotfileAllowlist {
+		if why := proposeDotfile(home, realHome, rel); why != "" {
+			if why != notPresent {
+				skipped = append(skipped, fmt.Sprintf("~/%s %s; skipped", rel, why))
 			}
-			if !within(realHome, real) {
-				skipped = append(skipped, fmt.Sprintf("~/%s is a symlink to %s outside the home; skipped", rel, real))
-				continue
-			}
-		}
-		rfi, err := os.Stat(real)
-		if err != nil || !rfi.Mode().IsRegular() {
-			skipped = append(skipped, fmt.Sprintf("~/%s is not a regular file; skipped", rel))
 			continue
 		}
 		proposals = append(proposals, DotfileProposal{Path: "~/" + rel})
@@ -126,29 +46,40 @@ func ProposeDotfiles(home string) (proposals []DotfileProposal, skipped []string
 	return proposals, skipped
 }
 
-// isCredentialName reports whether the base name of a path looks like a
-// credential file (R6): a dotenv file, a key or certificate, or a name that
-// mentions a token, secret or credential.
-func isCredentialName(rel string) bool {
-	base := strings.ToLower(path.Base(rel))
-	if base == ".env" || strings.HasPrefix(base, ".env.") {
-		return true
-	}
-	for _, ext := range []string{".pem", ".key", ".p12", ".pfx", ".crt"} {
-		if strings.HasSuffix(base, ext) {
-			return true
-		}
-	}
-	for _, word := range []string{"token", "secret", "credential", "password"} {
-		if strings.Contains(base, word) {
-			return true
-		}
-	}
-	return false
-}
+// notPresent marks an allowlist entry that does not exist, the common case,
+// which is skipped without a notice.
+const notPresent = "is not present"
 
-// within reports whether p is root itself or below it.
-func within(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+// proposeDotfile checks one allowlist entry and returns why it is not
+// proposed, or "" when it is.
+func proposeDotfile(home, realHome, rel string) string {
+	src := filepath.Join(home, filepath.FromSlash(rel))
+	if _, err := os.Lstat(src); err != nil {
+		return notPresent
+	}
+	if manifest.IsCredentialName(rel) {
+		return "looks like a credential file"
+	}
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return fmt.Sprintf("cannot be resolved (%v)", err)
+	}
+	if !fsutil.Within(realHome, real) {
+		return fmt.Sprintf("resolves to %s, outside the home", real)
+	}
+	if r, err := filepath.Rel(realHome, real); err == nil {
+		if why := manifest.DotfileDenied(filepath.ToSlash(r)); why != "" {
+			return fmt.Sprintf("resolves to %s, which is not baked because %s", real, why)
+		}
+	}
+	fi, err := os.Stat(real)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("cannot be read (%v)", err)
+	case !fi.Mode().IsRegular():
+		return "is not a regular file"
+	case fi.Size() > manifest.MaxDotfileSize:
+		return fmt.Sprintf("is larger than %d KiB", manifest.MaxDotfileSize>>10)
+	}
+	return ""
 }

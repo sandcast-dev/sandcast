@@ -467,7 +467,7 @@ var vcsDirs = map[string]bool{".git": true, ".hg": true, ".svn": true, ".jj": tr
 // directory.
 func stageFile(dir string, f plan.ContextFile) error {
 	target := filepath.Join(dir, filepath.FromSlash(f.Path))
-	if rel, err := filepath.Rel(dir, target); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !fsutil.Within(dir, target) {
 		return fmt.Errorf("context path %q leaves the build directory", f.Path)
 	}
 	fi, err := os.Stat(f.Source)

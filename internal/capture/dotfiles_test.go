@@ -7,15 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-)
 
-func TestIsAllowlisted(t *testing.T) {
-	assert.True(t, IsAllowlisted("~/.gitconfig"))
-	assert.True(t, IsAllowlisted(".gitconfig"))
-	assert.True(t, IsAllowlisted("~/.config/starship.toml"))
-	assert.False(t, IsAllowlisted("~/.config/nvim/init.lua"))
-	assert.False(t, IsAllowlisted("/etc/hosts"))
-}
+	"github.com/rhuss/sandcast/internal/manifest"
+)
 
 func TestProposeDotfilesFindsAllowlistAndSkips(t *testing.T) {
 	home := t.TempDir()
@@ -51,32 +45,46 @@ func TestProposeDotfilesSkipsSymlinkOutsideHome(t *testing.T) {
 	assert.Contains(t, skipped[0], "outside the home")
 }
 
-func TestIsCredentialName(t *testing.T) {
-	assert.True(t, isCredentialName(".env"))
-	assert.True(t, isCredentialName(".config/app/token.conf"))
-	assert.True(t, isCredentialName("id_rsa.pem"))
-	assert.False(t, isCredentialName(".gitconfig"))
-	assert.False(t, isCredentialName(".tmux.conf"))
+// TestProposeDotfilesResolvesParentSymlink checks a leaf that is a regular
+// file below a symlinked parent (~/.config pointing out of the home) is not
+// proposed: the pipeline resolves the whole path and would skip it later
+// (FINDING-16). A symlink that stays inside the home but lands in a
+// credential store is not proposed either, for the same reason.
+func TestProposeDotfilesResolvesParentSymlink(t *testing.T) {
+	home := t.TempDir()
+	elsewhere := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(elsewhere, "starship.toml"), []byte("add_newline = false\n"), 0o644))
+	require.NoError(t, os.Symlink(elsewhere, filepath.Join(home, ".config")))
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".ssh"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte("Host x\n"), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "config"), filepath.Join(home, ".gitconfig")))
+
+	props, skipped := ProposeDotfiles(home)
+	assert.Empty(t, props, "nothing outside the bounds is proposed")
+	require.Len(t, skipped, 2, "%v", skipped)
+	assert.Contains(t, skipped[1], "~/.config/starship.toml resolves to")
+	assert.Contains(t, skipped[1], "outside the home")
+	assert.Contains(t, skipped[0], "~/.gitconfig")
+	assert.Contains(t, skipped[0], "credential store .ssh")
 }
 
-func TestHomeDotfileAllowed(t *testing.T) {
-	for _, ok := range []string{".gitconfig", ".config/git/config", ".tmux.conf", ".inputrc", ".config/starship.toml", ".config/tool/settings.toml", "./.gitconfig"} {
-		assert.True(t, HomeDotfileAllowed(ok), ok)
-	}
-	for _, no := range []string{".aws/credentials", ".netrc", ".ssh/config", ".bash_history", "notes.txt", ".config", ".config/../.ssh/id_rsa", "..", "."} {
-		assert.False(t, HomeDotfileAllowed(no), no)
-	}
+// TestProposeDotfilesSkipsLargeFile checks the capture proposal applies the
+// same size cap the pipeline reads with, so a proposal is never rejected
+// later.
+func TestProposeDotfilesSkipsLargeFile(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".inputrc"), make([]byte, manifest.MaxDotfileSize+1), 0o644))
+	props, skipped := ProposeDotfiles(home)
+	assert.Empty(t, props)
+	require.Len(t, skipped, 1)
+	assert.Contains(t, skipped[0], "larger than 256 KiB")
 }
 
-func TestDotfileDenied(t *testing.T) {
-	for _, bad := range []string{
-		".ssh/config", ".aws/credentials", ".gnupg/pubring.kbx", ".kube/config", ".docker/config.json",
-		".config/gh/hosts.yml", ".config/gh", ".netrc", ".bash_history", ".zsh_history", ".config/x/.python_history",
-		"sub/.ssh/id_rsa", ".config/tool/api_token", "conf/deploy.key", ".env",
-	} {
-		assert.NotEmpty(t, DotfileDenied(bad), bad)
-	}
-	for _, ok := range []string{".gitconfig", ".config/git/config", ".config/ghostty/config", "conf/tool.conf", ".tmux.conf"} {
-		assert.Empty(t, DotfileDenied(ok), ok)
-	}
+// TestProposeDotfilesUnresolvableHome checks a home that cannot be resolved
+// is reported instead of proposing nothing silently.
+func TestProposeDotfilesUnresolvableHome(t *testing.T) {
+	props, skipped := ProposeDotfiles(filepath.Join(t.TempDir(), "missing"))
+	assert.Empty(t, props)
+	require.Len(t, skipped, 1)
+	assert.Contains(t, skipped[0], "cannot be resolved")
 }

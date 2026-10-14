@@ -17,7 +17,6 @@ import (
 
 	"github.com/rhuss/sandcast"
 	"github.com/rhuss/sandcast/internal/build"
-	"github.com/rhuss/sandcast/internal/capture"
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/fsutil"
@@ -358,8 +357,7 @@ func WritePlan(env Env, planned *Planned) error {
 func lockBuildDir(env Env, planned *Planned) (func(), error) {
 	// An explicit --out outside the project is the user's choice; the
 	// project's own build directory must not be reached through a symlink.
-	rel, err := filepath.Rel(env.Layout.Root, planned.Dir)
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if fsutil.Within(env.Layout.Root, planned.Dir) {
 		if err := env.Layout.CheckNoSymlinks(planned.Dir); err != nil {
 			return nil, &UsageError{Err: err}
 		}
@@ -381,10 +379,6 @@ func writePlan(env Env, planned *Planned) error {
 	return plan.WriteOutputs(planned.Dir, planned.Plan, planned.LockData)
 }
 
-// maxDotfileSize caps a dotfile read from the host. Dotfiles are small
-// configuration files; the cap keeps a huge file or a device out of plan.yaml.
-const maxDotfileSize = 256 << 10
-
 // dotfileInputs reads the manifest's dotfiles from the host for the plan to
 // redact and relocate (spec 003 US3). A committed manifest in an untrusted
 // project must not be able to pull host secrets into the image, so the
@@ -404,7 +398,7 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 		out = append(out, plan.DotfileInput{
 			HostPath:      d.Path,
 			Content:       content,
-			FromAllowlist: capture.IsAllowlisted(d.Path),
+			FromAllowlist: manifest.IsAllowlisted(d.Path),
 		})
 	}
 	return out, notices
@@ -418,7 +412,7 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 //   - A project-relative or absolute path must resolve inside the project.
 //   - Neither the path as written nor the path it resolves to may name a
 //     credential store, .netrc, a history file or a credential-looking file.
-//   - The file must be a regular file of at most maxDotfileSize bytes.
+//   - The file must be a regular file of at most manifest.MaxDotfileSize bytes.
 //
 // An error that the home or project directory, or the entry itself, cannot
 // be resolved skips the entry; a missing file is told apart from other
@@ -431,7 +425,7 @@ func readDotfile(env Env, p string) (string, error) {
 	root, rootName := env.Layout.Root, "project"
 	if kind == fsutil.HostPathHome {
 		rel := path.Clean(strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-		if !capture.HomeDotfileAllowed(rel) {
+		if !manifest.HomeDotfileAllowed(rel) {
 			return "", errors.New("is not baked: from the home, only the dotfile allowlist and ~/.config are read")
 		}
 		root, rootName = env.Home, "home"
@@ -450,7 +444,7 @@ func readDotfile(env Env, p string) (string, error) {
 	case err != nil:
 		return "", fmt.Errorf("could not be resolved (%w)", err)
 	}
-	if !withinDir(realRoot, real) {
+	if !fsutil.Within(realRoot, real) {
 		return "", fmt.Errorf("resolves to %s outside the %s", real, rootName)
 	}
 	// The path as written (cleaned by ResolveHostPath), relative to the
@@ -461,14 +455,14 @@ func readDotfile(env Env, p string) (string, error) {
 		if rerr != nil {
 			continue
 		}
-		if why := capture.DotfileDenied(filepath.ToSlash(rel)); why != "" {
+		if why := manifest.DotfileDenied(filepath.ToSlash(rel)); why != "" {
 			return "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
 		}
 	}
 	return readRegularFile(real)
 }
 
-// readRegularFile reads a regular file of at most maxDotfileSize bytes. It
+// readRegularFile reads a regular file of at most manifest.MaxDotfileSize bytes. It
 // checks the type before opening, so a FIFO cannot block the plan, and again
 // on the open file, so a swap in between is caught.
 func readRegularFile(name string) (string, error) {
@@ -479,8 +473,8 @@ func readRegularFile(name string) (string, error) {
 	if !fi.Mode().IsRegular() {
 		return "", errors.New("is not a regular file")
 	}
-	if fi.Size() > maxDotfileSize {
-		return "", fmt.Errorf("is larger than %d KiB", maxDotfileSize>>10)
+	if fi.Size() > manifest.MaxDotfileSize {
+		return "", fmt.Errorf("is larger than %d KiB", manifest.MaxDotfileSize>>10)
 	}
 	f, err := os.Open(name)
 	if err != nil {
@@ -491,20 +485,14 @@ func readRegularFile(name string) (string, error) {
 	if err != nil || !ofi.Mode().IsRegular() || !os.SameFile(fi, ofi) {
 		return "", errors.New("changed while it was read")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxDotfileSize+1))
+	data, err := io.ReadAll(io.LimitReader(f, manifest.MaxDotfileSize+1))
 	if err != nil {
 		return "", fmt.Errorf("could not be read (%w)", err)
 	}
-	if len(data) > maxDotfileSize {
-		return "", fmt.Errorf("is larger than %d KiB", maxDotfileSize>>10)
+	if len(data) > manifest.MaxDotfileSize {
+		return "", fmt.Errorf("is larger than %d KiB", manifest.MaxDotfileSize>>10)
 	}
 	return string(data), nil
-}
-
-// withinDir reports whether p is root itself or below it.
-func withinDir(root, p string) bool {
-	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // storedFragments reads .sandcast/fragments for plan; the first invalid

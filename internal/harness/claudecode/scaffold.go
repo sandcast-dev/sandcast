@@ -353,14 +353,14 @@ func resolveSource(src, home, project string) (string, error) {
 		return "", err
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if errors.Is(err, fs.ErrNotExist) && (project == "" || !strictlyInside(project, p)) {
+	if errors.Is(err, fs.ErrNotExist) && (project == "" || !fsutil.StrictlyWithin(project, p)) {
 		return "", fmt.Errorf("source %s does not exist on this host: %w", src, errHostOnlySource)
 	}
 	if err != nil {
 		return "", fmt.Errorf("source %s: %w", src, err)
 	}
 	for _, root := range sourceRoots(home, project) {
-		if strictlyInside(root, real) {
+		if fsutil.StrictlyWithin(root, real) {
 			return real, nil
 		}
 	}
@@ -383,17 +383,11 @@ func sourceRoots(home, project string) []string {
 		}
 	}
 	if project != "" {
-		if r, err := filepath.EvalSymlinks(project); err == nil && (realHome == "" || (r != realHome && !strictlyInside(r, realHome))) {
+		if r, err := filepath.EvalSymlinks(project); err == nil && (realHome == "" || (r != realHome && !fsutil.StrictlyWithin(r, realHome))) {
 			roots = append(roots, r)
 		}
 	}
 	return roots
-}
-
-// strictlyInside reports whether path is below root, not root itself.
-func strictlyInside(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // hostPath resolves a manifest source without following symlinks through
