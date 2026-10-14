@@ -115,6 +115,30 @@ func TestOvermountZshSurvives(t *testing.T) {
 	assert.Contains(t, out, "myll='ls -l'")
 }
 
+// TestOvermountBashWithoutRCBuilds covers a manifest with no shell section on
+// the default base image: the plan picks bash from the image facts and bakes
+// an empty rcfile and the launcher under /opt/sandcast, which the base image
+// does not have. The build must create the directory itself.
+func TestOvermountBashWithoutRCBuilds(t *testing.T) {
+	engine := requireEngine(t)
+	repo := "localhost/sandcast-it-overmount-norc"
+	image := repo + ":latest"
+	removeImages(t, engine, image)
+
+	dir := project(t, `schema_version: 1
+name: sc-overmount-norc
+base_image: nvidia-community-base
+targets:
+  openshell:
+    image: `+repo+`
+`)
+	require.Zero(t, sandcast(t, dir, nil, "build").code, "an image with bash from the image facts and no curated rc builds")
+
+	out, err := runEngine(t, engine, "run", "--rm", "--entrypoint", "/bin/sh", image, "-c", "test -x /opt/sandcast/shell-login && test -f /opt/sandcast/bashrc && echo BAKED")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "BAKED")
+}
+
 // TestOvermountBashSurvives covers scenarios 1 and 2 for bash: the baked
 // rcfile loads through the launcher and a planted workspace ~/.bashrc never
 // runs under the overmount.

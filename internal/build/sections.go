@@ -89,6 +89,7 @@ RUN install -d {{.ZDotDir}} \
 
 var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
 USER root
+RUN install -d {{.Prefix}}
 {{- if .RCPath}}
 COPY {{.ContextFile}} {{.RCPath}}
 RUN chmod 0644 {{.RCPath}}
@@ -108,6 +109,7 @@ var shellShTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: 
 USER root
 RUN <<'SANDCAST_EOF'
 set -eu
+install -d {{.Prefix}}
 cat > {{.ProfileScriptPath}} <<'SANDCAST_PROFILE'
 # Written by sandcast: minimal environment for sh under the home overmount.
 # The relocation variables are also set as image ENV; this is the sh fallback.
@@ -218,6 +220,7 @@ func shellSection(p *plan.Plan) (string, error) {
 		})
 	case "bash":
 		return execTemplate(shellBashTemplate, map[string]any{
+			"Prefix":         plan.RelocationPrefix,
 			"RCPath":         p.Shell.RCPath,
 			"RCPath0":        plan.BashRCPath,
 			"ContextFile":    ShellContextFile(p.Shell.Program),
@@ -226,6 +229,7 @@ func shellSection(p *plan.Plan) (string, error) {
 		})
 	default:
 		return execTemplate(shellShTemplate, map[string]any{
+			"Prefix":            plan.RelocationPrefix,
 			"ProfileScriptPath": plan.ProfileScriptPath,
 			"ShLoginPath":       plan.ShLoginPath,
 			"Launcher":          strings.TrimRight(shell.ShLoginLauncher(plan.ProfileScriptPath), "\n"),

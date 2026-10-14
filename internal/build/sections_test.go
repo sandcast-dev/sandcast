@@ -64,6 +64,33 @@ func TestShellSectionBashLauncher(t *testing.T) {
 	assert.NotContains(t, got, `CMD ["/bin/bash"`)
 }
 
+// TestShellSectionsCreateRelocationPrefix checks the bash and sh sections
+// create /opt/sandcast before they write into it. The base images have no
+// /opt/sandcast, and only a baked harness used to create it, so a bash image
+// without a curated rc (bash chosen from the image facts) failed to build
+// with "cannot create /opt/sandcast/bashrc: Directory nonexistent".
+func TestShellSectionsCreateRelocationPrefix(t *testing.T) {
+	noRC := shellKindPlan(t, "sh")
+	noRC.ImageFacts = plan.ImageFacts{Shells: []string{"/bin/sh", "/bin/bash"}}
+	require.Equal(t, "bash", plan.ShellKind(noRC))
+	for name, p := range map[string]*plan.Plan{
+		"bash with rc":    shellKindPlan(t, "bash"),
+		"bash without rc": noRC,
+		"sh":              shellKindPlan(t, "sh"),
+	} {
+		got, err := shellSection(p)
+		require.NoError(t, err, name)
+		mk := strings.Index(got, "install -d "+plan.RelocationPrefix)
+		require.GreaterOrEqual(t, mk, 0, "%s: the section creates %s:\n%s", name, plan.RelocationPrefix, got)
+		first := strings.Index(got, plan.RelocationPrefix+"/")
+		require.GreaterOrEqual(t, first, 0, name)
+		assert.Less(t, mk, first, "%s: %s is created before anything is written into it:\n%s", name, plan.RelocationPrefix, got)
+	}
+	got, err := shellSection(noRC)
+	require.NoError(t, err)
+	assert.Contains(t, got, ": > "+plan.BashRCPath, "without a curated rc the bash rcfile is created empty")
+}
+
 // TestShellSectionMinimalDefault checks a login shell that is neither zsh nor
 // bash gets a baked /etc/profile.d default plus a non-login sh launcher, so a
 // workspace .profile is never sourced (FR-011, FR-002/SC-002, research R2).
