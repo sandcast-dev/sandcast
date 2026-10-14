@@ -14,11 +14,6 @@ import (
 
 // Image paths (R-10).
 const (
-	// WorkDir is the OpenShell workspace directory, which is also the path the
-	// workspace volume is mounted over at runtime. It is defined once, in the
-	// plan package, so the WORKDIR and the overmount guard can never disagree
-	// (spec 003 SC-004).
-	WorkDir         = plan.OvermountHome
 	PolicyPath      = "/etc/openshell/policy.yaml"
 	ProfilesPath    = "/usr/share/sandcast/profiles"
 	ShellContextDir = "shell"
@@ -59,7 +54,7 @@ fi
 SANDCAST_EOF
 {{- end}}
 {{- if or .WorkDir .UserDirs}}
-RUN install -d -o {{.User.Name}} -g {{.User.Group}}{{if .WorkDir}} {{.WorkDir}}{{end}}{{range .UserDirs}} {{dir .}}{{end}}
+RUN install -d -o {{.User.Name}} -g {{.User.Group}}{{if .WorkDir}} {{dir .WorkDir}}{{end}}{{range .UserDirs}} {{dir .}}{{end}}
 {{- if .RootDirs}} \
  && install -d{{range .RootDirs}} {{dir .}}{{end}}
 {{- end}}

@@ -110,3 +110,27 @@ func TestPlanUnknownTarget(t *testing.T) {
 	assert.Equal(t, ExitUsage, ta.run("plan", "--target", "container"))
 	assert.Contains(t, ta.stderr.String(), "declares no container target")
 }
+
+// TestPlanUsesRegistryOvermountHome checks a user registry entry's
+// overmount_home reaches the plan (FINDING-28): the plan records it, and
+// the Containerfile's WORKDIR follows it.
+func TestPlanUsesRegistryOvermountHome(t *testing.T) {
+	const ref = "quay.io/example/ws:1"
+	ta := newTestApp(t)
+	ta.project(t)
+	require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("SANDCAST_CONFIG_DIR"), "base-images.yaml"), []byte(
+		"schema_version: 1\ntargets:\n  openshell:\n    - name: ws-base\n      ref: "+ref+"\n      overmount_home: /workspace\n"), 0o644))
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "base_image: nvidia-community-base\n", "base_image: ws-base\n", 1))
+	ta.eng.Digests[ref] = "sha256:" + strings.Repeat("cd", 32)
+
+	p := planJSON(t, ta)
+	assert.Equal(t, "/workspace", p.BaseImage.OvermountHome)
+	require.Equal(t, 0, ta.run("build"), ta.stderr.String())
+	cf, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "Containerfile"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cf), "WORKDIR /workspace\n")
+
+	// Without the field the default applies.
+	ta.write(t, ".sandcast/manifest.yaml", testManifest)
+	assert.Equal(t, plan.DefaultOvermountHome, planJSON(t, ta).BaseImage.OvermountHome)
+}

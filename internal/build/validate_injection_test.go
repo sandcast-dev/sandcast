@@ -38,6 +38,9 @@ func TestUserSectionRefusesInjection(t *testing.T) {
 		"relative dir": {func(p *plan.Plan) {
 			p.Image.Dirs = []plan.Dir{{Path: "opt/x", Owner: "user"}}
 		}, "directory"},
+		"workspace dir with newline": {func(p *plan.Plan) {
+			p.BaseImage.OvermountHome = "/w\nRUN id"
+		}, "directory"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

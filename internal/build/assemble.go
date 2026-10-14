@@ -105,12 +105,13 @@ func uniqueFragment(p *plan.Plan, name string) string {
 	return ""
 }
 
-// workDir is /sandbox for the OpenShell target (R-10) and the final user's
-// home for the container target, which applies no sandbox conventions
-// (FR-040).
+// workDir is the OpenShell workspace directory for the OpenShell target, the
+// path the workspace volume is mounted over (plan.OvermountPrefix, /sandbox
+// on the shipped base images, R-10), and the final user's home for the
+// container target, which applies no sandbox conventions (FR-040).
 func workDir(p *plan.Plan) string {
-	if p.Target == manifest.TargetOpenShell {
-		return WorkDir
+	if ws := plan.OvermountPrefix(p); ws != "" {
+		return ws
 	}
 	if p.FinalUser.Home != "" {
 		return p.FinalUser.Home
@@ -120,12 +121,11 @@ func workDir(p *plan.Plan) string {
 
 func userSection(p *plan.Plan) (string, error) {
 	var userDirs, rootDirs []string
-	sandboxDir := ""
-	if p.Target == manifest.TargetOpenShell {
-		sandboxDir = WorkDir
-	}
+	// The OpenShell workspace directory is always created for the final
+	// user; a component or harness directory equal to it adds nothing.
+	sandboxDir := plan.OvermountPrefix(p)
 	for _, d := range p.Image.Dirs {
-		if d.Path == WorkDir {
+		if sandboxDir != "" && d.Path == sandboxDir {
 			continue
 		}
 		if d.Owner == "root" {

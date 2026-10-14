@@ -3,21 +3,14 @@ package plan
 import (
 	"fmt"
 	"path"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/redact"
+	"github.com/rhuss/sandcast/internal/shell"
 )
-
-// safeTargetRe matches an absolute image path built only from characters that
-// are inert in both the shell and a Containerfile instruction. A relocation
-// target that fails it would let a crafted dotfile path inject into the
-// generated COPY/RUN instructions, so such a target is skipped (spec 003 US3,
-// constitution IV).
-var safeTargetRe = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)+$`)
 
 // DotfileInput is one dotfile the pipeline read from the host for the plan to
 // resolve. The plan redacts Content, picks the relocation target and emits the
@@ -159,21 +152,6 @@ func gitConfigXDG(norm string) bool {
 // INPUTRC replaces /etc/inputrc as well as ~/.inputrc.
 const InputRCInclude = "$include /etc/inputrc\n"
 
-// safeTarget reports whether a relocation target is a clean absolute path
-// of safe segments. safeTargetRe alone accepts "." and ".." segments, which
-// would let a target escape its tree and the overmount guard (FINDING-33).
-func safeTarget(t string) bool {
-	if !safeTargetRe.MatchString(t) || path.Clean(t) != t {
-		return false
-	}
-	for _, seg := range strings.Split(t[1:], "/") {
-		if seg == "." || seg == ".." {
-			return false
-		}
-	}
-	return true
-}
-
 // resolveDotfiles maps the dotfile inputs to baked selections, redacting each
 // one's content so no credential enters the image (FR-007). On a collision
 // (two inputs relocate to the same target) the explicit manifest entry wins
@@ -195,7 +173,11 @@ func resolveDotfiles(inputs []DotfileInput) ([]DotfileSelection, []RelocationNot
 	var extra []string
 	for _, in := range inputs {
 		target, env := relocateDotfile(in.HostPath)
-		if !safeTarget(target) {
+		// A target that is not a safe path would let a crafted dotfile path
+		// inject into the generated COPY and RUN instructions, or escape its
+		// tree with a "." or ".." segment (FINDING-33), so it is skipped
+		// (spec 003 US3, constitution IV).
+		if !shell.SafeAbsPath(target) {
 			extra = append(extra, fmt.Sprintf(
 				"dotfile %s relocates to an unsafe image path %q (only letters, digits, '.', '_' and '-' are allowed in a path segment, and no segment may be . or ..); skipped",
 				in.HostPath, target))

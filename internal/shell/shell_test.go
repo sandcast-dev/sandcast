@@ -20,6 +20,15 @@ func TestQuote(t *testing.T) {
 	assert.Equal(t, `'$HOME'`, QuoteIfNeeded("$HOME"))
 }
 
+func TestSafeAbsPath(t *testing.T) {
+	for _, ok := range []string{"/sandbox", "/etc/gitconfig", "/etc/xdg/a_b/c-d.toml", "/x/.hidden", "/x/..y"} {
+		assert.True(t, SafeAbsPath(ok), ok)
+	}
+	for _, no := range []string{"", "/", "sandbox", "/sandbox/", "//sandbox", "/a/./b", "/a/../b", "/..", "/.", "/a b", "/a;b", "/a$(id)", "/a\nb", "/a'b"} {
+		assert.False(t, SafeAbsPath(no), "%q", no)
+	}
+}
+
 func TestZshEnvExport(t *testing.T) {
 	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1", ZshEnvExport("/opt/sandcast/zdotdir"))
 }

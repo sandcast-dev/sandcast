@@ -110,6 +110,8 @@ func (p *Probed) selectComponents(env Env, opts ProbeOptions) error {
 		if inRegistry {
 			name := entry.Name
 			p.Base.RegistryEntry = &name
+			// The plan applies it to the openshell target only.
+			p.Base.OvermountHome = entry.OvermountHome
 			if entry.Notes != "" {
 				p.Base.Notes = []string{entry.Notes}
 			}

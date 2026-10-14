@@ -143,6 +143,11 @@ type BaseImage struct {
 	Reference     string   `yaml:"reference" json:"reference"`
 	Digest        string   `yaml:"digest" json:"digest"`
 	Notes         []string `yaml:"notes,omitempty" json:"notes,omitempty"`
+	// OvermountHome is the path the OpenShell runtime mounts the workspace
+	// volume over, which is also the WORKDIR (spec 003). It comes from the
+	// registry entry's overmount_home and defaults to DefaultOvermountHome;
+	// it is empty for the container target, which is never overmounted.
+	OvermountHome string `yaml:"overmount_home,omitempty" json:"overmount_home,omitempty"`
 }
 
 // ImageFacts are the probed base image facts without the probe time.

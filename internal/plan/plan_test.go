@@ -19,6 +19,7 @@ import (
 	"github.com/rhuss/sandcast/internal/policy"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/testutil"
 )
 
@@ -543,7 +544,7 @@ func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	in.Harnesses = []Harness{{
 		Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
-		Env: []EnvVar{{Name: "ZDOTDIR", Value: OvermountHome}, {Name: "STARSHIP_CONFIG", Value: OvermountHome + "/.config/starship.toml"}},
+		Env: []EnvVar{{Name: "ZDOTDIR", Value: DefaultOvermountHome}, {Name: "STARSHIP_CONFIG", Value: DefaultOvermountHome + "/.config/starship.toml"}},
 	}}
 	in.Dotfiles = []DotfileInput{{HostPath: "~/.config/starship.toml", Content: "add_newline = false\n", FromAllowlist: true}}
 	p, err := Build(in)
@@ -553,7 +554,7 @@ func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 		env[e.Name] = e.Value
 	}
 	assert.Equal(t, ZDotDir, env["ZDOTDIR"], "the relocation value wins")
-	assert.False(t, UnderOvermount(OvermountHome, env["STARSHIP_CONFIG"]), "STARSHIP_CONFIG stays out of the home: %s", env["STARSHIP_CONFIG"])
+	assert.False(t, UnderOvermount(DefaultOvermountHome, env["STARSHIP_CONFIG"]), "STARSHIP_CONFIG stays out of the home: %s", env["STARSHIP_CONFIG"])
 	var reported int
 	for _, n := range p.Notices {
 		if strings.Contains(n, "replaced by the relocation value") {
@@ -568,12 +569,12 @@ func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
 		bad := testInputs(t, testManifest(), nil)
 		bad.Harnesses = []Harness{{
 			Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
-			Env: []EnvVar{{Name: name, Value: OvermountHome + "/.bashenv"}},
+			Env: []EnvVar{{Name: name, Value: DefaultOvermountHome + "/.bashenv"}},
 		}}
 		_, err := Build(bad)
 		require.Error(t, err, name)
 		assert.Contains(t, err.Error(), name)
-		assert.Contains(t, err.Error(), OvermountHome)
+		assert.Contains(t, err.Error(), DefaultOvermountHome)
 	}
 }
 
@@ -617,8 +618,9 @@ func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
 }
 
 // TestResolveDotfilesRejectsDotSegments checks a host path with ".." cannot
-// produce a target that escapes the relocation tree: safeTargetRe accepts
-// "." and ".." segments, so a target must also be clean (FINDING-33).
+// produce a target that escapes the relocation tree: a character class
+// alone accepts "." and ".." segments, so shell.SafeAbsPath rejects them
+// (FINDING-33).
 func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
 	sels, _, extra := resolveDotfiles([]DotfileInput{
 		{HostPath: "~/../../../../etc/passwd", Content: "root::0:0::/:/bin/sh\n"},
@@ -749,17 +751,17 @@ func TestBuildReprovisionsOvermountTool(t *testing.T) {
 func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
 	// A normal zsh plan bakes nothing under the home.
 	ok := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}}
-	require.NoError(t, checkOvermountGuard(ok, OvermountHome, nil))
+	require.NoError(t, checkOvermountGuard(ok, DefaultOvermountHome, nil))
 	// A dotfile target under the home is caught; the guard is the one
 	// overmount check for dotfile targets.
 	bad := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh"},
-		Dotfiles: []DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: OvermountHome + "/.gitconfig"}}}
-	err := checkOvermountGuard(bad, OvermountHome, nil)
+		Dotfiles: []DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: DefaultOvermountHome + "/.gitconfig"}}}
+	err := checkOvermountGuard(bad, DefaultOvermountHome, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dotfile ~/.gitconfig")
-	assert.Contains(t, err.Error(), OvermountHome)
+	assert.Contains(t, err.Error(), DefaultOvermountHome)
 	// The container target has no overmount, so the guard never fires.
-	require.NoError(t, checkOvermountGuard(bad, OvermountPrefix(manifest.TargetContainer), nil))
+	require.NoError(t, checkOvermountGuard(bad, "", nil))
 	// A real relocation target under an overmount prefix that overlaps it
 	// (.gitconfig relocates to /etc/gitconfig, which is under "/etc"). The
 	// plan has no OpenShell hooks under /etc, so the dotfile is what trips.
@@ -768,9 +770,9 @@ func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "/etc/gitconfig")
 	// Boundary behavior of the helper the guard uses.
-	assert.True(t, UnderOvermount(OvermountHome, OvermountHome+"/.config"))
-	assert.False(t, UnderOvermount(OvermountHome, XDGConfigDir+"/x"))
-	assert.False(t, UnderOvermount("", OvermountHome+"/x"), "no overmount prefix means never under it")
+	assert.True(t, UnderOvermount(DefaultOvermountHome, DefaultOvermountHome+"/.config"))
+	assert.False(t, UnderOvermount(DefaultOvermountHome, XDGConfigDir+"/x"))
+	assert.False(t, UnderOvermount("", DefaultOvermountHome+"/x"), "no overmount prefix means never under it")
 }
 
 // TestOvermountGuardCoversDirsAndPolicyPaths checks the guard covers every
@@ -791,10 +793,12 @@ func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(img *component.ImageNeeds){
 		"component dir": func(img *component.ImageNeeds) {
-			img.Dirs = append(img.Dirs, component.Dir{Path: OvermountHome + "/.cache/tool"})
+			img.Dirs = append(img.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
 		},
-		"component read_write": func(img *component.ImageNeeds) { img.ReadWrite = append(img.ReadWrite, OvermountHome+"/.cache") },
-		"component read_only":  func(img *component.ImageNeeds) { img.ReadOnly = append(img.ReadOnly, OvermountHome+"/.local/bin") },
+		"component read_write": func(img *component.ImageNeeds) { img.ReadWrite = append(img.ReadWrite, DefaultOvermountHome+"/.cache") },
+		"component read_only": func(img *component.ImageNeeds) {
+			img.ReadOnly = append(img.ReadOnly, DefaultOvermountHome+"/.local/bin")
+		},
 	} {
 		_, err := Build(withGoImage(t, mutate))
 		require.Error(t, err, name)
@@ -803,14 +807,14 @@ func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	in.Harnesses = []Harness{{
 		Name: "h", Component: "h", FragmentName: SectionHarness + "/h", Fragment: "# 70-harness: h\nUSER root\n",
-		Dirs: []Dir{{Path: OvermountHome + "/.h", Owner: "user"}},
+		Dirs: []Dir{{Path: DefaultOvermountHome + "/.h", Owner: "user"}},
 	}}
 	_, err := Build(in)
 	require.Error(t, err, "harness dir")
-	assert.Contains(t, err.Error(), OvermountHome+"/.h (directory of a component or harness)")
+	assert.Contains(t, err.Error(), DefaultOvermountHome+"/.h (directory of a component or harness)")
 
 	_, err = Build(withGoImage(t, func(img *component.ImageNeeds) {
-		img.Dirs = append(img.Dirs, component.Dir{Path: OvermountHome})
+		img.Dirs = append(img.Dirs, component.Dir{Path: DefaultOvermountHome})
 	}))
 	require.NoError(t, err, "the workspace directory itself is allowed")
 
@@ -821,7 +825,7 @@ func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
 	cin.Target = manifest.TargetContainer
 	for _, w := range cin.Wanted {
 		if w.Key == "go" {
-			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: OvermountHome + "/.cache/tool"})
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
 		}
 	}
 	_, err = Build(cin)
@@ -842,7 +846,7 @@ func TestResolveDotfilesSkipsUnsafeTarget(t *testing.T) {
 	require.Len(t, sels, 1)
 	assert.Equal(t, GitConfigPath, sels[0].RelocatedTo)
 	for _, s := range sels {
-		assert.True(t, safeTargetRe.MatchString(s.RelocatedTo), "every baked target is a safe path")
+		assert.True(t, shell.SafeAbsPath(s.RelocatedTo), "every baked target is a safe path")
 	}
 	var skipped bool
 	for _, n := range extra {
@@ -920,4 +924,60 @@ func TestSelectAddsGitForHarnessPlugins(t *testing.T) {
 	for _, w := range wanted {
 		assert.NotEqual(t, "git", w.Key, "no plugins, no implicit git")
 	}
+}
+
+// TestBuildUsesBaseImageOvermountHome checks the overmount home is a
+// property of the base image: a registry entry's overmount_home reaches the
+// plan, which records it and applies it to the re-provisioning and the
+// guard; the OpenShell default is /sandbox, and the container target has
+// none (FINDING-28).
+func TestBuildUsesBaseImageOvermountHome(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/workspace"
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/workspace/.local/bin/git"}
+	for _, w := range in.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
+		}
+	}
+	p, err := Build(in)
+	require.NoError(t, err, "a /sandbox path is fine when the workspace is mounted elsewhere")
+	assert.Equal(t, "/workspace", p.BaseImage.OvermountHome)
+	assert.Equal(t, "/workspace", OvermountPrefix(p))
+	assert.Equal(t, ActionInstall, p.Component("git").Action, "a tool only under the overmount home is re-provisioned")
+
+	bad := testInputs(t, testManifest(), nil)
+	bad.BaseImage.OvermountHome = "/workspace"
+	for _, w := range bad.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: "/workspace/.cache/tool"})
+		}
+	}
+	_, err = Build(bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lies under the overmount home /workspace")
+
+	def, err := Build(testInputs(t, testManifest(), nil))
+	require.NoError(t, err)
+	assert.Equal(t, DefaultOvermountHome, def.BaseImage.OvermountHome, "the default is recorded")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.BaseImage.OvermountHome = "/workspace"
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.Empty(t, cp.BaseImage.OvermountHome, "the container target is never overmounted")
+	assert.Empty(t, OvermountPrefix(cp))
+
+	unsafe := testInputs(t, testManifest(), nil)
+	unsafe.BaseImage.OvermountHome = "/w; id"
+	_, err = Build(unsafe)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overmount home")
+
+	// A plan.yaml written before the field existed reads as the default.
+	old := &Plan{Target: manifest.TargetOpenShell}
+	assert.Equal(t, DefaultOvermountHome, OvermountPrefix(old))
 }

@@ -24,6 +24,25 @@ func QuoteIfNeeded(s string) string {
 	return Quote(s)
 }
 
+var safeAbsPathRe = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)+$`)
+
+// SafeAbsPath reports whether p is a clean absolute path whose segments
+// consist only of letters, digits, '.', '_' and '-', none of them "." or
+// "..". Such a path is inert as a shell word and in a Containerfile
+// instruction, so it can be written into either unquoted, and it cannot
+// escape the tree it names. "/" itself is not accepted.
+func SafeAbsPath(p string) bool {
+	if !safeAbsPathRe.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
+}
+
 // ZshEnvExport returns the single line sandcast adds to the global zshenv
 // (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv elsewhere) to relocate
 // zsh's startup files out of the overmounted home. zsh reads its global zshenv

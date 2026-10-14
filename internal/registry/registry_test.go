@@ -101,6 +101,38 @@ func TestParse(t *testing.T) {
 			wantErr: "target container, entry 1: name is empty",
 		},
 		{
+			name: "overmount home of an openshell entry",
+			data: "schema_version: 1\ntargets:\n  openshell:\n    - name: ws\n      ref: example.com/ws:1\n      overmount_home: /workspace\n",
+			check: func(t *testing.T, r *Registry) {
+				assert.Equal(t, []Entry{{Name: "ws", Ref: "example.com/ws:1", OvermountHome: "/workspace"}}, r.Targets[TargetOpenShell])
+			},
+		},
+		{
+			name:    "overmount home on a container entry",
+			data:    "schema_version: 1\ntargets:\n  container:\n    - name: a\n      ref: r\n      overmount_home: /workspace\n",
+			wantErr: "target container, entry 1 (a): overmount_home applies to openshell entries only",
+		},
+		{
+			name:    "relative overmount home",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: workspace\n",
+			wantErr: `overmount_home "workspace" must be an absolute path`,
+		},
+		{
+			name:    "overmount home with a dot segment",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: /work/../etc\n",
+			wantErr: `overmount_home "/work/../etc" must be an absolute path`,
+		},
+		{
+			name:    "overmount home with shell syntax",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: \"/w; id\"\n",
+			wantErr: "overmount_home",
+		},
+		{
+			name:    "root as overmount home",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: /\n",
+			wantErr: "overmount_home",
+		},
+		{
 			name:    "two defaults",
 			data:    "schema_version: 1\ntargets:\n  container:\n    - name: a\n      ref: r1\n      default: true\n    - name: b\n      ref: r2\n      default: true\n",
 			wantErr: "target container: 2 entries are marked default (a, b), want exactly one",

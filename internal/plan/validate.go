@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/version"
 )
 
@@ -72,6 +73,9 @@ func Validate(p *Plan) error {
 	}
 	if !digestRe.MatchString(p.BaseImage.Digest) {
 		add("base_image.digest: %q is not a sha256 digest", p.BaseImage.Digest)
+	}
+	if h := p.BaseImage.OvermountHome; h != "" && !shell.SafeAbsPath(h) {
+		add("base_image.overmount_home: %q is not an absolute path of safe segments", h)
 	}
 	oneOf("image_facts.package_manager", p.ImageFacts.PackageManager, "apt-get", "dnf", "yum", "apk", "none")
 	if p.FinalUser.Name == "" {

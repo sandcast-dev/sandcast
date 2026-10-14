@@ -14,6 +14,7 @@ import (
 	"github.com/rhuss/sandcast/internal/policy"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/version"
 )
 
@@ -73,11 +74,13 @@ const (
 	// shell other than bash, so the shell reads RedirectHome/.profile (which
 	// restores HOME) instead of a workspace .profile.
 	RedirectHome = RelocationPrefix + "/home"
-	// OvermountHome is the path OpenShell mounts the workspace volume over at
-	// runtime on the sandbox base images. Anything baked under it is hidden
-	// once the volume is mounted (spec US4, FR-008/FR-009). It is a property
-	// of the base image; the current base images use /sandbox.
-	OvermountHome = "/sandbox"
+	// DefaultOvermountHome is the path OpenShell mounts the workspace volume
+	// over at runtime on the sandbox base images, and the image WORKDIR.
+	// Anything baked under it is hidden once the volume is mounted (spec US4,
+	// FR-008/FR-009). It is a property of the base image: a registry entry
+	// sets another path with overmount_home, and the plan records the
+	// effective value in base_image.overmount_home (see OvermountPrefix).
+	DefaultOvermountHome = "/sandbox"
 )
 
 // ZshEnvPaths are the global zshenv files sandcast sets ZDOTDIR in. zsh reads
@@ -94,15 +97,38 @@ var ZshEnvPaths = []string{"/etc/zsh/zshenv", "/etc/zshenv"}
 // official bash image) read no system file before the home .bashrc.
 var SystemBashrcPaths = []string{"/etc/bash.bashrc", "/etc/bash/bashrc"}
 
-// OvermountPrefix returns the overmount home prefix for a target, or "" when
-// the target applies no sandbox mount. The container target keeps the base
-// image home and is never overmounted (FR-040), so only the OpenShell target
-// has a prefix.
-func OvermountPrefix(target string) string {
-	if target == manifest.TargetOpenShell {
-		return OvermountHome
+// OvermountPrefix returns the overmount home of the plan, or "" when its
+// target applies no sandbox mount. The container target keeps the base image
+// home and is never overmounted (FR-040), so only the OpenShell target has a
+// prefix: the base image's overmount home, or DefaultOvermountHome when the
+// plan does not record one (a plan.yaml written before the field existed).
+// The build reads it for the WORKDIR and the workspace directory, so the
+// WORKDIR and the overmount guard can never disagree (SC-004).
+func OvermountPrefix(p *Plan) string {
+	if p.Target != manifest.TargetOpenShell {
+		return ""
 	}
-	return ""
+	if p.BaseImage.OvermountHome != "" {
+		return p.BaseImage.OvermountHome
+	}
+	return DefaultOvermountHome
+}
+
+// overmountHomeOf returns the overmount home the plan records for a target:
+// the base image's value or the default for the OpenShell target, nothing for
+// the container target. A value that is not a safe absolute path is refused,
+// because the build writes it into WORKDIR and a RUN instruction.
+func overmountHomeOf(target, home string) (string, error) {
+	if target != manifest.TargetOpenShell {
+		return "", nil
+	}
+	if home == "" {
+		return DefaultOvermountHome, nil
+	}
+	if !shell.SafeAbsPath(home) {
+		return "", fmt.Errorf("base image overmount home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments", home)
+	}
+	return home, nil
 }
 
 // UnderOvermount reports whether an absolute image path would resolve under
@@ -214,8 +240,11 @@ func Build(in Inputs) (*Plan, error) {
 	if p.BaseImage.Notes == nil {
 		p.BaseImage.Notes = []string{}
 	}
+	if p.BaseImage.OvermountHome, err = overmountHomeOf(in.Target, in.BaseImage.OvermountHome); err != nil {
+		return nil, err
+	}
 
-	overmount := OvermountPrefix(in.Target)
+	overmount := OvermountPrefix(p)
 	var (
 		packages   []string
 		packageIdx []int

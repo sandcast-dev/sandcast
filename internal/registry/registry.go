@@ -14,6 +14,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/shell"
 )
 
 // FileName is the registry file name, shipped at the repository root and
@@ -42,6 +43,12 @@ type Entry struct {
 	Default bool `yaml:"default" json:"default"`
 	// Notes is free text shown in the plan notices.
 	Notes string `yaml:"notes,omitempty" json:"notes,omitempty"`
+	// OvermountHome is the path the OpenShell runtime mounts the workspace
+	// volume over in sandboxes from this image, which is also the image
+	// WORKDIR. Nothing sandcast bakes may lie under it (spec 003). Optional,
+	// for openshell entries only; empty means /sandbox, the path of the
+	// OpenShell sandbox base images.
+	OvermountHome string `yaml:"overmount_home,omitempty" json:"overmount_home,omitempty"`
 }
 
 // Registry maps a target type to its base image entries.
@@ -197,6 +204,15 @@ func (r *Registry) check(requireDefault bool) error {
 			}
 			if e.Default {
 				defaults = append(defaults, e.Name)
+			}
+			if e.OvermountHome != "" {
+				switch {
+				case t != TargetOpenShell:
+					errs = append(errs, fmt.Errorf("target %s, entry %d (%s): overmount_home applies to openshell entries only", t, i+1, e.Name))
+				case !shell.SafeAbsPath(e.OvermountHome):
+					errs = append(errs, fmt.Errorf("target %s, entry %d (%s): overmount_home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments",
+						t, i+1, e.Name, e.OvermountHome))
+				}
 			}
 		}
 		switch {

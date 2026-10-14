@@ -182,7 +182,7 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 	assert.Equal(t, "dotfiles/etc%2Fgitconfig", DotfileContextFile("/etc/gitconfig"))
 	// No dotfile target may be under the overmount home.
 	for _, d := range p.Dotfiles {
-		assert.False(t, plan.UnderOvermount(plan.OvermountHome, d.RelocatedTo))
+		assert.False(t, plan.UnderOvermount(plan.DefaultOvermountHome, d.RelocatedTo))
 	}
 }
 
@@ -247,11 +247,41 @@ func TestNoGeneratedFileSourcesTheHome(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				continue
 			}
-			assert.NotContains(t, line, plan.OvermountHome+"/",
+			assert.NotContains(t, line, plan.DefaultOvermountHome+"/",
 				"kind %s: no generated instruction may touch a path under the overmount home: %q", kind, line)
 		}
 		// None of the shells may read a $HOME-relative rc file.
 		assert.NotContains(t, got, "$HOME/.", kind)
 		assert.NotContains(t, got, "~/.", kind)
 	}
+}
+
+// TestWorkDirFollowsOvermountHome checks the WORKDIR and the workspace
+// directory come from the plan's overmount home, the one value the guard
+// uses too (FINDING-2, FINDING-28): a base image whose workspace is mounted
+// at /workspace gets that WORKDIR, a plan without the field gets /sandbox,
+// and the container target keeps the user's home.
+func TestWorkDirFollowsOvermountHome(t *testing.T) {
+	p := shellKindPlan(t, "bash")
+	p.BaseImage.OvermountHome = "/workspace"
+	p.FinalUser.Home = "/workspace"
+	p.Image.Dirs = []plan.Dir{{Path: "/workspace", Owner: "user"}, {Path: "/opt/tool", Owner: "user"}}
+	got, err := Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "RUN install -d -o sandbox -g sandbox /workspace /opt/tool\n", "the workspace dir is created once")
+	assert.Contains(t, got, "WORKDIR /workspace\n")
+	assert.NotContains(t, got, "/sandbox")
+
+	got, err = Assemble(shellKindPlan(t, "bash"))
+	require.NoError(t, err)
+	assert.Contains(t, got, "WORKDIR /sandbox\n", "the default when the plan records no overmount home")
+
+	p = shellKindPlan(t, "bash")
+	p.Target = "container"
+	p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
+	p.Image.Dirs = []plan.Dir{{Path: "/sandbox", Owner: "root"}}
+	got, err = Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "WORKDIR /root\n")
+	assert.Contains(t, got, "RUN install -d /sandbox\n", "the container target has no workspace dir to skip")
 }

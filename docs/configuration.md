@@ -177,6 +177,7 @@ targets:
 | `ref` | Required. Image reference. |
 | `default` | At most one entry per target type in the file. |
 | `notes` | Free text, shown in the plan as base image notes. |
+| `overmount_home` | Optional, `openshell` entries only. The path the OpenShell runtime mounts the workspace volume over in sandboxes from this image, which is also the image `WORKDIR`. Default `/sandbox`, the path of the OpenShell sandbox base images. It must be an absolute path of letters, digits, `.`, `_` and `-` without `.` or `..` segments. The plan records the effective value as `base_image.overmount_home`, refuses anything it would bake or declare under it, and re-provisions a base-image tool found only there (see [the home model](guides/build.md#the-home-model-and-shell-initialization)). |
 
 The user file merges over the shipped registry by entry name, per target type:
 
