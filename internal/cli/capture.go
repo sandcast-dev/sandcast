@@ -42,9 +42,10 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 					return usageErr("%v", err)
 				}
 			}
-			home := ""
+			var home string
+			var homeErr error
 			if host && !noHost {
-				home, _ = os.UserHomeDir()
+				home, homeErr = a.hostHome()
 			}
 			res, err := capture.Match(cmd.Context(), abs, set.All(), capture.Options{
 				Host:      host && !noHost,
@@ -55,6 +56,11 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if homeErr != nil {
+				// Without a home no dotfile can be proposed; say so, so "none
+				// found" and "not scanned" are told apart.
+				res.DotfileNotices = append(res.DotfileNotices, fmt.Sprintf("the host home directory is unknown (%v); dotfiles were not scanned", homeErr))
 			}
 			if a.opts.json {
 				return writeJSON(a.Stdout, res)

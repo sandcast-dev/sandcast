@@ -16,15 +16,20 @@ type harnessRow struct {
 	Path      string `json:"path,omitempty"`
 }
 
+// hostHome returns the host home directory: HOME through Getenv (so tests
+// use their own home), else os.UserHomeDir.
+func (a *App) hostHome() (string, error) {
+	if home := a.Getenv("HOME"); home != "" {
+		return home, nil
+	}
+	return os.UserHomeDir()
+}
+
 // harnessEnv describes the host for adapters.
 func (a *App) harnessEnv() (harness.Env, error) {
-	home := a.Getenv("HOME")
-	if home == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return harness.Env{}, err
-		}
-		home = h
+	home, err := a.hostHome()
+	if err != nil {
+		return harness.Env{}, err
 	}
 	l, err := a.layout()
 	if err != nil {

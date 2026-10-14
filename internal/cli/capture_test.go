@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -53,9 +54,14 @@ func TestComponentsMatch(t *testing.T) {
 	}
 	fixture, err := filepath.Abs("../../tests/fixtures/reference-project")
 	require.NoError(t, err)
+	// The host home is the test home (HOME through Getenv), never the
+	// developer's: its .gitconfig is the one dotfile proposed.
+	require.NoError(t, os.WriteFile(filepath.Join(ta.home, ".gitconfig"), []byte("[user]\n\temail = a@b.c\n"), 0o644))
 	require.Equal(t, 0, ta.run("components", "match", fixture, "--json", "--harness", "test-harness"), ta.stderr.String())
 	var res capture.Result
 	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &res))
+	assert.Equal(t, []capture.DotfileProposal{{Path: "~/.gitconfig"}}, res.Dotfiles)
+	assert.Empty(t, res.DotfileNotices)
 	keys := map[string]string{}
 	versions := map[string]string{}
 	for _, p := range res.Proposals {
@@ -68,12 +74,38 @@ func TestComponentsMatch(t *testing.T) {
 	assert.Equal(t, []string{"/usr/bin/fzf"}, queried)
 	assert.NotContains(t, keys, "starship", "not on this fake host")
 
+	queried = nil
+	require.Equal(t, 0, ta.run("components", "match", fixture), ta.stderr.String())
+	assert.Contains(t, ta.stdout.String(), "dotfiles: ~/.gitconfig\n")
+
 	require.Equal(t, 0, ta.run("components", "match", fixture, "--no-host"))
 	assert.Contains(t, ta.stdout.String(), "go.mod")
 	assert.NotContains(t, ta.stdout.String(), "/usr/bin/fzf")
+	assert.NotContains(t, ta.stdout.String(), "dotfiles:", "no host scan without host detection")
 
 	assert.Equal(t, ExitUsage, ta.run("components", "match", fixture, "--harness", "vscode"))
 	assert.Equal(t, ExitUsage, ta.run("components", "match", filepath.Join(fixture, "go.mod")))
+}
+
+// TestComponentsMatchUnknownHome checks an unknown host home (HOME unset in
+// a CI container or a service) is reported instead of silently proposing no
+// dotfiles (FINDING-18).
+func TestComponentsMatchUnknownHome(t *testing.T) {
+	ta := newTestApp(t)
+	ta.Getenv = func(string) string { return "" }
+	t.Setenv("HOME", "")
+	fixture, err := filepath.Abs("../../tests/fixtures/reference-project")
+	require.NoError(t, err)
+	require.Equal(t, 0, ta.run("components", "match", fixture, "--json"), ta.stderr.String())
+	var res capture.Result
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &res))
+	assert.Empty(t, res.Dotfiles)
+	require.Len(t, res.DotfileNotices, 1)
+	assert.Contains(t, res.DotfileNotices[0], "host home directory is unknown")
+	assert.Contains(t, res.DotfileNotices[0], "dotfiles were not scanned")
+
+	require.Equal(t, 0, ta.run("components", "match", fixture))
+	assert.Contains(t, ta.stdout.String(), "dotfile skipped: the host home directory is unknown")
 }
 
 func TestHarnessListDiscover(t *testing.T) {
