@@ -61,7 +61,7 @@ func TestDotfileInputsAllowlistAndExplicit(t *testing.T) {
 // (spec 003 Edge Cases).
 func TestDotfileInputsMissingSkipped(t *testing.T) {
 	home := t.TempDir()
-	out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.config/does-not-exist"))
+	out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.config/nvim/does-not-exist"))
 	assert.Empty(t, out)
 	require.Len(t, notices, 1)
 	assert.Contains(t, notices[0], "does not exist")
@@ -135,26 +135,40 @@ func skippedWith(t *testing.T, env Env, want string, paths ...string) {
 
 // TestDotfileInputsHomeBounded checks a committed manifest cannot pull host
 // secrets into the image: a home-relative dotfile must be an allowlist entry
-// or a file under ~/.config, and credential stores and history files are
-// refused even there (FINDING-22).
+// or lie in one of the allowed ~/.config entries (the configuration of a
+// known tool), so the credential stores under ~/.config (sops age keys,
+// 1Password, gcloud, gh) and any other ~/.config file are refused by the
+// bound, and credential and history names are refused even inside an
+// allowed entry.
 func TestDotfileInputsHomeBounded(t *testing.T) {
 	home := t.TempDir()
-	for _, f := range []string{".aws/credentials", ".netrc", ".kube/config", ".docker/config.json", ".ssh/config", ".bash_history", "notes.txt"} {
+	for _, f := range []string{
+		".aws/credentials", ".netrc", ".kube/config", ".docker/config.json", ".ssh/config", ".bash_history", "notes.txt",
+		".config/sops/age/keys.txt", ".config/op/config", ".config/gcloud/legacy_credentials/a/adc.json", ".config/gh/hosts.yml",
+		".config/tool/settings.toml", ".config/GH/hosts.yml", ".config/Nvim/init.lua",
+	} {
 		writeFile(t, filepath.Join(home, f), "secret\n")
 	}
 	env := dotfileEnv(home, t.TempDir())
-	skippedWith(t, env, "only the dotfile allowlist and ~/.config", "~/.aws/credentials", "~/.netrc", "~/.kube/config", "~/.docker/config.json", "~/.ssh/config", "~/.bash_history", "~/notes.txt", "~/.config/../.ssh/config")
+	skippedWith(t, env, "only the dotfile allowlist", "~/.aws/credentials", "~/.netrc", "~/.kube/config", "~/.docker/config.json", "~/.ssh/config", "~/.bash_history", "~/notes.txt", "~/.config/../.ssh/config",
+		"~/.config/sops/age/keys.txt", "~/.config/op/config", "~/.config/gcloud/legacy_credentials/a/adc.json", "~/.config/gh/hosts.yml",
+		"~/.config/tool/settings.toml", "~/.config/GH/hosts.yml", "~/.config/Nvim/init.lua")
+	_, notices := dotfileInputs(env, mdotfiles("~/.config/tool/settings.toml"))
+	require.Len(t, notices, 1)
+	assert.Contains(t, notices[0], "these ~/.config entries: git/, starship.toml, nvim/", "the notice names the bound")
 
-	for _, f := range []string{".config/gh/hosts.yml", ".config/tool/api_token", ".config/foo/.zsh_history", ".config/app/server.pem"} {
+	for _, f := range []string{".config/nvim/api_token", ".config/nvim/.zsh_history", ".config/git/server.pem", ".config/helix/secrets/x.toml"} {
 		writeFile(t, filepath.Join(home, f), "secret\n")
 	}
-	skippedWith(t, env, "credential", "~/.config/gh/hosts.yml", "~/.config/tool/api_token", "~/.config/foo/.zsh_history", "~/.config/app/server.pem")
+	skippedWith(t, env, "credential", "~/.config/nvim/api_token", "~/.config/nvim/.zsh_history", "~/.config/git/server.pem", "~/.config/helix/secrets/x.toml")
 
-	writeFile(t, filepath.Join(home, ".config", "tool", "settings.toml"), "theme = dark\n")
-	out, notices := dotfileInputs(env, mdotfiles("~/.config/tool/settings.toml"))
+	writeFile(t, filepath.Join(home, ".config", "nvim", "lua", "init.lua"), "vim.o.number = true\n")
+	writeFile(t, filepath.Join(home, ".config", "ghostty", "config"), "theme = dark\n")
+	out, notices := dotfileInputs(env, mdotfiles("~/.config/nvim/lua/init.lua", "~/.config/ghostty/config"))
 	require.Empty(t, notices)
-	require.Len(t, out, 1)
-	assert.Equal(t, "theme = dark\n", out[0].Content)
+	require.Len(t, out, 2)
+	assert.Equal(t, "vim.o.number = true\n", out[0].Content)
+	assert.Equal(t, "theme = dark\n", out[1].Content)
 }
 
 // TestDotfileInputsHomeSymlinkToCredentialSkipped checks the denylist also
@@ -163,9 +177,9 @@ func TestDotfileInputsHomeBounded(t *testing.T) {
 func TestDotfileInputsHomeSymlinkToCredentialSkipped(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, filepath.Join(home, ".ssh", "config"), "Host x\n")
-	require.NoError(t, os.MkdirAll(filepath.Join(home, ".config"), 0o755))
-	require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "config"), filepath.Join(home, ".config", "innocent.conf")))
-	skippedWith(t, dotfileEnv(home, t.TempDir()), "credential", "~/.config/innocent.conf")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".config", "nvim"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "config"), filepath.Join(home, ".config", "nvim", "innocent.lua")))
+	skippedWith(t, dotfileEnv(home, t.TempDir()), "credential", "~/.config/nvim/innocent.lua")
 }
 
 // TestDotfileInputsAbsoluteOutsideProjectSkipped checks an absolute path is

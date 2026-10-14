@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.3
+sandcast_version: 0.1.4
 ---
 
 # sandcast capture
@@ -264,9 +264,9 @@ The image baked configuration must survive the OpenShell home overmount: at runt
 
 The user may also name dotfiles the allowlist omits, within these bounds, which sandcast enforces at plan time:
 
-- From the home, only allowlist entries and files under `~/.config` (for example `~/.config/ghostty/config`). Use `~/`, never `~user/`.
+- From the home, only allowlist entries and the configuration of these tools under `~/.config`: `git/`, `starship.toml`, `nvim/`, `helix/`, `tmux/`, `alacritty/`, `kitty/`, `wezterm/`, `ghostty/`, `bat/`, `ripgrep/` (for example `~/.config/ghostty/config` or `~/.config/nvim/init.lua`). Nothing else under `~/.config` is read: it also holds credential stores (`gh`, `gcloud`, `sops`, `op`, `containers`, `rclone`) whose contents no redactor recognizes reliably. Use `~/`, never `~user/`, and spell the path exactly.
 - Any project-relative path inside the project. An absolute path only when it lies inside the project.
-- Never a credential store (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh`), `.netrc`, a history file, or a file whose name looks like a key, token, secret or certificate. Do not propose these, and tell the user why when they ask for one.
+- Never a credential store (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh` and the other `~/.config` stores), `.netrc`, a history file, or a path with a segment that looks like a key, token, secret, credential or certificate. Do not propose these, and tell the user why when they ask for one.
 - Only regular files up to 256 KiB.
 
 For a file outside these bounds, suggest copying it into the project and listing the project-relative path. sandcast skips an entry outside the bounds, or one that does not exist at build time, with a notice; it never fails the build.

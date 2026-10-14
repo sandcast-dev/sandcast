@@ -407,8 +407,9 @@ func dotfileInputs(env Env, m *manifest.Manifest) ([]plan.DotfileInput, []string
 // readDotfile resolves one manifest dotfile and reads it within these bounds,
 // failing closed:
 //
-//   - A "~/" path must be a dotfile allowlist entry or a file under ~/.config
-//     and must resolve inside the home.
+//   - A "~/" path must be a dotfile allowlist entry or lie in one of the
+//     ~/.config entries of manifest.ConfigDotfileAllowlist, and must resolve
+//     inside the home.
 //   - A project-relative or absolute path must resolve inside the project.
 //   - Neither the path as written nor the path it resolves to may name a
 //     credential store, .netrc, a history file or a credential-looking file.
@@ -426,7 +427,7 @@ func readDotfile(env Env, p string) (string, error) {
 	if kind == fsutil.HostPathHome {
 		rel := path.Clean(strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
 		if !manifest.HomeDotfileAllowed(rel) {
-			return "", errors.New("is not baked: from the home, only the dotfile allowlist and ~/.config are read")
+			return "", fmt.Errorf("is not baked: from the home, only %s are read", manifest.HomeDotfileBound())
 		}
 		root, rootName = env.Home, "home"
 	}

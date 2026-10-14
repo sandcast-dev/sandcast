@@ -35,6 +35,7 @@ const (
 	KindHuggingFace = "huggingface-token"
 	KindNotion      = "notion-token"
 	KindJWT         = "jwt"
+	KindAge         = "age-secret-key"
 	// KindURLPath is a credential-like path segment of an MCP server or
 	// marketplace url. Scan does not report it; the harness discovery
 	// redactor does, because download urls elsewhere carry hashes in paths.
@@ -84,6 +85,16 @@ var patterns = []pattern{
 		kind:    KindPrivateKey,
 		re:      regexp.MustCompile(`(-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----)`),
 		excerpt: func(string) string { return "-----BEGIN PRIVATE KEY-----" + mask },
+	},
+	{
+		// An age identity (sops, age): a fixed upper-case prefix and 58
+		// bech32 characters, as written to ~/.config/sops/age/keys.txt.
+		kind:    KindAge,
+		re:      regexp.MustCompile(`(?:^|[^A-Z0-9-])(AGE-SECRET-KEY-1[A-Z0-9]{58})`),
+		excerpt: fixedPrefix("AGE-SECRET-KEY-1"),
+		valid: func(text string, _, end int) bool {
+			return end == len(text) || !isAlnum(text[end])
+		},
 	},
 	{
 		kind:    KindAnthropic,
