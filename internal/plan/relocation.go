@@ -81,24 +81,39 @@ func RelocationEnv(p *Plan) []EnvVar {
 	return out
 }
 
-// mergeEnv adds every variable of extra to setup.Env that is not already set,
-// then re-sorts. Existing values (component and harness env) win, matching the
-// first-wins convention of imageSetupOf and mergeHarnessNeeds.
-func mergeEnv(setup *ImageSetup, extra []EnvVar) {
+// mergeRelocationEnv sets the relocation variables in setup.Env, then
+// re-sorts. Unlike the first-wins merge of component and harness env, the
+// relocation value always wins: a component or harness that sets ZDOTDIR,
+// STARSHIP_CONFIG or INPUTRC to another value would point the shell or the
+// tool back at a file in the overmounted home (spec 003 FR-002, FR-008). It
+// returns one notice per replaced value, in name order.
+func mergeRelocationEnv(setup *ImageSetup, relocation []EnvVar) []string {
 	env := map[string]string{}
 	for _, e := range setup.Env {
 		env[e.Name] = e.Value
 	}
-	for _, e := range extra {
-		if _, ok := env[e.Name]; !ok {
-			env[e.Name] = e.Value
+	var notices []string
+	for _, e := range relocation {
+		if prev, ok := env[e.Name]; ok && prev != e.Value {
+			notices = append(notices, fmt.Sprintf(
+				"component or harness env %s=%s is replaced by the relocation value %s, so the configuration is not read from the overmounted home",
+				e.Name, prev, e.Value))
 		}
+		env[e.Name] = e.Value
 	}
 	setup.Env = make([]EnvVar, 0, len(env))
 	for _, k := range sortedKeys(env) {
 		setup.Env = append(setup.Env, EnvVar{Name: k, Value: env[k]})
 	}
+	sort.Strings(notices)
+	return notices
 }
+
+// startupEnvVars name a file or directory a shell or tool reads its startup
+// configuration from. A final image value under the overmount home would make
+// it read a workspace file (BASH_ENV for every non-interactive bash, ENV for
+// interactive POSIX shells, ZDOTDIR for zsh), so the guard refuses it.
+var startupEnvVars = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 
 // relocateDotfile maps a host dotfile path to the image path it is baked to
 // and the environment variables that point the tool at it (research R5).
@@ -231,13 +246,28 @@ func bakedPaths(p *Plan) []string {
 }
 
 // checkOvermountGuard fails when any path sandcast bakes for the interactive
-// environment would resolve under the overmount home. All targets are fixed
-// /opt/sandcast and /etc locations, so a violation is a programming error
-// rather than user input (defense in depth for SC-004).
+// environment would resolve under the overmount home (all are fixed
+// /opt/sandcast and /etc locations, so that is a programming error; defense
+// in depth for SC-004), or when the final image value of a relocation or
+// startup-file variable points under it, which a component or harness env
+// can cause (FR-002, FR-008).
 func checkOvermountGuard(p *Plan, overmount string) error {
 	for _, bp := range bakedPaths(p) {
 		if UnderOvermount(overmount, bp) {
 			return fmt.Errorf("plan would bake %s under the overmount home %s, where it is hidden at runtime", bp, overmount)
+		}
+	}
+	guarded := map[string]bool{}
+	for _, n := range startupEnvVars {
+		guarded[n] = true
+	}
+	for _, e := range RelocationEnv(p) {
+		guarded[e.Name] = true
+	}
+	for _, e := range p.Image.Env {
+		if guarded[e.Name] && UnderOvermount(overmount, path.Clean(e.Value)) {
+			return fmt.Errorf("image env %s=%s points under the overmount home %s, so a shell or tool would read its configuration from the mounted workspace; remove it from the component or harness",
+				e.Name, e.Value, overmount)
 		}
 	}
 	return nil

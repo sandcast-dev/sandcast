@@ -535,6 +535,48 @@ func TestRelocationEnvForZshAndBash(t *testing.T) {
 	}, RelocationEnv(zsh))
 }
 
+// TestRelocationEnvWinsOverComponentEnv checks a component or harness cannot
+// point a relocation variable back into the overmounted home: the relocation
+// value wins, the override is reported, and a startup-file variable whose
+// final value lies under the home fails the plan (FINDING-36).
+func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Harnesses = []Harness{{
+		Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+		Env: []EnvVar{{Name: "ZDOTDIR", Value: OvermountHome}, {Name: "STARSHIP_CONFIG", Value: OvermountHome + "/.config/starship.toml"}},
+	}}
+	in.Dotfiles = []DotfileInput{{HostPath: "~/.config/starship.toml", Content: "add_newline = false\n", FromAllowlist: true}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	env := map[string]string{}
+	for _, e := range p.Image.Env {
+		env[e.Name] = e.Value
+	}
+	assert.Equal(t, ZDotDir, env["ZDOTDIR"], "the relocation value wins")
+	assert.False(t, UnderOvermount(OvermountHome, env["STARSHIP_CONFIG"]), "STARSHIP_CONFIG stays out of the home: %s", env["STARSHIP_CONFIG"])
+	var reported int
+	for _, n := range p.Notices {
+		if strings.Contains(n, "replaced by the relocation value") {
+			reported++
+		}
+	}
+	assert.Equal(t, 2, reported, "each override is reported: %v", p.Notices)
+
+	// A startup-file variable that sandcast does not relocate but that would
+	// make a shell source a workspace file fails the plan.
+	for _, name := range []string{"BASH_ENV", "ENV"} {
+		bad := testInputs(t, testManifest(), nil)
+		bad.Harnesses = []Harness{{
+			Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+			Env: []EnvVar{{Name: name, Value: OvermountHome + "/.bashenv"}},
+		}}
+		_, err := Build(bad)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), name)
+		assert.Contains(t, err.Error(), OvermountHome)
+	}
+}
+
 func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
 	inputs := []DotfileInput{
 		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n"},

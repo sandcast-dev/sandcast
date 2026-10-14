@@ -281,7 +281,7 @@ Version selectors accept `latest` (any version), a prefix such as `1.25` (1.25 o
 | Field | Meaning |
 |-------|---------|
 | `read_only`, `read_write` | Absolute paths added to the filesystem policy of OpenShell images. The upstream default policy does not cover `/opt`, so a component that installs outside `/opt/mise` and `/opt/sandcast` (which sandcast always grants read-only) lists its paths. |
-| `env` | Environment variables set in the image, before the mise install. |
+| `env` | Environment variables set in the image, before the mise install. The relocation variables sandcast sets for the shell and dotfiles (`ZDOTDIR`, `STARSHIP_CONFIG`, `INPUTRC`) win over a component value, with a notice. For the OpenShell target, a `BASH_ENV`, `ENV` or `ZDOTDIR` value under the overmounted home (`/sandbox`) fails the plan, because a shell would read its startup file from the mounted workspace. |
 | `dirs` | Directories to create, each with `path` and an `owner` of `user` (default) or `root`. |
 | `runtime_globs` | Absolute path globs appended to the `binaries` of every profile the component references, for interpreters and real binaries behind proxies, for example `/opt/mise/installs/node/*/bin/node`. |
 

@@ -354,8 +354,9 @@ func Build(in Inputs) (*Plan, error) {
 	p.Dotfiles = dotfiles
 
 	// Relocation variables are set image-wide so non-shell processes read the
-	// baked configuration too (research R3).
-	mergeEnv(&p.Image, RelocationEnv(p))
+	// baked configuration too (research R3). They win over component and
+	// harness env, and each replaced value is reported.
+	envNotices := mergeRelocationEnv(&p.Image, RelocationEnv(p))
 
 	// Every overmount decision is reported in the plan output and the build
 	// log, sorted by subject so rebuilds are byte-identical (FR-010, SC-005).
@@ -371,6 +372,7 @@ func Build(in Inputs) (*Plan, error) {
 		p.Notices = append(p.Notices, n.String())
 	}
 	p.Notices = append(p.Notices, dedup...)
+	p.Notices = append(p.Notices, envNotices...)
 
 	// The minimal safe default: a login shell that is neither zsh nor bash
 	// gets /bin/sh with baked env, and capture (and the plan) report that the
