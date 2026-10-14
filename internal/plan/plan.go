@@ -14,7 +14,7 @@ import (
 	"github.com/rhuss/sandcast/internal/policy"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
-	"github.com/rhuss/sandcast/internal/shell"
+	"github.com/rhuss/sandcast/internal/registry"
 	"github.com/rhuss/sandcast/internal/version"
 )
 
@@ -116,8 +116,10 @@ func OvermountPrefix(p *Plan) string {
 
 // overmountHomeOf returns the overmount home the plan records for a target:
 // the base image's value or the default for the OpenShell target, nothing for
-// the container target. A value that is not a safe absolute path is refused,
-// because the build writes it into WORKDIR and a RUN instruction.
+// the container target. The value is checked by the registry rule
+// (registry.CheckOvermountHome), the one place that rule lives, because the
+// build writes it into WORKDIR and a RUN instruction and a hand-built input
+// need not come from a validated registry entry.
 func overmountHomeOf(target, home string) (string, error) {
 	if target != manifest.TargetOpenShell {
 		return "", nil
@@ -125,10 +127,20 @@ func overmountHomeOf(target, home string) (string, error) {
 	if home == "" {
 		return DefaultOvermountHome, nil
 	}
-	if !shell.SafeAbsPath(home) {
-		return "", fmt.Errorf("base image overmount home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments", home)
+	if err := registry.CheckOvermountHome(home); err != nil {
+		return "", fmt.Errorf("base image %w", err)
 	}
 	return home, nil
+}
+
+// overmountHomeNotice is the notice for an overmount home other than the
+// default. The value is the WORKDIR sandcast writes; the OpenShell podman
+// driver mounts the workspace there, while the Kubernetes driver of v0.1.3
+// always mounts at DefaultOvermountHome, so with that driver the guard would
+// protect the wrong path.
+func overmountHomeNotice(home string) string {
+	return fmt.Sprintf("base image overmount home %s is not %s: it is the image WORKDIR, which the OpenShell podman driver mounts the workspace over; the Kubernetes driver of OpenShell v0.1.3 always mounts at %s, so use this base image with the podman driver only",
+		home, DefaultOvermountHome, DefaultOvermountHome)
 }
 
 // UnderOvermount reports whether an absolute image path would resolve under
@@ -242,6 +254,9 @@ func Build(in Inputs) (*Plan, error) {
 	}
 	if p.BaseImage.OvermountHome, err = overmountHomeOf(in.Target, in.BaseImage.OvermountHome); err != nil {
 		return nil, err
+	}
+	if h := p.BaseImage.OvermountHome; h != "" && h != DefaultOvermountHome {
+		p.Notices = append(p.Notices, overmountHomeNotice(h))
 	}
 
 	overmount := OvermountPrefix(p)

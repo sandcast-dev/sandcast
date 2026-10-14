@@ -43,12 +43,38 @@ type Entry struct {
 	Default bool `yaml:"default" json:"default"`
 	// Notes is free text shown in the plan notices.
 	Notes string `yaml:"notes,omitempty" json:"notes,omitempty"`
-	// OvermountHome is the path the OpenShell runtime mounts the workspace
-	// volume over in sandboxes from this image, which is also the image
-	// WORKDIR. Nothing sandcast bakes may lie under it (spec 003). Optional,
-	// for openshell entries only; empty means /sandbox, the path of the
-	// OpenShell sandbox base images.
+	// OvermountHome is the WORKDIR sandcast writes into images built from
+	// this entry, and the path it treats as the home the workspace volume
+	// is mounted over: nothing sandcast bakes may lie under it (spec 003).
+	// The OpenShell podman driver mounts the workspace at the image
+	// WORKDIR; the Kubernetes driver of v0.1.3 always mounts at /sandbox,
+	// so another value only holds with the podman driver, and the plan says
+	// so. Optional, for openshell entries only; empty means /sandbox, the
+	// home of the OpenShell sandbox base images. See CheckOvermountHome.
 	OvermountHome string `yaml:"overmount_home,omitempty" json:"overmount_home,omitempty"`
+}
+
+// systemRoots may never be the overmount home. The build creates the
+// workspace directory with install -d -o <user> -g <group>, which hands an
+// existing directory to the final user, so a registry entry that names one
+// of these (a value copied by mistake) would give the sandbox user a system
+// directory of the image.
+var systemRoots = []string{"/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var", "/opt", "/root", "/boot", "/proc", "/sys", "/dev", "/run", "/tmp"}
+
+// CheckOvermountHome reports why p cannot be an overmount home, or nil: it
+// must be an absolute path of letters, digits, '.', '_' and '-' without .
+// or .. segments, because the build writes it unquoted into WORKDIR and a
+// RUN instruction, and it must not be a well-known system directory
+// (systemRoots). The registry applies it to every entry and the plan to the
+// value it records, so the rule and its message exist once.
+func CheckOvermountHome(p string) error {
+	if !shell.SafeAbsPath(p) {
+		return fmt.Errorf("overmount_home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments", p)
+	}
+	if slices.Contains(systemRoots, p) {
+		return fmt.Errorf("overmount_home %q is a system directory, which the build would hand to the final user", p)
+	}
+	return nil
 }
 
 // Registry maps a target type to its base image entries.
@@ -206,12 +232,10 @@ func (r *Registry) check(requireDefault bool) error {
 				defaults = append(defaults, e.Name)
 			}
 			if e.OvermountHome != "" {
-				switch {
-				case t != TargetOpenShell:
+				if t != TargetOpenShell {
 					errs = append(errs, fmt.Errorf("target %s, entry %d (%s): overmount_home applies to openshell entries only", t, i+1, e.Name))
-				case !shell.SafeAbsPath(e.OvermountHome):
-					errs = append(errs, fmt.Errorf("target %s, entry %d (%s): overmount_home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments",
-						t, i+1, e.Name, e.OvermountHome))
+				} else if err := CheckOvermountHome(e.OvermountHome); err != nil {
+					errs = append(errs, fmt.Errorf("target %s, entry %d (%s): %w", t, i+1, e.Name, err))
 				}
 			}
 		}

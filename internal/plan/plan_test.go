@@ -117,6 +117,31 @@ func testInputs(t *testing.T, m *manifest.Manifest, stored map[string]StoredFrag
 	}
 }
 
+// TestBuildOvermountHomeNoticeAndRefusal checks a base image overmount home
+// other than /sandbox is recorded with a notice that it is the WORKDIR the
+// OpenShell podman driver mounts over, not what the Kubernetes driver uses,
+// and that a system directory is refused by the one registry rule.
+func TestBuildOvermountHomeNoticeAndRefusal(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/workspace"
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, "/workspace", p.BaseImage.OvermountHome)
+	joined := strings.Join(p.Notices, "\n")
+	assert.Contains(t, joined, "base image overmount home /workspace is not /sandbox")
+	assert.Contains(t, joined, "podman driver only")
+
+	p, err = Build(testInputs(t, testManifest(), nil))
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "overmount home", "the default needs no notice")
+
+	in = testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/etc"
+	_, err = Build(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `base image overmount_home "/etc" is a system directory`)
+}
+
 func TestBuildDeterministicAndGolden(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	p1, err := Build(in)
@@ -982,7 +1007,7 @@ func TestBuildUsesBaseImageOvermountHome(t *testing.T) {
 	unsafe.BaseImage.OvermountHome = "/w; id"
 	_, err = Build(unsafe)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "overmount home")
+	assert.Contains(t, err.Error(), `base image overmount_home "/w; id" must be an absolute path`, "the registry rule, with its one message")
 
 	// A plan.yaml written before the field existed reads as the default.
 	old := &Plan{Target: manifest.TargetOpenShell}
