@@ -1,6 +1,8 @@
 package build
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -175,13 +177,62 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 	got, err := Assemble(p)
 	require.NoError(t, err)
 	assert.Contains(t, got, "# 62-dotfiles")
-	assert.Contains(t, got, "COPY dotfiles/etc_gitconfig /etc/gitconfig")
-	assert.Contains(t, got, "COPY dotfiles/opt_sandcast_xdg_starship.toml /opt/sandcast/xdg/starship.toml")
-	assert.Equal(t, "dotfiles/etc_gitconfig", DotfileContextFile("/etc/gitconfig"))
+	assert.Contains(t, got, "COPY dotfiles/etc%2Fgitconfig /etc/gitconfig")
+	assert.Contains(t, got, "COPY dotfiles/opt%2Fsandcast%2Fxdg%2Fstarship.toml /opt/sandcast/xdg/starship.toml")
+	assert.Equal(t, "dotfiles/etc%2Fgitconfig", DotfileContextFile("/etc/gitconfig"))
 	// No dotfile target may be under the overmount home.
 	for _, d := range p.Dotfiles {
 		assert.False(t, plan.UnderOvermount(plan.OvermountHome, d.RelocatedTo))
 	}
+}
+
+// TestDotfileContextFileInjective checks two distinct targets never share a
+// build-context file. The previous encoding (underscore doubled, slash to
+// underscore) mapped /x/a/_b and /x/a_/b to the same file, so one dotfile's
+// content was baked to both destinations.
+func TestDotfileContextFileInjective(t *testing.T) {
+	targets := []string{
+		"/x/a/_b", "/x/a_/b", "/x/a__b", "/x/a/b", "/x/a_b", "/x_/a/b", "/x/_a/b",
+		"/x/a%2Fb", "/x/a%/b", "/x/a/%b", "/x/a%25b", "/etc/gitconfig", "/etc%2Fgitconfig",
+	}
+	seen := map[string]string{}
+	for _, tg := range targets {
+		f := DotfileContextFile(tg)
+		require.True(t, strings.HasPrefix(f, DotfileContextDir+"/"), f)
+		assert.NotContains(t, strings.TrimPrefix(f, DotfileContextDir+"/"), "/", "one flat file per target: %s", f)
+		if prev, dup := seen[f]; dup {
+			t.Errorf("targets %s and %s share the context file %s", prev, tg, f)
+		}
+		seen[f] = tg
+	}
+}
+
+// TestWriteContextStagesEachDotfile checks writeContext stages one file per
+// baked dotfile with its own content, even for targets that differ only by
+// where a '/' and a '_' sit, and removes stale staged files.
+func TestWriteContextStagesEachDotfile(t *testing.T) {
+	p := shellKindPlan(t, "zsh")
+	p.Dotfiles = []plan.DotfileSelection{
+		{Source: plan.DotfileSourceManifest, HostPath: "~/.config/a/_b", RelocatedTo: "/etc/xdg/a/_b", Content: "first\n"},
+		{Source: plan.DotfileSourceManifest, HostPath: "~/.config/a_/b", RelocatedTo: "/etc/xdg/a_/b", Content: "second\n"},
+	}
+	dir := t.TempDir()
+	stale := filepath.Join(dir, DotfileContextDir, "stale")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("old"), 0o644))
+	cf, err := Assemble(p)
+	require.NoError(t, err)
+	require.NoError(t, writeContext(dir, p, cf))
+	for _, d := range p.Dotfiles {
+		rel := DotfileContextFile(d.RelocatedTo)
+		got, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+		require.NoError(t, err, rel)
+		assert.Equal(t, d.Content, string(got), "%s carries its own content", d.RelocatedTo)
+		assert.Contains(t, cf, "COPY "+rel+" "+d.RelocatedTo+"\n")
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, DotfileContextDir))
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "one staged file per dotfile, the stale one removed")
 }
 
 // TestNoGeneratedFileSourcesTheHome is the core US2 guarantee: across every

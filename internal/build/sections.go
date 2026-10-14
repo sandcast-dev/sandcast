@@ -254,18 +254,19 @@ ENTRYPOINT []
 CMD [{{.Cmd}}]
 `))
 
+// dotfileNameEncoder percent-encodes '%' and '/' (in one pass, so an encoded
+// '%' is never re-read). Percent-encoding is injective, and the result is one
+// flat file name.
+var dotfileNameEncoder = strings.NewReplacer("%", "%25", "/", "%2F")
+
 // DotfileContextFile is the build-context path a baked dotfile is staged at.
 // It is derived deterministically from the (unique) relocation target so two
-// builds of the same plan stage the same files. The encoding is injective:
-// an original underscore is doubled before a path separator becomes a single
-// underscore, so two targets that differ only by '/' vs '_' never collapse to
-// the same context file (which would silently bake one dotfile's content into
-// another's destination).
+// builds of the same plan stage the same files, and it is injective: two
+// distinct targets never share a context file, which would silently bake one
+// dotfile's content into another's destination. The previous encoding
+// (underscore doubled, slash to underscore) collided for /x/a/_b and /x/a_/b.
 func DotfileContextFile(target string) string {
-	s := strings.TrimPrefix(target, "/")
-	s = strings.ReplaceAll(s, "_", "__")
-	s = strings.ReplaceAll(s, "/", "_")
-	return DotfileContextDir + "/" + s
+	return DotfileContextDir + "/" + dotfileNameEncoder.Replace(strings.TrimPrefix(target, "/"))
 }
 
 // dotfilesSection renders the 62-dotfiles section, empty when the plan bakes
