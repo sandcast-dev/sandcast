@@ -1,7 +1,7 @@
 ---
 name: sandcast-capture
 description: Capture the current project and the host environment (languages, host tools, curated shell configuration, agent harnesses) into a sandcast manifest at .sandcast/manifest.yaml.
-sandcast_version: 0.1.1
+sandcast_version: 0.1.4
 ---
 
 # sandcast capture
@@ -256,7 +256,24 @@ setopt HIST_IGNORE_DUPS SHARE_HISTORY
 
 The referenced components are `fzf`, `lsd` and `starship`, so `shell.components` is `[fzf, lsd, starship]`.
 
-## Step 5: Write the components and harnesses, then validate
+## Step 5: Propose the dotfiles beyond the shell
+
+The image baked configuration must survive the OpenShell home overmount: at runtime the workspace volume is mounted over the home, so anything under the home is hidden and a startup file there is never read. sandcast relocates dotfiles outside the home automatically; your job is only to propose which ones to bake.
+
+`sandcast components match` reports the host dotfiles from a bounded allowlist under `dotfiles` in its JSON (git, the prompt tool, tmux and readline basics; the shell configuration is already handled in Step 4, so it is not repeated here). Present them with a multi-select, exactly as you do for MCP servers and plugins, and let the user confirm which to bake. Add nothing the user did not confirm.
+
+The user may also name dotfiles the allowlist omits, within these bounds, which sandcast enforces at plan time:
+
+- From the home, only allowlist entries and the configuration of these tools under `~/.config`: `git/`, `starship.toml`, `nvim/`, `helix/`, `tmux/`, `alacritty/`, `kitty/`, `wezterm/`, `ghostty/`, `bat/`, `ripgrep/` (for example `~/.config/ghostty/config` or `~/.config/nvim/init.lua`). Nothing else under `~/.config` is read: it also holds credential stores (`gh`, `gcloud`, `sops`, `op`, `containers`, `rclone`) whose contents no redactor recognizes reliably. Use `~/`, never `~user/`, and spell the path exactly.
+- Any project-relative path inside the project. An absolute path only when it lies inside the project.
+- Never a credential store (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh` and the other `~/.config` stores), `.netrc`, a history file, or a path with a segment that looks like a key, token, secret, credential or certificate. Do not propose these, and tell the user why when they ask for one.
+- Only regular files up to 256 KiB.
+
+For a file outside these bounds, suggest copying it into the project and listing the project-relative path. sandcast skips an entry outside the bounds, or one that does not exist at build time, with a notice; it never fails the build.
+
+Record the confirmed entries under `dotfiles` in the manifest as a list of `{path: ...}` entries. A `~/` path resolves against the host home; a project-relative path resolves against the project root and must stay inside it. Record only the source path, never the contents: sandcast reads the file at build time, redacts any credential shape, and bakes it to a persistent location outside the home (for example `/etc/gitconfig`, `/etc/tmux.conf` or `/etc/xdg/...`). Do not add a relocation target by hand; the plan chooses it.
+
+## Step 6: Write the components and harnesses, then validate
 
 Edit `.sandcast/manifest.yaml` directly for the parts `sandcast manifest set-shell` does not write. The schema rejects unknown keys everywhere. The shape:
 
@@ -293,6 +310,9 @@ shell:
   rc: |
     # written by sandcast manifest set-shell
   components: [fzf, lsd, starship]
+dotfiles:
+  - path: ~/.gitconfig
+  - path: ~/.config/starship.toml
 targets:
   openshell:
     image: localhost/my-project
@@ -301,6 +321,7 @@ targets:
 - `components`: the confirmed list from Step 3. Leave out components already listed in `shell.components`, the shell program itself (`zsh` or `bash`) and the agent component of each harness (`claude-code`); the plan adds those implicitly.
 - `harnesses`: one entry per selected harness with only the MCP servers, plugins and skills the user chose. Copy `name`, `command`, `url`, `env`, and `source` exactly as discovery printed them, placeholders included, except the `source` of a skill or marketplace you moved into the project in Step 2. Drop the `origin` fields. Omit `harnesses` entirely when the user selected none.
 - `shell.components`: the referenced components from Step 4c.
+- `dotfiles`: the confirmed entries from Step 5, each `{path: ...}`. Omit `dotfiles` entirely when the user confirmed none.
 - `platform`: set it (`linux/amd64` or `linux/arm64`) only when the user builds for a platform other than the host's.
 
 Then validate:
@@ -312,7 +333,7 @@ sandcast manifest validate --json
 The JSON has `valid`, `manifest` and `diagnostics` (each with `path`, `line`, `message`).
 If `valid` is false, show every diagnostic with its line, fix what is clearly yours to fix (a typo in a key, a wrong field name), and validate again. If a diagnostic needs a user decision or reports a credential, stop and show the diagnostics; never write a credential to make validation pass.
 
-## Step 6: Offer the lockfile
+## Step 7: Offer the lockfile
 
 Builds install mise tools in locked mode, and `sandcast plan` fails for a platform the lockfile lacks. Offer to generate the lockfile for the target platform (default: the manifest `platform`, else the host architecture). Repeat `--platform` for more than one:
 
@@ -327,6 +348,7 @@ Exit 3 means the host has no `mise` or one older than the minimum release named 
 Summarize for the user:
 
 - the components, harness extensions and shell components in the manifest,
+- the dotfiles baked and where each one is relocated to,
 - every secret placeholder and how to supply it at runtime,
 - what the shell curation removed,
 - the next step: `/sandcast-build` (or `sandcast build --verify` when no component is unresolved).

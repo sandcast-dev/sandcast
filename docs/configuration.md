@@ -33,6 +33,9 @@ shell:
   rc: |
     alias ls=lsd
   components: [lsd]
+dotfiles:
+  - path: ~/.gitconfig
+  - path: ~/.config/starship.toml
 targets:
   openshell:
     image: localhost/demo
@@ -50,6 +53,7 @@ targets:
 | `components` | list | yes | The components to include. See below. |
 | `harnesses` | list | no | Agent harnesses. See [Harnesses](#harnesses). |
 | `shell` | object | no | The curated shell configuration. See below. |
+| `dotfiles` | list | no | Non-shell home dotfiles to bake. See below. |
 | `targets` | object | yes | At least one of `openshell` and `container`. See below. |
 
 The manifest is decoded strictly: an unknown field anywhere is an error with its line number. It must not contain credential values. `sandcast manifest validate` reports every value that looks like a credential, and `sandcast manifest set-shell` refuses to write one. Use `${SANDCAST_SECRET_N}` placeholders and supply the real value at runtime as a provider credential (see [secrets handling](guides/capture.md#secrets)).
@@ -71,8 +75,22 @@ You do not need to list components that sandcast adds by itself: the shell progr
 | Field | Type | Rules |
 |-------|------|-------|
 | `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. |
-| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. Write it with `sandcast manifest set-shell`. |
+| `rc` | multi-line string | The curated configuration. It is baked outside the home so it survives the OpenShell workspace mount over the home: zsh reads it from the `ZDOTDIR` tree (`/opt/sandcast/zdotdir/.zshrc`), and bash reads it as the rcfile the baked launcher passes (`/opt/sandcast/bashrc`). The live workspace home is never auto-sourced. Write it with `sandcast manifest set-shell`. |
 | `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. |
+
+See the [build guide](guides/build.md#the-home-model-and-shell-initialization) for how the shell initializes under the overmount.
+
+### dotfiles
+
+Non-shell home dotfiles to bake into the image. Capture proposes a bounded host-home allowlist (git, the prompt tool, tmux and readline basics) and you may add explicit paths. Each entry records only a source path; its contents are read at build time, passed through credential redaction, and baked to a persistent location outside the home.
+
+The sources are bounded because a manifest is committed with the project: a manifest in a project you did not write must not be able to pull your credentials into an image. There is deliberately no option to widen the bounds. Copy a file into the project to bake one that lives elsewhere.
+
+| Field | Type | Rules |
+|-------|------|-------|
+| `path` | string | Required. The host source. A `~/` path resolves against the host home and must be a dotfile allowlist entry (`.gitconfig`, `.config/git/config`, `.config/starship.toml`, `.tmux.conf`, `.inputrc`) or lie in one of these `~/.config` entries: `git/`, `starship.toml`, `nvim/`, `helix/`, `tmux/`, `alacritty/`, `kitty/`, `wezterm/`, `ghostty/`, `bat/`, `ripgrep/` (a directory entry covers every file below it). Nothing else under `~/.config` is read, because that directory also holds credential stores (`gh`, `gcloud`, `sops`, `op`, `containers`, `rclone`) whose contents no redactor can recognize reliably; the exact spelling must match. A project-relative path resolves against the project root and must stay inside it, and an absolute path is accepted only when it resolves inside the project. `~user` paths are not supported. Credential stores (`.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker`, `.config/gh`, `.config/sops`, `.config/op`, `.config/gcloud`, `.config/containers`, `.config/rclone`, `.config/hcloud`, `.config/doctl`, `.config/wrangler`, `.config/helm/registry`), `.netrc`, history files and credential-looking names in any path segment (a dotenv file, a key or certificate extension, or `token`, `secret`, `credential`, `password` in a name) are refused without regard to case, both as written and after following symlinks, and only regular files of at most 256 KiB are read. An entry outside these bounds, missing, or unreadable is reported and skipped, never fatal; the notice names the bound. |
+
+The plan chooses the relocation target per dotfile (there is no override in v1): git goes to `/etc/gitconfig` and tmux to `/etc/tmux.conf`, which both tools read natively; starship goes to `/etc/xdg/starship.toml` with `STARSHIP_CONFIG`; readline goes to `/opt/sandcast/inputrc` with `INPUTRC`, and the baked file starts with `$include /etc/inputrc` because `INPUTRC` replaces the system file too; anything else goes under `/etc/xdg`, the system directory in the default `XDG_CONFIG_DIRS` search path, keeping the part of the source path below its `.config/` segment wherever that segment sits (`~/.config/nvim/init.lua` and a project copy `dotfiles/.config/nvim/init.lua` both go to `/etc/xdg/nvim/init.lua`); a source without such a segment keeps its whole path below `/etc/xdg`. sandcast never sets `XDG_CONFIG_HOME`: tools write their own configuration there (`gh auth login`, `helm repo add`), and an image-wide value pointing at a baked, root-owned tree would make them fail. A target that is not a clean path of safe segments (no `.` or `..`) is skipped with a notice. When two entries resolve to the same target, the explicit manifest path wins over an allowlist proposal (between two entries of the same kind, the smaller path wins), deterministically, and the plan reports the resolution. git configuration is the exception, because git reads both of its files: one `~/.config/git/config` (or a project copy that keeps the `.config/git/config` layout) and one `~/.gitconfig` are merged into `/etc/gitconfig` in git's order, the XDG file first and `~/.gitconfig` last, so a key set in both keeps the `~/.gitconfig` value. Each part starts with a `# sandcast: from <path>` comment, the plan lists the first file under `merged_from`, and both are reported. No credential value is ever written: a detected credential becomes a `${SANDCAST_SECRET_N}` placeholder.
 
 ### targets
 
@@ -81,7 +99,7 @@ You do not need to list components that sandcast adds by itself: the shell progr
 | `targets.<target>.image` | string | | Required. Image name without tag. |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
 | `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. |
-| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
+| `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`, `dotfiles`), compared without regard to case. Only the container target accepts this field. |
 
 `<target>` is `openshell` or `container`. Commands without `--target` use `openshell` when it is declared, otherwise `container`.
 
@@ -159,6 +177,7 @@ targets:
 | `ref` | Required. Image reference. |
 | `default` | At most one entry per target type in the file. |
 | `notes` | Free text, shown in the plan as base image notes. |
+| `overmount_home` | Optional, `openshell` entries only. The `WORKDIR` sandcast writes into images built from this entry, and the path it treats as the home that the workspace volume is mounted over. Default `/sandbox`, the home of the OpenShell sandbox base images. The OpenShell podman driver mounts the workspace at the image `WORKDIR`, so another value holds there; the Kubernetes driver of OpenShell v0.1.3 always mounts at `/sandbox` regardless of the `WORKDIR`, so use another value only with the podman driver. The plan prints a notice to that effect for any value other than `/sandbox`. It must be an absolute path of letters, digits, `.`, `_` and `-` without `.` or `..` segments, and not a well-known system directory (`/`, `/etc`, `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/var`, `/opt`, `/root`, `/boot`, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`), because the build gives the workspace directory to the final user. The plan records the effective value as `base_image.overmount_home`, refuses anything it would bake or declare under it, and re-provisions a base-image tool found only there (see [the home model](guides/build.md#the-home-model-and-shell-initialization)). |
 
 The user file merges over the shipped registry by entry name, per target type:
 
@@ -262,8 +281,8 @@ Version selectors accept `latest` (any version), a prefix such as `1.25` (1.25 o
 
 | Field | Meaning |
 |-------|---------|
-| `read_only`, `read_write` | Absolute paths added to the filesystem policy of OpenShell images. The upstream default policy does not cover `/opt`, so a component that installs outside `/opt/mise` lists its paths. |
-| `env` | Environment variables set in the image, before the mise install. |
+| `read_only`, `read_write` | Absolute paths added to the filesystem policy of OpenShell images. The upstream default policy does not cover `/opt`, so a component that installs outside `/opt/mise` and `/opt/sandcast` (which sandcast always grants read-only) lists its paths. |
+| `env` | Environment variables set in the image, before the mise install. The relocation variables sandcast sets for the shell and dotfiles (`ZDOTDIR`, `STARSHIP_CONFIG`, `INPUTRC`) win over a component value, with a notice. For the OpenShell target, a `BASH_ENV`, `ENV` or `ZDOTDIR` value under the overmounted home (`/sandbox`), or one that is not a plain absolute path (`$HOME/.bashrc`, `~/.shrc`), fails the plan, because a shell would read its startup file from the mounted workspace. |
 | `dirs` | Directories to create, each with `path` and an `owner` of `user` (default) or `root`. |
 | `runtime_globs` | Absolute path globs appended to the `binaries` of every profile the component references, for interpreters and real binaries behind proxies, for example `/opt/mise/installs/node/*/bin/node`. |
 
@@ -367,6 +386,7 @@ All sandcast files in a project live under `.sandcast/`. The top level holds com
 | `Containerfile` | `build` | The pass-1 image definition. |
 | `Containerfile.final` | `build` | The pass-2 image definition that adds the adapted profiles. |
 | `shell/sandcast.zsh` or `shell/sandcast.sh` | `build` | The curated shell configuration for the build context. |
+| `dotfiles/<encoded target>` | `build` | The redacted content of each baked dotfile, staged for the build context under its relocation target with `/` and `%` percent-encoded (for example `dotfiles/etc%2Fgitconfig`). |
 | `harness/` | `build` | Harness files staged for the build context. |
 | `build.log` | `build` | The engine output of both passes. |
 | `profiles/<id>.yaml` | `build`, `profiles export` | The adapted provider profiles. |

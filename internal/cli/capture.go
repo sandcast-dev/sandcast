@@ -42,14 +42,25 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 					return usageErr("%v", err)
 				}
 			}
+			var home string
+			var homeErr error
+			if host && !noHost {
+				home, homeErr = a.hostHome()
+			}
 			res, err := capture.Match(cmd.Context(), abs, set.All(), capture.Options{
 				Host:      host && !noHost,
+				Home:      home,
 				Harnesses: harnesses,
 				LookPath:  a.LookPath,
 				Version:   a.HostVersion,
 			})
 			if err != nil {
 				return err
+			}
+			if homeErr != nil {
+				// Without a home no dotfile can be proposed; say so, so "none
+				// found" and "not scanned" are told apart.
+				res.DotfileNotices = append(res.DotfileNotices, fmt.Sprintf("the host home directory is unknown (%v); dotfiles were not scanned", homeErr))
 			}
 			if a.opts.json {
 				return writeJSON(a.Stdout, res)
@@ -69,6 +80,16 @@ func (a *App) componentsMatchCommand() *cobra.Command {
 				names = append(names, av.Key)
 			}
 			_, _ = fmt.Fprintf(a.Stdout, "\navailable: %s\n", strings.Join(names, ", "))
+			if len(res.Dotfiles) > 0 {
+				paths := make([]string, 0, len(res.Dotfiles))
+				for _, d := range res.Dotfiles {
+					paths = append(paths, d.Path)
+				}
+				_, _ = fmt.Fprintf(a.Stdout, "dotfiles: %s\n", strings.Join(paths, ", "))
+			}
+			for _, n := range res.DotfileNotices {
+				_, _ = fmt.Fprintf(a.Stdout, "dotfile skipped: %s\n", n)
+			}
 			return nil
 		},
 	}

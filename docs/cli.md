@@ -268,7 +268,7 @@ sandcast build [flags]
 | `--no-cache-layers` | off | Build pass 1 without the engine layer cache. |
 | `--keep-stage` | off | Keep the pass-1 image as `<image>:sandcast-stage`. |
 
-`build` runs the plan first, using the probe cache. It refuses to start with exit 2 when the plan has binary conflicts or blocking unresolved components; optional unresolved components are skipped with a message. Pass 1 builds the full image under a per-run stage tag, `<image>:sandcast-stage-<random>`, so a concurrent build of the same image name does not replace it between the passes. sandcast then resolves every component binary inside that image, writes the adapted profiles, and pass 2 adds them under `/usr/share/sandcast/profiles` together with the `io.sandcast.*` labels under the final tag. The [build guide](guides/build.md) describes each step.
+`build` runs the plan first, using the probe cache. It refuses to start with exit 2 when the plan has binary conflicts or blocking unresolved components; optional unresolved components are skipped with a message. Every plan notice is printed to stderr as `notice: ...` before the build starts, including each dotfile relocated and each component re-provisioned because of the OpenShell home overmount. Pass 1 builds the full image under a per-run stage tag, `<image>:sandcast-stage-<random>`, so a concurrent build of the same image name does not replace it between the passes. sandcast then resolves every component binary inside that image, writes the adapted profiles, and pass 2 adds them under `/usr/share/sandcast/profiles` together with the `io.sandcast.*` labels under the final tag. The [build guide](guides/build.md) describes each step.
 
 A failed build exits 1, leaves `Containerfile` and `build.log` in the build directory, and is never retried. Without `--verbose` it prints the last 25 lines of `build.log` to stderr. When pass 1 completed and a later step failed, the pass-1 image is kept as `<image>:sandcast-debug`. With `--verify`, a failed check also exits 1 after every result has been reported.
 
@@ -411,6 +411,8 @@ sandcast components match [<dir>] [flags]
 | `--harness <name>` | none | Selected harness. Proposes the components that match it. Repeatable. |
 
 `<dir>` defaults to `--project`, else the current directory. Each proposal has a source: `project` (ecosystem files such as `go.mod`), `host` (a tool on the host `PATH`), `harness` (a selected harness) or `always` (base system components). Components that do not match are listed as available. An unknown harness name exits 2.
+
+With host detection on, the command also reports the home dotfiles from the bounded allowlist (git, starship, tmux, readline) that exist in your home: a `dotfiles:` line in the table output and a `dotfiles` array in `--json`. The capture skill offers these to bake into the image. An entry is proposed only when the plan would read it: it must resolve inside the home (a symlinked parent directory is followed too), must not be a credential or history file, and must be a regular file of at most 256 KiB. Each entry found but not proposed, and a home directory that cannot be determined (`HOME` unset), is reported as a `dotfile skipped:` line and in `dotfile_notices`.
 
 ```console
 $ sandcast components match tests/fixtures/reference-project --no-host

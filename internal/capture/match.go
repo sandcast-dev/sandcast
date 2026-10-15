@@ -53,12 +53,24 @@ type Result struct {
 	Project   string      `json:"project"`
 	Proposals []Proposal  `json:"proposals"`
 	Available []Available `json:"available"`
+	// Dotfiles are the host-home dotfiles from the bounded allowlist that the
+	// user may confirm to bake (spec 003 US3). Empty unless host detection is
+	// on and a home is known.
+	Dotfiles []DotfileProposal `json:"dotfiles,omitempty"`
+	// DotfileNotices explain each allowlist entry that was found but not
+	// proposed (a credential-named file, a symlink leaving the home, a broken
+	// symlink, a non-regular file), so the reason is not silently lost (spec
+	// 003 Edge Cases).
+	DotfileNotices []string `json:"dotfile_notices,omitempty"`
 }
 
 // Options control Match.
 type Options struct {
 	// Host enables host tool detection.
 	Host bool
+	// Home is the host home directory; when set with Host, Match proposes the
+	// dotfile allowlist found there.
+	Home string
 	// Harnesses are the selected harness names.
 	Harnesses []string
 	// LookPath finds host tools; defaults to exec.LookPath.
@@ -93,6 +105,9 @@ func Match(ctx context.Context, project string, comps []*component.Component, o 
 	}
 	sort.Slice(res.Proposals, func(i, j int) bool { return res.Proposals[i].Key < res.Proposals[j].Key })
 	sort.Slice(res.Available, func(i, j int) bool { return res.Available[i].Key < res.Available[j].Key })
+	if o.Host && o.Home != "" {
+		res.Dotfiles, res.DotfileNotices = ProposeDotfiles(o.Home)
+	}
 	return res, nil
 }
 

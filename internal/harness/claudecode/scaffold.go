@@ -14,6 +14,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/rhuss/sandcast/internal/fsutil"
 	"github.com/rhuss/sandcast/internal/harness"
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
@@ -352,14 +353,14 @@ func resolveSource(src, home, project string) (string, error) {
 		return "", err
 	}
 	real, err := filepath.EvalSymlinks(p)
-	if errors.Is(err, fs.ErrNotExist) && (project == "" || !strictlyInside(project, p)) {
+	if errors.Is(err, fs.ErrNotExist) && (project == "" || !fsutil.StrictlyWithin(project, p)) {
 		return "", fmt.Errorf("source %s does not exist on this host: %w", src, errHostOnlySource)
 	}
 	if err != nil {
 		return "", fmt.Errorf("source %s: %w", src, err)
 	}
 	for _, root := range sourceRoots(home, project) {
-		if strictlyInside(root, real) {
+		if fsutil.StrictlyWithin(root, real) {
 			return real, nil
 		}
 	}
@@ -382,39 +383,22 @@ func sourceRoots(home, project string) []string {
 		}
 	}
 	if project != "" {
-		if r, err := filepath.EvalSymlinks(project); err == nil && (realHome == "" || (r != realHome && !strictlyInside(r, realHome))) {
+		if r, err := filepath.EvalSymlinks(project); err == nil && (realHome == "" || (r != realHome && !fsutil.StrictlyWithin(r, realHome))) {
 			roots = append(roots, r)
 		}
 	}
 	return roots
 }
 
-// strictlyInside reports whether path is below root, not root itself.
-func strictlyInside(root, path string) bool {
-	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-// hostPath resolves a manifest source without following symlinks: "~/"
-// against the home directory, a relative path against the project, an
-// absolute path as is.
+// hostPath resolves a manifest source without following symlinks through
+// the shared classifier fsutil.ResolveHostPath: "~/" against the home
+// directory, a relative path against the project, an absolute path as is.
 func hostPath(src, home, project string) (string, error) {
-	switch {
-	case src == "":
-		return "", errors.New("source is empty")
-	case src == "~" || strings.HasPrefix(src, "~/"):
-		if home == "" {
-			return "", fmt.Errorf("source %s needs the home directory", src)
-		}
-		return filepath.Join(home, strings.TrimPrefix(src, "~")), nil
-	case filepath.IsAbs(src):
-		return filepath.Clean(src), nil
-	default:
-		if project == "" {
-			return "", fmt.Errorf("source %s needs the project directory", src)
-		}
-		return filepath.Join(project, src), nil
+	_, p, err := fsutil.ResolveHostPath(src, home, project)
+	if err != nil {
+		return "", fmt.Errorf("source %w", err)
 	}
+	return p, nil
 }
 
 // claudeConfig renders the image's .claude.json: onboarding marked complete

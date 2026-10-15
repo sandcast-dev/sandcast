@@ -59,12 +59,26 @@ USER root
 RUN echo other
 USER sandbox
 
-# 60-shell: curated zsh configuration
+# 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
 USER root
-COPY shell/sandcast.zsh /etc/zsh/zshrc.d/sandcast.zsh
-RUN chmod 0644 /etc/zsh/zshrc.d/sandcast.zsh \
- && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
- && (grep -qs '/etc/zsh/zshrc.d/sandcast.zsh' "$rc" || printf '\n[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh\n' >> "$rc")
+COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
+RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
+RUN <<'SANDCAST_EOF'
+set -eu
+install -d /opt/sandcast/zdotdir /etc/zsh
+zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh'
+for f in /etc/zsh/zshenv /etc/zshenv; do
+  if grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
+    echo "sandcast: replacing the ZDOTDIR export of a previous sandcast build in $f" >&2
+    awk 'index($0, "export ZDOTDIR=") != 1 || index($0, " SANDCAST_SESSION=1") == 0' "$f" > "$f.sandcast"
+  else
+    cat "$f" > "$f.sandcast" 2>/dev/null || :
+  fi
+  printf '%s\n' "$zshenv_line" >> "$f.sandcast"
+  mv "$f.sandcast" "$f"
+  chmod 0644 "$f"
+done
+SANDCAST_EOF
 
 # 90-footer
 WORKDIR /root

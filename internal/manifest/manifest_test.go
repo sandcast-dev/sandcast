@@ -27,6 +27,40 @@ func TestLoadValid(t *testing.T) {
 	assert.Contains(t, m.Shell.RC, "compinit")
 }
 
+func TestDotfilesParseAndValidate(t *testing.T) {
+	doc := []byte(`schema_version: 1
+name: demo
+base_image: nvidia-community-base
+dotfiles:
+  - path: ~/.gitconfig
+  - path: ~/.config/starship.toml
+  - path: /abs/extra.conf
+targets:
+  openshell:
+    image: localhost/demo
+`)
+	m, err := Parse(doc, "manifest.yaml")
+	require.NoError(t, err)
+	require.Len(t, m.Dotfiles, 3)
+	assert.Equal(t, "~/.gitconfig", m.Dotfiles[0].Path)
+	assert.Equal(t, "/abs/extra.conf", m.Dotfiles[2].Path)
+
+	// An empty path is a validation error, not a panic.
+	bad := []byte(`schema_version: 1
+name: demo
+base_image: nvidia-community-base
+dotfiles:
+  - path: ""
+targets:
+  openshell:
+    image: localhost/demo
+`)
+	_, err = Parse(bad, "manifest.yaml")
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Error(), "dotfiles[0].path")
+}
+
 func TestUnknownFieldRejectedWithLine(t *testing.T) {
 	_, err := Load("testdata/unknown-field.yaml")
 	var ve *ValidationError
