@@ -21,8 +21,9 @@ const (
 	factsLines = 4
 )
 
-// rawCheck is one check line of the probe output. Timeout is set when
-// timeout(1) stopped the check.
+// rawCheck is one check line of the probe output. Timeout is set when the
+// check was stopped at the time limit, by timeout(1) or the script's
+// watchdog.
 type rawCheck struct {
 	Key     string   `json:"key"`
 	Exit    int      `json:"exit"`

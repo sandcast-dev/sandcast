@@ -21,51 +21,235 @@ import (
 func TestScriptBoundsEachCheck(t *testing.T) {
 	s := Script([]Request{{Key: "go", Bin: "go", Command: "go version"}}, ScriptOptions{})
 	assert.Contains(t, s, "_tmax="+strconv.Itoa(int(CheckTimeout/time.Second))+"\n")
-	assert.Contains(t, s, `timeout "$_tmax" /bin/sh -c "$1"`, "each check runs under timeout(1) when the image has one")
+	assert.Contains(t, s, `timeout "$_tmax" /bin/sh -c "$1"`, "a check runs under a coreutils timeout(1) when the image has one")
 	assert.Contains(t, s, `head -c "$_max"; cat >/dev/null;`, "each check's output is bounded before it reaches a variable")
-	assert.Contains(t, s, `"timeout":%s`, "the check line says whether timeout(1) stopped the check")
+	assert.Contains(t, s, `"timeout":%s`, "the check line says whether the check was stopped at its time limit")
 	assert.Contains(t, s, "_check 'go' 'go' 'go version'\n", "the check call format is unchanged")
 }
 
 // TestScriptReportsTimedOutCheck runs the script on the host with a one
-// second limit: a hanging check is stopped and marked, the next check still
-// runs.
+// second limit and the host's timeout(1), or under busybox its own applets:
+// a hanging check is stopped and marked, also when the process that hangs is
+// a child the check's shell waits for, or when the check traps SIGTERM and
+// exits with its own status. A child that a finished check leaves behind,
+// even one that ignores SIGTERM, is killed and does not hold the output
+// open. The next check still runs.
 func TestScriptReportsTimedOutCheck(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
 		t.Skip("no timeout(1) on the host")
 	}
 	reqs := []Request{
 		{Key: "a-hangs", Command: "echo started; sleep 30"},
-		{Key: "b-fails", Command: "echo bye; exit 3"},
+		{Key: "b-child-hangs", Command: "sleep 30 & echo started; wait"},
+		{Key: "c-traps-term", Command: "trap 'echo got; exit 1' TERM; echo armed; sleep 30 & wait"},
+		{Key: "d-leaves-child", Command: "sleep 30 & echo started"},
+		{Key: "e-leaves-term-proof-child", Command: "trap '' TERM; sleep 30 & echo started"},
+		{Key: "f-fails", Command: "echo bye; exit 3"},
 	}
-	script := strings.Replace(Script(reqs, ScriptOptions{}), "_tmax="+strconv.Itoa(int(CheckTimeout/time.Second))+"\n", "_tmax=1\n", 1)
+	script := withTimeLimit(Script(reqs, ScriptOptions{}), 1)
 	for name, sh := range shells(t) {
 		t.Run(name, func(t *testing.T) {
 			start := time.Now()
 			_, checks, err := Parse([]byte(runShell(t, sh, script)))
 			require.NoError(t, err)
-			assert.Less(t, time.Since(start), 20*time.Second, "the hanging check is stopped")
-			require.Len(t, checks, 2)
-			assert.True(t, checks[0].Timeout, "a-hangs")
-			assert.Equal(t, "started", checks[0].Out, "output up to the timeout is kept")
-			assert.False(t, checks[1].Timeout, "b-fails")
-			assert.Equal(t, 3, checks[1].Exit)
-			assert.Equal(t, "bye", checks[1].Out)
+			assert.Less(t, time.Since(start), 20*time.Second, "every check ends within its limit")
+			byKey := checksByKey(t, checks, len(reqs))
+			for _, key := range []string{"a-hangs", "b-child-hangs"} {
+				assert.True(t, byKey[key].Timeout, key)
+				assert.Equal(t, "started", byKey[key].Out, "%s: output up to the timeout is kept", key)
+			}
+			assert.True(t, byKey["c-traps-term"].Timeout, "a check that traps SIGTERM is still marked")
+			assert.Equal(t, "armed\ngot", byKey["c-traps-term"].Out, "the check's TERM trap ran")
+			for _, key := range []string{"d-leaves-child", "e-leaves-term-proof-child"} {
+				assert.Equal(t, rawCheck{Key: key, Exit: 0, Out: "started"}, byKey[key], "%s: the leftover child is killed", key)
+			}
+			assert.Equal(t, rawCheck{Key: "f-fails", Exit: 3, Out: "bye"}, byKey["f-fails"])
 		})
 	}
 }
 
-// TestScriptRunsWithoutTimeout runs the script with a PATH that has no
-// timeout(1): the checks run unbounded and are never marked.
+// TestScriptWatchdogBranch forces the setsid watchdog that the script picks
+// when timeout(1) is missing or does not stop a whole process group
+// (busybox): a fake timeout(1) that rejects --version, and setsid(1) from
+// the host or a perl stand-in. On the GitHub Ubuntu runner only the busybox
+// subtests reach this branch through busybox's own applets; this test runs it
+// on every host.
+func TestScriptWatchdogBranch(t *testing.T) {
+	tools := newStandInTools(t)
+	sh := pathResolvingShells(t)
+	flags := `printf '[%s][%s]' "$_to" "$_sg"`
+
+	t.Run("selection", func(t *testing.T) {
+		for name, argv := range sh {
+			assert.Equal(t, "[1][1]", runShell(t, argv, helpersPrelude()+flags, "PATH="+tools.dir(t, "timeout", "setsid", "sleep")),
+				"%s: busybox-like timeout(1) and setsid(1) select the watchdog", name)
+			assert.Equal(t, "[][1]", runShell(t, argv, helpersPrelude()+flags, "PATH="+tools.dir(t, "setsid", "sleep")),
+				"%s: the watchdog does not need timeout(1)", name)
+			assert.Equal(t, "[1][]", runShell(t, argv, helpersPrelude()+flags, "PATH="+tools.dir(t, "timeout", "sleep")),
+				"%s: no setsid(1), no watchdog", name)
+			assert.Equal(t, "[1][]", runShell(t, argv, helpersPrelude()+flags, "PATH="+tools.dir(t, "timeout", "setsid")),
+				"%s: no sleep(1), no watchdog that could never fire", name)
+			if _, ok := tools.tools["coreutils-timeout"]; ok {
+				assert.Equal(t, "[1][]", runShell(t, argv, helpersPrelude()+flags, "PATH="+tools.dir(t, "timeout=coreutils-timeout", "setsid", "sleep")),
+					"%s: a coreutils timeout(1) keeps the timeout path although setsid(1) exists", name)
+			}
+		}
+		if _, ok := tools.tools["coreutils-timeout"]; !ok {
+			t.Log("coreutils selection case skipped: the host timeout(1) is not coreutils")
+		}
+	})
+
+	reqs := []Request{
+		{Key: "a-hangs", Command: "echo started; sleep 30"},
+		{Key: "b-child-hangs", Command: "sleep 30 & echo started; wait"},
+		{Key: "c-traps-term", Command: "trap 'echo got; exit 1' TERM; echo armed; sleep 30 & wait"},
+		{Key: "d-leaves-child", Command: "sleep 30 & echo started"},
+		{Key: "e-leaves-term-proof-child", Command: "trap '' TERM; sleep 30 & echo started"},
+		{Key: "f-fails", Command: "echo bye; exit 3"},
+	}
+	script := withTimeLimit(Script(reqs, ScriptOptions{}), 1)
+	for _, path := range []struct{ name, dir string }{
+		{"with-timeout", tools.dir(t, "timeout", "setsid", "sleep", "head", "cat")},
+		{"without-timeout", tools.dir(t, "setsid", "sleep", "head", "cat")},
+	} {
+		for name, argv := range sh {
+			t.Run(path.name+"/"+name, func(t *testing.T) {
+				start := time.Now()
+				_, checks, err := Parse([]byte(runShell(t, argv, script, "PATH="+path.dir)))
+				require.NoError(t, err)
+				assert.Less(t, time.Since(start), 15*time.Second, "every check ends within its limit")
+				byKey := checksByKey(t, checks, len(reqs))
+				for key, out := range map[string]string{"a-hangs": "started", "b-child-hangs": "started", "c-traps-term": "armed\ngot"} {
+					assert.Equal(t, rawCheck{Key: key, Exit: 143, Out: out, Timeout: true}, byKey[key], "%s is stopped and marked", key)
+				}
+				for _, key := range []string{"d-leaves-child", "e-leaves-term-proof-child"} {
+					assert.Equal(t, rawCheck{Key: key, Exit: 0, Out: "started"}, byKey[key],
+						"%s: a child left behind by a finished check is killed and does not hold the output open", key)
+				}
+				assert.Equal(t, rawCheck{Key: "f-fails", Exit: 3, Out: "bye"}, byKey["f-fails"])
+			})
+		}
+	}
+}
+
+// helpersPrelude is the start of a probe script up to its helper functions,
+// with a one second limit, for tests that inspect the script's choices.
+func helpersPrelude() string {
+	return "_max=" + strconv.Itoa(MaxOutput) + "\n_tmax=1\n" + scriptHelpers
+}
+
+// withTimeLimit sets the script's per-check limit to secs seconds.
+func withTimeLimit(script string, secs int) string {
+	return strings.Replace(script, "_tmax="+strconv.Itoa(int(CheckTimeout/time.Second))+"\n", "_tmax="+strconv.Itoa(secs)+"\n", 1)
+}
+
+// checksByKey indexes the parsed check lines by key and requires n of them.
+func checksByKey(t *testing.T, checks []rawCheck, n int) map[string]rawCheck {
+	t.Helper()
+	require.Len(t, checks, n)
+	byKey := map[string]rawCheck{}
+	for _, c := range checks {
+		byKey[c.Key] = c
+	}
+	return byKey
+}
+
+// pathResolvingShells returns the host shells that look commands up through
+// PATH. A busybox shell that prefers its own applets would bypass the
+// stand-in tools of TestScriptWatchdogBranch and the PATH of
+// TestScriptRunsWithoutTimeout.
+func pathResolvingShells(t *testing.T) map[string][]string {
+	t.Helper()
+	out := map[string][]string{}
+	for name, argv := range shells(t) {
+		if onPath(t, argv, "sleep") {
+			out[name] = argv
+		}
+	}
+	if len(out) == 0 {
+		t.Skip("no host shell looks commands up through PATH")
+	}
+	return out
+}
+
+// standInTools holds the tools for TestScriptWatchdogBranch by name, and
+// builds PATH directories that contain exactly the named ones.
+type standInTools struct {
+	tools map[string]string
+}
+
+func newStandInTools(t *testing.T) standInTools {
+	t.Helper()
+	bin := t.TempDir()
+	tools := map[string]string{}
+	// busybox-like timeout(1): accepts "timeout SECS CMD", rejects --version.
+	// The watchdog branch never uses it to stop a check.
+	tools["timeout"] = filepath.Join(bin, "timeout")
+	writeFile(t, tools["timeout"], "#!/bin/sh\ncase $1 in --version) exit 1 ;; esac\nshift\nexec \"$@\"\n")
+	require.NoError(t, os.Chmod(tools["timeout"], 0o755))
+	if p, err := exec.LookPath("timeout"); err == nil && exec.Command(p, "--version").Run() == nil {
+		tools["coreutils-timeout"] = p
+	}
+	if p, err := exec.LookPath("setsid"); err == nil {
+		tools["setsid"] = p
+	} else if perl, err := exec.LookPath("perl"); err == nil {
+		// setsid(1) without a fork, as util-linux and busybox behave for a
+		// process that is not a group leader.
+		tools["setsid"] = filepath.Join(bin, "setsid")
+		writeFile(t, tools["setsid"], "#!"+perl+"\nuse POSIX ();\nPOSIX::setsid() or die \"setsid: $!\\n\";\nexec { $ARGV[0] } @ARGV or die \"setsid: $ARGV[0]: $!\\n\";\n")
+		require.NoError(t, os.Chmod(tools["setsid"], 0o755))
+	} else {
+		t.Skip("neither setsid(1) nor perl on the host")
+	}
+	for _, name := range []string{"sleep", "head", "cat"} {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("no %s(1) on the host", name)
+		}
+		tools[name] = p
+	}
+	return standInTools{tools: tools}
+}
+
+// dir returns a new directory with a link to each named tool, for use as
+// the only PATH entry. A name of the form link=tool links the tool under
+// another name.
+func (s standInTools) dir(t *testing.T, names ...string) string {
+	t.Helper()
+	d := t.TempDir()
+	for _, n := range names {
+		link, tool, ok := strings.Cut(n, "=")
+		if !ok {
+			tool = link
+		}
+		require.NoError(t, os.Symlink(s.tools[tool], filepath.Join(d, link)))
+	}
+	return d
+}
+
+// TestScriptRunsWithoutTimeout runs the script with a PATH that has neither
+// timeout(1) nor setsid(1): the checks run unbounded and are never marked,
+// not even when a check exits 124 or 143 by itself.
 func TestScriptRunsWithoutTimeout(t *testing.T) {
-	script := Script([]Request{{Key: "plain", Command: "echo hello"}}, ScriptOptions{})
+	reqs := []Request{
+		{Key: "plain", Command: "echo hello"},
+		{Key: "exits-124", Command: "exit 124"},
+		{Key: "exits-143", Command: "exit 143"},
+	}
+	script := Script(reqs, ScriptOptions{})
+	pathShells := pathResolvingShells(t)
 	for name, sh := range shells(t) {
 		t.Run(name, func(t *testing.T) {
 			_, checks, err := Parse([]byte(runShell(t, sh, script, "PATH="+t.TempDir())))
 			require.NoError(t, err)
-			require.Len(t, checks, 1)
-			assert.False(t, checks[0].Timeout)
-			assert.Equal(t, "hello", checks[0].Out)
+			byKey := checksByKey(t, checks, len(reqs))
+			assert.Equal(t, rawCheck{Key: "plain", Out: "hello"}, byKey["plain"])
+			if _, ok := pathShells[name]; !ok {
+				// busybox's own timeout applet still bounds and marks checks.
+				return
+			}
+			assert.Equal(t, rawCheck{Key: "exits-124", Exit: 124}, byKey["exits-124"], "without a time limit 124 is no timeout")
+			assert.Equal(t, rawCheck{Key: "exits-143", Exit: 143}, byKey["exits-143"], "without a time limit 143 is no timeout")
 		})
 	}
 }
@@ -97,11 +281,7 @@ func TestScriptBoundsCapturedOutput(t *testing.T) {
 			out := runShell(t, sh, script, "PATH="+bin+":"+os.Getenv("PATH"))
 			_, checks, err := Parse([]byte(out))
 			require.NoError(t, err)
-			require.Len(t, checks, 4)
-			byKey := map[string]rawCheck{}
-			for _, c := range checks {
-				byKey[c.Key] = c
-			}
+			byKey := checksByKey(t, checks, len(reqs))
 			assert.Equal(t, 7, byKey["flood"].Exit, "the drained check keeps its exit status")
 			assert.Len(t, byKey["flood"].Out, MaxOutput)
 			assert.True(t, strings.HasPrefix(byKey["flood"].Out, strings.Repeat("0", 1022)+"\n"), "the output starts at the beginning")
@@ -111,8 +291,11 @@ func TestScriptBoundsCapturedOutput(t *testing.T) {
 			assert.Less(t, len(out), 4*MaxOutput+2048, "the probe output stays small")
 			if !onPath(t, sh, "head") {
 				// busybox built with the standalone shell runs its own head
-				// applet and never reaches the wrapper; the bounds above
-				// still hold.
+				// applet and never reaches the wrapper. The bounds above
+				// still hold; check that the script chose the head -c path.
+				assert.Equal(t, "[1]", runShell(t, sh, helpersPrelude()+`printf '[%s]' "$_hd"`),
+					"the shell's own head applet selects the head -c path")
+				t.Log("head call count skipped: the shell runs its own head applet")
 				return
 			}
 			calls, err := os.ReadFile(log)
@@ -122,8 +305,8 @@ func TestScriptBoundsCapturedOutput(t *testing.T) {
 	}
 }
 
-// TestScriptBoundsFloodUnderTimeout floods output until timeout(1) stops the
-// check: the line is still marked as a timeout and keeps the first
+// TestScriptBoundsFloodUnderTimeout floods output until the time limit stops
+// the check: the line is still marked as a timeout and keeps the first
 // MaxOutput bytes.
 func TestScriptBoundsFloodUnderTimeout(t *testing.T) {
 	if _, err := exec.LookPath("timeout"); err != nil {
@@ -133,7 +316,7 @@ func TestScriptBoundsFloodUnderTimeout(t *testing.T) {
 		t.Skip("no head(1) on the host")
 	}
 	reqs := []Request{{Key: "flood", Command: `while :; do printf '%01022d\n' 1; done`}}
-	script := strings.Replace(Script(reqs, ScriptOptions{}), "_tmax="+strconv.Itoa(int(CheckTimeout/time.Second))+"\n", "_tmax=1\n", 1)
+	script := withTimeLimit(Script(reqs, ScriptOptions{}), 1)
 	for name, sh := range shells(t) {
 		t.Run(name, func(t *testing.T) {
 			_, checks, err := Parse([]byte(runShell(t, sh, script)))
@@ -207,7 +390,7 @@ func TestProbeDoesNotCacheTimedOutCheck(t *testing.T) {
 
 // hangingEngine prints the check lines of the keys in done, then blocks
 // until its context ends, like a container whose next check hangs in an
-// image without timeout(1).
+// image that has neither timeout(1) nor the tools for the script's watchdog.
 type hangingEngine struct {
 	*engine.Fake
 	t    *testing.T

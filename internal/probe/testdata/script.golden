@@ -35,7 +35,9 @@ while [ ${#_cut} -lt "$_max" ]; do _cut=$_cut$_cut; done
 _to=
 if timeout 10 /bin/sh -c : >/dev/null 2>&1; then _to=1; fi
 _sg=
-if [ -n "$_to" ] && ! timeout --version >/dev/null 2>&1 && command -v setsid >/dev/null 2>&1; then _sg=1; fi
+if command -v setsid >/dev/null 2>&1 && command -v sleep >/dev/null 2>&1; then
+	if [ -z "$_to" ] || ! timeout --version >/dev/null 2>&1; then _sg=1; fi
+fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
 _run() {
@@ -46,16 +48,26 @@ _run() {
 			sleep "$_tmax" &
 			_sp=$!
 			trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
-			wait "$_sp" && kill -TERM -"$_cp" 2>/dev/null
+			wait "$_sp" || exit 0
+			trap '' TERM
+			kill -TERM -"$_cp" 2>/dev/null
+			exit 124
 		) </dev/null >/dev/null 2>&1 3>&- 4>&- &
 		_wp=$!
 		wait "$_cp"
 		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
 		kill "$_wp" 2>/dev/null
 		wait "$_wp" 2>/dev/null
+		[ $? -ne 124 ] || _rc=143
 		return "$_rc"
 	elif [ -n "$_to" ]; then
-		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
+		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		wait "$_cp"
+		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
+		return "$_rc"
 	else
 		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
 	fi
@@ -96,7 +108,7 @@ _check() {
 	fi
 	case $_e in '' | *[!0-9]*) _e=-1 ;; esac
 	_x=false
-	if [ -n "$_to" ]; then
+	if [ -n "$_to$_sg" ]; then
 		case $_e in 124 | 143) _x=true ;; esac
 	fi
 	if [ ${#_o} -gt "$_max" ]; then

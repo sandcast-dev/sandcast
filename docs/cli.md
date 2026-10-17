@@ -302,7 +302,7 @@ sandcast build [flags]
 | `--target <openshell\|container>` | the default target | Target to build. |
 | `--platform <platform>` | the manifest `platform`, else the host | Target platform. |
 | `--verify` | off | Run every component check in the built image afterwards, plus the session checks for the OpenShell target (see [sandcast verify](#sandcast-verify)). |
-| `--push` | off | Push the final image. The target field `push: true` has the same effect. |
+| `--push` | the target field `push` | Push the final image. An explicit `--push` or `--push=false` overrides the target field `push`. |
 | `--no-cache-layers` | off | Build pass 1 without the engine layer cache. |
 | `--keep-stage` | off | Keep the pass-1 image as `<image>:sandcast-stage`. |
 

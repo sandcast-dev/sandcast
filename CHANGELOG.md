@@ -87,3 +87,7 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 - Ported the v0.1.3 stable profile validation into `internal/profile`: credential names and token_grant endpoint and audience-override selectors must be free of control characters; a token_grant endpoint may not use protocol `sql` or `tls: skip`; `2026-07-28` joins the supported MCP protocol revisions (the default revision stays `2025-11-25`); and a null value at a schema-declared object path is rejected before typed decoding.
 - Relaxed the `sandcast profiles import` version check: it now accepts any `openshell` CLI release on the pinned minor line (any `0.1.x` for the v0.1.3 pin, pre-release suffixes included) instead of an exact match, so a future patch release needs no code change.
 - Deferred to a follow-up: the experimental `ProviderFileProfile` (`files`) feature and the token_grant audience-override to endpoint binding-conflict checks, both of which upstream marks as subject to change.
+
+### Build push override
+
+- `sandcast build --push=false` now skips the push of a target with `push: true`. The `--push` flag overrides the target field `push` whenever it is given; without the flag the target field decides. Before, the two were combined with a logical or, so a manifest with `push: true` always pushed.

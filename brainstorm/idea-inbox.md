@@ -137,24 +137,6 @@ Ideas captured from code reviews for future brainstorming.
 
 > The round-3 fix of the stall rule (R3-4) had to approximate the long-compile phase from one marker because no phase markers exist; real markers would make the skill's progress detection exact and remove the approximation.
 
-### sandbox-only-tools-vanish-at-runtime
-
-- **Source**: deep-review
-- **Date**: 2026-10-09
-- **Reference**: 001-sandcast-standalone-build
-- **Summary**: Base-image tools that exist only under `/sandbox` count as present at probe time, but the Kubernetes driver mounts the workspace over `/sandbox`, so they disappear at runtime.
-
-> The probe sees the base image filesystem, the runtime sees the mounted workspace; a tool found only under `/sandbox` passes the probe and then is missing in the running sandbox.
-
-### workspace-writable-rc-exec
-
-- **Source**: deep-review
-- **Date**: 2026-10-09
-- **Reference**: 001-sandcast-standalone-build
-- **Summary**: Startup files in a workspace-writable home (`.zshenv`, `.zprofile`, `.bashrc`) are the same code-execution vector as `.zcompdump`, which R3-era fixes addressed only for `compinit`.
-
-> When the home is the writable `/sandbox`, any rc file sourced at shell start runs as code; the compinit hardening closed one instance of a broader class.
-
 ### child-process-pdeathsig
 
 - **Source**: deep-review
@@ -244,12 +226,3 @@ Ideas captured from code reviews for future brainstorming.
 - **Summary**: The Claude Code adapter only copies plugin sources that live inside the project, `~/.claude/skills` or `~/.claude/plugins`. A plugin whose marketplace is a local filesystem path (for example a sibling checkout under `~/Development/...`) is enabled in the user's config but silently skipped at capture, so the built image is missing it. Find a way to include plugins from local marketplaces. Options: resolve the local marketplace directory's git remote and record that as the marketplace source in the manifest (works when the repo is reachable from the build, for example a public GitHub repo or with build-time credentials); or copy the local marketplace sources into the project or image for repos on internal git hosts behind a VPN that the build cannot reach. The manifest and capture flow would need a way to represent a marketplace by remote URL and/or by vendored copy, and to decide per plugin which route to take.
 
 > In the openshell-demo capture, `installed_plugins.json` had 35 entries: 9 were offered (enabled, user-scoped, GitHub marketplaces), 13 were enabled but skipped because their marketplace is a local path, 10 were disabled, and 3 were scoped to other projects. The 13 skipped plugins are the gap this idea closes; most have a GitHub remote already, a few are only on internal hosts and would need the vendored-copy route.
-
-### dotfiles-in-masked-home
-
-- **Source**: discussion
-- **Date**: 2026-10-12
-- **Reference**: openshell-demo capture
-- **Summary**: Capture bakes the curated shell configuration into `/etc` (`/etc/zsh/zshrc.d/sandcast.zsh`, `/etc/profile.d/sandcast.sh`, sourced from the system rc), so it survives the OpenShell home overmount: the Kubernetes driver masks the user's home (`/sandbox`) with the workspace volume, but `/etc` and `/opt` are untouched. General home dotfiles (`.gitconfig`, tool configs under `~/.config`, `.tmux.conf`, and similar) are not captured, so a user's wider environment is missing in the sandbox. Add a way to bake selected home dotfiles into the image so they survive the masked home, using relocation rather than home symlinks: a baked `ZDOTDIR` tree (set `ZDOTDIR` in `/etc/zshenv`, which zsh reads first and is not under the home, pointing at for example `/opt/sandcast/zdotdir`) for zsh; `XDG_CONFIG_HOME`/`XDG_DATA_HOME` or per-tool env vars (`GIT_CONFIG_GLOBAL=/etc/gitconfig`, `STARSHIP_CONFIG`, and so on) for XDG-aware apps; and `/etc` system files for bash. Reuse the same credential-redaction and copy-into-project rules the shell and skill flows already apply.
-
-> Baked home symlinks do not help: a symlink at `/sandbox/.zshrc` lives under the masked home and is hidden by the overmount. Runtime copy-into-home is a weak fallback: it needs the workspace writable, writes into the project tree, and `/etc/skel` does not apply to a pre-existing overmounted home (skel seeds only at user creation). The robust pattern, already proven for the shell config, is to place the content outside the home and point the program at it with an environment variable; this idea generalizes that from the shell to the rest of the user's dotfiles. Related: [[plugins-from-local-marketplaces]] and the still-unfiled "persist the harness credential store across sandbox recreations" gap.

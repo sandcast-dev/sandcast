@@ -81,7 +81,7 @@ You do not need to list components that sandcast adds by itself: the shell progr
 |-------|------|---------|-------|
 | `targets.<target>.image` | string | | Required. Image name without tag; validation rejects a tag or digest here (use `tag`). |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
-| `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. |
+| `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. `sandcast build --push=false` skips the push for one build. |
 | `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
 
 `<target>` is `openshell` or `container`. Commands without `--target` use `openshell` when it is declared, otherwise `container`.
