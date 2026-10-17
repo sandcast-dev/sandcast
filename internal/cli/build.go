@@ -61,7 +61,10 @@ is never retried. --verify runs every component check afterwards.`,
 			for _, u := range planned.Plan.Unresolved {
 				a.logf("skipping optional unresolved component %s: %s", u.Key, u.Reason)
 			}
-			opts := pipeline.BuildOptions{Verify: doVerify, Push: push, NoCacheLayers: noCacheLayers, KeepStage: keepStage}
+			opts := pipeline.BuildOptions{Verify: doVerify, NoCacheLayers: noCacheLayers, KeepStage: keepStage}
+			if cmd.Flags().Changed("push") {
+				opts.Push = &push
+			}
 			if a.opts.verbose {
 				opts.Progress = a.Stderr
 			}
@@ -97,7 +100,7 @@ is never retried. --verify runs every component check afterwards.`,
 	f.StringVar(&target, "target", "", "openshell or container (default: openshell when the manifest declares it, else container)")
 	f.StringVar(&platform, "platform", "", "linux/amd64 or linux/arm64 (overrides the manifest, default: host)")
 	f.BoolVar(&doVerify, "verify", false, "run every component check in the built image afterwards")
-	f.BoolVar(&push, "push", false, "push the final image")
+	f.BoolVar(&push, "push", false, "push the final image (default: the target's push field; --push=false skips it)")
 	f.BoolVar(&noCacheLayers, "no-cache-layers", false, "build without the engine layer cache")
 	f.BoolVar(&keepStage, "keep-stage", false, "keep the pass-1 image as <image>:sandcast-stage")
 	return cmd
