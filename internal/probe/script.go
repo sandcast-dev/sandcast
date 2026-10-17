@@ -15,7 +15,7 @@ const MaxOutput = 2048
 
 // ScriptOptions selects the sections of a probe script.
 type ScriptOptions struct {
-	// Facts adds the os, pkgmgr, user and shells sections. Without it the
+	// Facts adds the os, pkgmgr, user, shells and homerc sections. Without it the
 	// script only runs the checks (a partial probe).
 	Facts bool
 }
@@ -122,9 +122,29 @@ _run() {
 		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
 	fi
 }
+_paths() {
+	_ps= _seen=$_nl
+	_cifs=$IFS
+	IFS=:
+	set -f
+	for _d in $PATH; do
+		case $_d in '' | [!/]*) continue ;; esac
+		case $_seen in *"$_nl$_d/$1$_nl"*) continue ;; esac
+		if [ -f "$_d/$1" ] && [ -x "$_d/$1" ]; then
+			_seen=$_seen$_d/$1$_nl
+			_ps=$_ps\"$(_jsafe "$_d/$1")\",
+		fi
+	done
+	set +f
+	IFS=$_cifs
+	_ps=${_ps%,}
+}
 _check() {
-	_p=
-	if [ -n "$2" ]; then _p=$(command -v "$2" 2>/dev/null) || _p=; fi
+	_p= _ps=
+	if [ -n "$2" ]; then
+		_p=$(command -v "$2" 2>/dev/null) || _p=
+		_paths "$2"
+	fi
 	if [ -n "$_hd" ]; then
 		_o=$( { _st=$( { { _run "$3"; echo "$?" >&3; } | { head -c "$_max"; cat >/dev/null; } >&4; } 3>&1 ); printf '\n%s' "$_st"; } 4>&1 )
 		_e=${_o##*"$_nl"}
@@ -145,12 +165,16 @@ _check() {
 		_t=${_o#$_cut}
 		if [ "$_t" != "$_o" ]; then _o=${_o%"$_t"}; fi
 	fi
-	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","out":"%s","timeout":%s}\n' \
-		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$(_jsafe "$_o")" "$_x"
+	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"out":"%s","timeout":%s}\n' \
+		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$(_jsafe "$_o")" "$_x"
 }
 `
 
-// scriptFacts prints the os, pkgmgr, user and shells lines. The passwd entry
+// scriptFacts prints the os, pkgmgr, user, shells, homerc and path lines.
+// The path line lists the directories of PATH in order. The
+// homerc line lists the files among .bashrc, .profile and .bash_profile in
+// the default user's home that assign PATH without referencing $PATH, which
+// would drop directories set before them (R-05). The passwd entry
 // of the current uid comes from getent when available, else from
 // /etc/passwd; it supplies the user name when id -un fails (an arbitrary
 // uid), the home directory when HOME is unset, and the login shell.
@@ -219,6 +243,38 @@ if [ -r "$_sysroot/etc/shells" ]; then
 	done < "$_sysroot/etc/shells"
 fi
 printf '{"type":"shells","list":[%s"/bin/sh"]}\n' "$_shells"
+_rcs=
+if [ -n "$_home" ]; then
+	for _f in .bashrc .profile .bash_profile; do
+		[ -r "$_sysroot$_home/$_f" ] || continue
+		_hit=
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_line=${_line#"${_line%%[![:space:]]*}"}
+			case $_line in
+			'#'*) continue ;;
+			export\ PATH=* | PATH=* | readonly\ PATH=* | declare\ -x\ PATH=*) ;;
+			*) continue ;;
+			esac
+			case $_line in
+			*'$PATH'* | *'${PATH}'* | *'${PATH:'*) ;;
+			*) _hit=1 ;;
+			esac
+		done < "$_sysroot$_home/$_f"
+		if [ -n "$_hit" ]; then _rcs="$_rcs\"$(_jsafe "$_f")\","; fi
+	done
+fi
+printf '{"type":"homerc","resets_path":[%s]}\n' "${_rcs%,}"
+_pdirs=
+_cifs=$IFS
+IFS=:
+set -f
+for _d in $PATH; do
+	case $_d in '') continue ;; esac
+	_pdirs="$_pdirs\"$(_jsafe "$_d")\","
+done
+set +f
+IFS=$_cifs
+printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
 `
 
 // Script returns the POSIX sh probe script for reqs. It prints one JSON

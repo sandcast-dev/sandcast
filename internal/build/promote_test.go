@@ -76,7 +76,7 @@ func TestPromoteDefaultsAndRefusals(t *testing.T) {
 	require.NoError(t, err)
 	p, err := BuildRecipe(frag, root, "plain", PromoteOptions{Bins: []string{"plain", "plainctl"}, FinalUser: "sandbox"})
 	require.NoError(t, err)
-	assert.Equal(t, "command -v plain", p.Recipe.Check.Command)
+	assert.Equal(t, "command -v plain && command -v plainctl", p.Recipe.Check.Command, "the recipe checks every binary, like the fragment did")
 	assert.Equal(t, "plain", p.Recipe.Name)
 
 	_, err = WriteFragment(frag, "copying", "COPY x /usr/local/bin/x\nRUN true\n", testNow)

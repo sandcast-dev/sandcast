@@ -190,6 +190,52 @@ func TestRunKeepStageAndPush(t *testing.T) {
 	assert.Equal(t, []string{"localhost/demo:sandcast-stage", "localhost/demo:v1"}, eng.ImageNames(), "only the per-invocation tag is removed")
 	assert.Equal(t, 1, eng.CountOp("push"))
 	assert.Equal(t, "localhost/demo:v1", res.Image)
+	assert.True(t, res.Pushed)
+}
+
+// TestRunPushResult covers FR-011 and the spec edge case "A push fails":
+// the push and its output land in build.log, the result records whether the
+// image was pushed and the registry digest.
+func TestRunPushResult(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	t.Run("push on", func(t *testing.T) {
+		eng := fakeEngine()
+		eng.PushDigests = map[string]string{"localhost/demo:latest": digest}
+		o := testOptions(t, eng)
+		o.Push = true
+		res, err := Run(context.Background(), o)
+		require.NoError(t, err)
+		assert.True(t, res.Pushed)
+		assert.Equal(t, digest, res.Digest)
+		log, err := os.ReadFile(res.BuildLog)
+		require.NoError(t, err)
+		assert.Contains(t, string(log), "### sandcast push: localhost/demo:latest\nPushing localhost/demo:latest\n")
+	})
+	t.Run("push off", func(t *testing.T) {
+		eng := fakeEngine()
+		res, err := Run(context.Background(), testOptions(t, eng))
+		require.NoError(t, err)
+		assert.False(t, res.Pushed)
+		assert.Empty(t, res.Digest)
+		assert.Zero(t, eng.CountOp("push"))
+		log, err := os.ReadFile(res.BuildLog)
+		require.NoError(t, err)
+		assert.NotContains(t, string(log), "sandcast push")
+	})
+	t.Run("push fails", func(t *testing.T) {
+		eng := fakeEngine()
+		eng.PushErr = map[string]error{"localhost/demo:latest": errors.New("unauthorized: authentication required")}
+		o := testOptions(t, eng)
+		o.Push = true
+		res, err := Run(context.Background(), o)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "push localhost/demo:latest: unauthorized")
+		require.NotNil(t, res)
+		assert.False(t, res.Pushed)
+		log, err := os.ReadFile(res.BuildLog)
+		require.NoError(t, err)
+		assert.Contains(t, string(log), "### sandcast push: localhost/demo:latest")
+	})
 }
 
 func TestRunStageTagIsPerInvocation(t *testing.T) {

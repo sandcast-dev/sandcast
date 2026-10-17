@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -30,7 +31,12 @@ func (a *App) harnessEnv() (harness.Env, error) {
 	if err != nil {
 		return harness.Env{}, err
 	}
-	return harness.Env{Home: home, Project: l.Root, LookPath: a.LookPath}, nil
+	env := harness.Env{Home: home, Project: l.Root, LookPath: a.LookPath}
+	// Without git on the host, local marketplaces are skipped as before.
+	if bin, err := a.LookPath("git"); err == nil {
+		env.Git = harness.ExecGit{Bin: bin}
+	}
+	return env, nil
 }
 
 func (a *App) harnessCommand() *cobra.Command {
@@ -96,10 +102,10 @@ func (a *App) harnessCommand() *cobra.Command {
 				_, _ = fmt.Fprintf(a.Stdout, "mcp server: %s  %s  (%s)\n", s.Name, target, s.Origin)
 			}
 			for _, p := range d.Plugins {
-				_, _ = fmt.Fprintf(a.Stdout, "plugin: %s  %s\n", p.Name, p.Source)
+				_, _ = fmt.Fprintf(a.Stdout, "plugin: %s  %s%s\n", p.Name, p.Source, extensionDetail(p))
 			}
 			for _, s := range d.Skills {
-				_, _ = fmt.Fprintf(a.Stdout, "skill: %s  %s\n", s.Name, s.Source)
+				_, _ = fmt.Fprintf(a.Stdout, "skill: %s  %s%s\n", s.Name, s.Source, extensionDetail(s))
 			}
 			for _, r := range d.Redacted {
 				_, _ = fmt.Fprintf(a.Stdout, "redacted: %s (%s) -> %s; supply it as a provider credential at runtime\n", r.Path, r.Kind, r.Placeholder)
@@ -112,4 +118,26 @@ func (a *App) harnessCommand() *cobra.Command {
 	}
 	cmd.AddCommand(list, discover)
 	return cmd
+}
+
+// extensionDetail is the console suffix of a discovered plugin or skill: the
+// portability reason, and the git state of a marketplace proposed through
+// its remote.
+func extensionDetail(e harness.Extension) string {
+	var parts []string
+	if !e.Portable && e.Reason != "" {
+		parts = append(parts, "not portable: "+e.Reason)
+	}
+	if r := e.Remote; r != nil {
+		unpushed := "unpushed commits unknown (no remote-tracking ref)"
+		if r.UnpushedCommits != nil {
+			unpushed = fmt.Sprintf("%d unpushed commit(s)", *r.UnpushedCommits)
+		}
+		parts = append(parts, fmt.Sprintf("from git remote %s, %s, uncommitted changes: %t, marketplace name: %s",
+			r.URL, unpushed, r.UncommittedChanges, r.NameMatch))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  (" + strings.Join(parts, "; ") + ")"
 }

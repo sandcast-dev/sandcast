@@ -48,7 +48,7 @@ Errors are printed as `sandcast: <message>` on stderr. A command that has alread
 
 Commands that work on one target take `--target openshell` or `--target container`. The default is `openshell` when the manifest declares it, otherwise `container`. A target the manifest does not declare exits 2.
 
-Commands that pull or build images take `--platform linux/amd64` or `--platform linux/arm64`. The platform is selected in this order: the `--platform` flag, the manifest field `platform`, then the host architecture as `linux/<arch>`. The plan records the value and its source (`flag`, `manifest` or `host`).
+Commands that pull or build images take `--platform linux/amd64` or `--platform linux/arm64`. The platform is selected in this order: the `--platform` flag, the manifest field `platform`, then the host architecture as `linux/<arch>`. The plan records the value and its source (`flag`, `manifest` or `host`). The platform need not match the machine the container engine runs on; the [cross-architecture guide](guides/cross-arch.md) covers Rosetta, remote podman connections (`CONTAINER_CONNECTION`) and CI, and the `emulation` notice for components that fail under emulation.
 
 ## Core build
 
@@ -66,14 +66,28 @@ sandcast init [flags]
 | `--base-image <name-or-ref>` | the registry default for the target | Registry entry name or image reference. |
 | `--target <openshell\|container>` | `openshell` | The target the skeleton declares. |
 | `--force` | off | Overwrite an existing manifest. |
+| `--image <name[:tag]>` | `localhost/<name>` | Target image. A tag is written to `targets.<target>.tag`; a digest is refused. |
+| `--platform <linux/amd64\|linux/arm64>` | unset (the host at plan time) | Writes the manifest's `platform`. |
+| `--push` | off | Writes `targets.<target>.push: true`, so every build pushes the image. |
 
-`init` works in `--project` or the current directory and never searches ancestors. The skeleton declares the image `localhost/<name>` for the chosen target and an empty component list. An existing manifest without `--force` exits 2.
+`init` works in `--project` or the current directory, never searches ancestors and never asks questions. The skeleton declares the image for the chosen target and an empty component list. An existing manifest without `--force` exits 2, and so does an unsupported `--platform` or an invalid `--image`.
+
+Without `--image`, the OpenShell target gets `localhost/<name>`, and init says what that means:
 
 ```console
 $ sandcast init --name demo
 created .sandcast/manifest.yaml (base image nvidia-community-base, target openshell)
 created .sandcast/.gitignore
+note: targets.openshell.image is localhost/demo; this works only with a local OpenShell gateway that shares this engine's image storage. For a remote gateway, rerun with --force --image <registry>/demo --platform <os/arch> --push.
 ```
+
+For a gateway on a cluster, name a registry the cluster can pull from, the cluster's architecture and push:
+
+```sh
+sandcast init --name demo --image quay.io/<user>/demo --platform linux/amd64 --push
+```
+
+See the [cross-architecture guide](guides/cross-arch.md) for building a `linux/amd64` image on an arm64 machine.
 
 ### sandcast manifest validate
 
@@ -90,7 +104,17 @@ $ sandcast manifest validate
 .sandcast/manifest.yaml:9: $.components[4].key: component "nosuchtool" is not defined in any tier (shipped, registry, .sandcast/components, .sandcast/recipes) and has no stored fragment
 ```
 
-The JSON report has `valid`, `manifest` and `diagnostics` (each with `path`, `line` and `message`).
+Warnings follow the diagnostics as `warning: <path>: <message>` lines and change neither `valid` nor the exit status. A target image that names a Docker Hub repository without a namespace (a bare `<name>` or `docker.io/<name>`) resolves to the official images' namespace `docker.io/library/<name>`:
+
+```console
+$ sandcast manifest validate
+.sandcast/manifest.yaml: valid
+warning: $.targets.openshell.image: docker.io/demo resolves to docker.io/library/demo; add your namespace (docker.io/<user>/demo)
+```
+
+`sandcast plan` repeats the warning of the planned target as a `reference` notice.
+
+The JSON report has `valid`, `manifest`, `diagnostics` (each with `path`, `line` and `message`) and `warnings` (same shape).
 
 ### sandcast base-images list
 
@@ -251,6 +275,20 @@ wrote .sandcast/build/openshell/plan.yaml
 
 With `--json`, the command prints the plan itself, with the same fields as `plan.yaml`.
 
+Each `probe_delta` entry of a mise component that `mise.lock` locks for the target platform carries `locked_version`, and entries the workspace rule changed carry `ignored_paths`. Notices with a kind have the form `<kind>: <component or image>: <message>`, follow the other notices sorted by kind and component, and appear as `notice:` lines:
+
+| Kind | Meaning |
+|------|---------|
+| `lockfile-shadow` | The base image has a different version than `mise.lock`; the locked version is installed. |
+| `unknown-version` | The base image's version could not be read, or came from a copy under the workspace path; the locked version is installed. |
+| `workspace-path` | A binary under the workspace path (the final user's home, OpenShell target) was ignored. |
+| `home-rc-path` | A home directory rc file of the base image resets `PATH`. |
+| `reference` | A target image is a Docker Hub reference without a namespace; the notice names the reference it resolves to (`docker.io/library/<name>`). |
+
+Engine facts never enter the plan file. When the build platform differs from the engine host's architecture and the plan installs a component known to fail under emulation, plan prints an `emulation` notice on stderr only; `sandcast build` prints it as well and repeats it in the build report.
+
+See [the build guide](guides/build.md#the-probe-delta) for the rules.
+
 ### sandcast build
 
 Plan, assemble the Containerfile from the plan and the stored fragments, build the image in two passes, and write the adapted profile set.
@@ -263,7 +301,7 @@ sandcast build [flags]
 |------|---------|---------|
 | `--target <openshell\|container>` | the default target | Target to build. |
 | `--platform <platform>` | the manifest `platform`, else the host | Target platform. |
-| `--verify` | off | Run every component check in the built image afterwards. |
+| `--verify` | off | Run every component check in the built image afterwards, plus the session checks for the OpenShell target (see [sandcast verify](#sandcast-verify)). |
 | `--push` | the target field `push` | Push the final image. An explicit `--push` or `--push=false` overrides the target field `push`. |
 | `--no-cache-layers` | off | Build pass 1 without the engine layer cache. |
 | `--keep-stage` | off | Keep the pass-1 image as `<image>:sandcast-stage`. |
@@ -285,7 +323,17 @@ COMPONENT        RESULT  VERSION  OUTPUT
 verify localhost/demo:latest: 9 passed, 0 failed
 ```
 
-The JSON report has `image`, `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method) and `error`.
+The JSON report has `image`, `image_ref` (the fully qualified reference, for example `docker.io/rhuss/demo:latest` for `rhuss/demo`), `sandbox_create` (`openshell sandbox create --from <image_ref>`, OpenShell target), `pushed` (always present), `digest` (the registry digest, when pushed), `stage_image`, `containerfile`, `build_log`, `profiles`, `flagged` (adapted ids of profiles without a resolved binary), `allowed_domains` (container target), `verify`, `resolutions` (component, binary, resolved path and method), `notices` and `error`. The console shows `image ref`, `pushed`, `digest` and a `sandbox create:` line. A push writes a `### sandcast push: <ref>` section with the engine's output to `build.log`; a failed push fails the build and the report says `pushed: false`.
+
+Besides the plan notices, `notices` carries notices that depend on the engine host or the gateway and never enter the plan file:
+
+| Kind | When |
+|------|------|
+| `emulation` | A component with `emulation_unsafe: true` is installed and the target platform's architecture differs from the engine host's (`podman info` or `docker info`). See the [cross-architecture guide](guides/cross-arch.md). `sandcast plan` prints it to stderr too. |
+| `gateway` | The `openshell` CLI is installed, its active gateway is remote and the OpenShell image is a `localhost/` reference. |
+| `docker-hub` | The image was pushed to `docker.io`: anonymous pulls from cluster nodes are rate limited, so give the gateway's sandbox service account a pull secret or use a registry the cluster already authenticates to. |
+
+An engine host or gateway that cannot be queried produces no notice and never fails the build. `notices` repeats the plan notices (see [sandcast plan](#sandcast-plan)); the console prints each one as a `notice:` line before the verify report. With `--verify`, the verify report includes the session checks and their `condition`.
 
 ### sandcast verify
 
@@ -302,13 +350,17 @@ sandcast verify [flags]
 
 `verify` reads the checks from `.sandcast/build/<target>/plan.yaml`; without a plan it exits 2. It reports every result, writes `verify.yaml` next to the plan, and exits 1 when any check failed.
 
-The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output), followed by a summary line:
+For the OpenShell target, verify always runs session checks as well, in the same container and without a flag to skip them. They reproduce the environment OpenShell gives a session (`env -i` with only `HOME`, `USER`, `TERM=xterm-256color` and `PATH=/usr/local/bin:/usr/bin:/bin`) and run each component check again, preceded by a `command -v` test of every binary of the component that resolves in the image environment (the image's build-time `PATH`, for example `/usr/sbin` for root tools); such a binary that does not resolve through the session `PATH` fails the entry with exit 127. A binary that does not resolve in the image environment either is skipped: the entry carries it in `notes` (verify.yaml and JSON), and the console prints one `note: <component>: ...` line. A component whose only binary name is its key and that has no such executable (for example `ca-certificates`) is checked by its own check alone. The checks: `session.bash-login.<component>` through `bash -lc`, `session.bash-interactive.<component>` fed on stdin to `bash -i`, and with `shell.program: zsh` also `session.zsh.<component>` through a login `zsh -il -c`, as the switch hook starts it. The startup check of the selected shell program, `session.zsh.startup` for zsh or `session.bash.startup` for bash, fails when the interactive shell writes anything to stderr during startup or does not read the curated rc. Notes a shell prints only because verify runs it without a terminal are ignored: bash's `no job control in this shell` lines and zsh's `can't change option: zle`. Session checks count toward `failed` and the exit status. The [build guide](guides/build.md#the-session-environment) explains the session environment.
+
+The table has one row per component with the columns `COMPONENT`, `RESULT` (`ok`, or `FAIL (<status>)` with the status `missing`, `incompatible` or `timeout`), `VERSION` and `OUTPUT` (the first line of the check output). Session checks follow in a `session checks` group with the columns `CHECK`, `CONDITION`, `RESULT` and `OUTPUT`. A summary line closes the report:
 
 ```text
 verify localhost/demo:latest: 9 passed, 0 failed
 ```
 
 A `FAIL (timeout)` row is a check that did not finish within the check timeout; its output starts with `timeout:`, or with `not run:` for a check that never ran because the container was stopped first.
+
+Every result in `verify.yaml` and in the JSON report carries a `condition`: `image` for the component checks with the image environment, and `session:bash-login`, `session:bash-interactive` or `session:zsh` for the session checks.
 
 ### sandcast profiles lint
 
@@ -375,7 +427,9 @@ imported: claude-code (workspace scope)
 imported: go-proxy (workspace scope)
 ```
 
-The JSON report has `scope`, `imported`, `updated`, `conflicts`, `dry_run`, `mapping` (`upstream_id` and `adapted_id` per profile) and `index` (the path of the rewritten `index.yaml`, omitted when the import changed nothing). When an `openshell` call fails part way, the command still prints the profiles the gateway already accepted, sets `error` in the JSON report, and exits 1.
+When the `openshell` CLI reports the gateway in use as remote (`openshell gateway list`; the gateway `--gateway` or `OPENSHELL_GATEWAY` names, else the one whose endpoint `OPENSHELL_GATEWAY_ENDPOINT` names, else the active one; a selected gateway that is not listed counts as unknown) and the adapted set belongs to a `localhost/` image, the report starts with a `warning: gateway: image: ...` line: such a gateway cannot pull a reference that names this machine (the engine's local storage or a registry on `localhost:<port>`), so set `targets.openshell.image` to a registry reference and `targets.openshell.push` to `true`. A failed lookup produces no warning and never fails the import.
+
+The JSON report has `scope`, `imported`, `updated`, `conflicts`, `dry_run`, `mapping` (`upstream_id` and `adapted_id` per profile), `warnings` and `index` (the path of the rewritten `index.yaml`, omitted when the import changed nothing). When an `openshell` call fails part way, the command still prints the profiles the gateway already accepted, sets `error` in the JSON report, and exits 1.
 
 ### sandcast version
 
@@ -387,7 +441,7 @@ sandcast:            1f31df9-dirty
 openshell:           v0.1.3 (e1f3c82c)
 mise:                v2026.10.4
 component registry:  v0.1.0
-skill bundle:        0.1.1
+skill bundle:        0.2.0
 manifest schema:     1
 plan schema:         1
 ```
@@ -412,17 +466,19 @@ sandcast components match [<dir>] [flags]
 
 `<dir>` defaults to `--project`, else the current directory. Each proposal has a source: `project` (ecosystem files such as `go.mod`), `host` (a tool on the host `PATH`), `harness` (a selected harness) or `always` (base system components). Components that do not match are listed as available. An unknown harness name exits 2.
 
+Project proposals carry `pinned_versions`: every version the project pins for the component's mise tool, each with its `value`, its `file` and its `kind` (`exact` for a full version without an operator, `channel` for a word such as `stable`, `nightly` or `lts/*`, `range` otherwise). The files read are `go.mod` and `go.work` (`go` and `toolchain` directives, the highest version first), `rust-toolchain.toml` and `rust-toolchain` (`channel`), `.python-version`, `pyproject.toml` (`requires-python`), `.nvmrc`, `.node-version`, `package.json` (`engines.node`), `.tool-versions` and `mise.toml` (`[tools]`). An entry in `.tool-versions` or `mise.toml` is evidence for the component that installs the tool. A file that cannot be parsed adds a line to `notes` (printed as `note:` lines) and the match still succeeds. The table's `PINNED` column shows the first exact value, else the first value with its kind.
+
 ```console
 $ sandcast components match tests/fixtures/reference-project --no-host
-COMPONENT        SOURCE   VERSION  EVIDENCE
-ca-certificates  always   -        always included
-curl             always   -        always included
-git              always   -        always included
-go               project  -        go.mod
-iproute2         always   -        always included
-nftables         always   -        always included
-python           project  -        pyproject.toml; uv.lock
-uv               project  -        uv.lock
+COMPONENT        SOURCE   VERSION  PINNED          EVIDENCE
+ca-certificates  always   -        -               always included
+curl             always   -        -               always included
+git              always   -        -               always included
+go               project  -        1.25 (range)    go.mod
+iproute2         always   -        -               always included
+nftables         always   -        -               always included
+python           project  -        >=3.12 (range)  pyproject.toml; uv.lock
+uv               project  -        -               uv.lock
 
 available: bash, bat, claude-code, codex, fzf, gh, jq, lsd, node, opencode, pnpm, ripgrep, rust, starship, yq, zoxide, zsh
 ```
@@ -444,6 +500,8 @@ sandcast harness discover <name>
 ```
 
 Each replaced value is reported as `redacted: <path> (<kind>) -> <placeholder>; supply it as a provider credential at runtime`, and entries that cannot be baked are reported as `note:` lines. An unknown harness name exits 2. The [capture guide](guides/capture.md#what-discovery-finds) lists the files the Claude Code adapter reads.
+
+Every plugin and skill carries `portable` and, when it is not portable, a `reason`: a source under `~/.claude/skills`, `~/.claude/plugins` or anywhere else on the host is read on the machine that runs the plan, so a manifest that uses it builds only there. `owner/repo`, URLs and paths inside the project are portable. A plugin whose local marketplace directory cannot be copied into the image but is a git checkout with a remote is listed with a proposed `source` (`owner/repo` for GitHub, else the remote URL without credentials) and a `remote` object: `url`, `unpushed_commits` (`null` when no remote-tracking ref exists), `uncommitted_changes` and `name_match` (`match`, `mismatch` or `unknown`). Discovery reads local git state only and never fetches. A marketplace directory without a remote, one that is not the top level of its git repository, or a host without `git`, still produces a skip note. The console appends both facts to each `plugin:` and `skill:` line.
 
 ### sandcast skills install
 
@@ -539,10 +597,12 @@ sandcast promote <key> [flags]
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--name <name>` | the existing component name, else the key | Display name of the recipe. |
-| `--bins <bin,...>` | the existing definition's binaries, else the key | Binaries the recipe installs. |
+| `--bins <bin,...>` | the existing definition's binaries, else the manifest entry's `bins`, else the key | Binaries the recipe installs. |
 | `--yes` | off | Promote without asking. |
 
 Without `--yes`, the command prints the recipe and asks for confirmation on standard input. Any answer other than `y` or `yes` prints `not promoted` and exits 1. A fragment that cannot be expressed as a recipe exits 2.
+
+After promotion the recipe defines the component, so a `bins` list on its manifest entry would fail validation. The command removes that list from the manifest entry and prints `removed bins from the manifest entry <key>`. The manifest is rewritten through the regular save path, which re-encodes it (comments are not kept).
 
 ```console
 $ sandcast promote mytool --bins mytool --yes

@@ -12,12 +12,22 @@ import (
 	"github.com/rhuss/sandcast/internal/fsutil"
 )
 
+// FormatVersion is the probe cache format. It is part of the facts and
+// checks directory names, so entries written by an older format (format 1
+// recorded no binary paths and no home rc facts, format 2 no PATH) are
+// never read. Bump it whenever the probe script records new facts or check
+// fields.
+const FormatVersion = 3
+
 // Cache directory names below the sandcast cache directory.
 const (
 	cacheDirName  = "probe"
-	factsDirName  = "facts"
-	checksDirName = "checks"
 	hashPrefixLen = 12
+)
+
+var (
+	factsDirName  = fmt.Sprintf("facts-v%d", FormatVersion)
+	checksDirName = fmt.Sprintf("checks-v%d", FormatVersion)
 )
 
 var (
@@ -32,8 +42,8 @@ var (
 // because docker reports the index digest, which is the same for every
 // architecture of a multi-platform image. Layout below Dir:
 //
-//	probe/facts/<digest-hex>_<os>-<arch>.json
-//	probe/checks/<digest-hex>_<os>-<arch>/<component-key>-<check-hash[:12]>.json
+//	probe/facts-v<format>/<digest-hex>_<os>-<arch>.json
+//	probe/checks-v<format>/<digest-hex>_<os>-<arch>/<component-key>-<check-hash[:12]>.json
 type Cache struct {
 	// Dir is the sandcast cache directory, see fsutil.CacheDir.
 	Dir string

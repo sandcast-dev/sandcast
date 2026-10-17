@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/rhuss/sandcast/internal/component"
@@ -50,6 +51,9 @@ func ValidateReferences(l fsutil.Layout, cacheDir string, m *manifest.Manifest) 
 		var defs []*component.Component
 		for _, w := range wanted {
 			path := wantedPath(m, w, harnesses)
+			if msg := plan.BinsProblem(w); msg != "" {
+				v.add(strings.TrimSuffix(path, ".key")+".bins", msg)
+			}
 			if w.Def == nil {
 				f, ok := stored[w.Key]
 				if !w.Ref.Optional && (!ok || f.Superseded) {
@@ -65,11 +69,26 @@ func ValidateReferences(l fsutil.Layout, cacheDir string, m *manifest.Manifest) 
 				v.add(path, msg)
 			}
 		}
-		for _, c := range component.Conflicts(defs) {
-			v.add("$.components", plan.ConflictProblem(c))
+		for _, c := range component.Conflicts(append(defs, plan.SyntheticDefinitions(wanted)...)) {
+			v.add(conflictPath(m, c), plan.ConflictProblem(c))
 		}
 	}
 	return v.list, nil
+}
+
+// conflictPath points a binary conflict at the declared binary of a
+// manifest entry when one side of the conflict declares it
+// ($.components[i].bins[j]), else at $.components.
+func conflictPath(m *manifest.Manifest, c component.Conflict) string {
+	for i, ref := range m.Components {
+		if !slices.Contains(c.Components, ref.Key) {
+			continue
+		}
+		if j := slices.Index(ref.Bins, c.Binary); j >= 0 {
+			return fmt.Sprintf("$.components[%d].bins[%d]", i, j)
+		}
+	}
+	return "$.components"
 }
 
 // diagnostics collects diagnostics once each; a problem found for both

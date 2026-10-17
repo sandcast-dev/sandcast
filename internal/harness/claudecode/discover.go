@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -145,11 +146,16 @@ func (Adapter) Discover(ctx context.Context, env harness.Env) (*harness.Discover
 		d.MCPServers = append(d.MCPServers, s)
 	}
 
-	if d.Plugins, err = discoverPlugins(env, &d.Notes); err != nil {
+	if d.Plugins, err = discoverPlugins(ctx, env, &d.Notes); err != nil {
 		return nil, err
 	}
 	if d.Skills, err = discoverSkills(env, &d.Notes); err != nil {
 		return nil, err
+	}
+	for _, list := range [][]harness.Extension{d.Plugins, d.Skills} {
+		for i := range list {
+			list[i].Portable, list[i].Reason = portability(list[i].Source)
+		}
 	}
 	slices.Sort(d.Notes)
 	return d, nil
@@ -288,7 +294,7 @@ func tokenEnvVar(server string) string {
 }
 
 // discoverPlugins lists the plugins installed for the user or the project.
-func discoverPlugins(env harness.Env, notes *[]string) ([]harness.Extension, error) {
+func discoverPlugins(ctx context.Context, env harness.Env, notes *[]string) ([]harness.Extension, error) {
 	var installed struct {
 		Plugins map[string]json.RawMessage `json:"plugins"`
 	}
@@ -323,11 +329,11 @@ func discoverPlugins(env harness.Env, notes *[]string) ([]harness.Extension, err
 			continue
 		}
 		_, market, _ := strings.Cut(id, "@")
-		source := marketplaceSource(id, market, markets, env, notes)
+		source, remote := marketplaceSource(ctx, id, market, markets, env, notes)
 		if source == "" {
 			continue
 		}
-		out = append(out, harness.Extension{Name: id, Source: source, Origin: origin})
+		out = append(out, harness.Extension{Name: id, Source: source, Origin: origin, Remote: remote})
 	}
 	return out, nil
 }
@@ -369,23 +375,24 @@ func samePath(a, b string) bool {
 // marketplaceSource returns what "claude plugin marketplace add" accepts for
 // the marketplace of plugin: owner/repo, a git or https URL without
 // credentials, or a local directory the scaffold may copy, shown as ./ in
-// the project or ~/ in the home directory. It is "" with a note when the
-// plugin cannot be baked.
-func marketplaceSource(plugin, name string, markets map[string]marketplaceJSON, env harness.Env, notes *[]string) string {
-	skip := func(format string, args ...any) string {
+// the project or ~/ in the home directory. A local directory the scaffold
+// cannot copy is proposed through its git remote instead, with the remote's
+// state (FR-019). It is "" with a note when the plugin cannot be baked.
+func marketplaceSource(ctx context.Context, plugin, name string, markets map[string]marketplaceJSON, env harness.Env, notes *[]string) (string, *harness.RemoteInfo) {
+	skip := func(format string, args ...any) (string, *harness.RemoteInfo) {
 		*notes = append(*notes, fmt.Sprintf("plugin %s skipped: ", plugin)+fmt.Sprintf(format, args...))
-		return ""
+		return "", nil
 	}
 	m, ok := markets[name]
 	if !ok {
 		if name == OfficialMarketplace {
-			return OfficialMarketplaceSource
+			return OfficialMarketplaceSource, nil
 		}
 		return skip("the source of marketplace %q is unknown", name)
 	}
 	switch m.Source.Source {
 	case "github":
-		return m.Source.Repo
+		return m.Source.Repo, nil
 	case "git", "url":
 		// User information in a clone URL is a credential (a password or a
 		// token as the user name); only the plain SSH user "git" is kept.
@@ -398,7 +405,7 @@ func marketplaceSource(plugin, name string, markets map[string]marketplaceJSON, 
 		if sourceCarriesCredential(source) {
 			return skip("the URL of marketplace %q carries a credential", name)
 		}
-		return source
+		return source, nil
 	case "directory", "file":
 		source := displayPath(m.Source.Path, env.Home, env.Project)
 		if _, err := localMarketplaceName(plugin, source); err != nil {
@@ -409,11 +416,173 @@ func marketplaceSource(plugin, name string, markets map[string]marketplaceJSON, 
 			return skip("the directory %s of local marketplace %q does not exist", source, name)
 		}
 		if err != nil {
-			return skip("local marketplace %q cannot be copied into the image: %v", name, err)
+			dir, perr := hostPath(source, env.Home, env.Project)
+			if perr == nil {
+				remoteSource, remote, gerr := gitMarketplace(ctx, env.Git, dir, name, plugin, notes)
+				if gerr == nil {
+					return remoteSource, remote
+				}
+				switch {
+				case errors.Is(gerr, errRemoteCredential):
+					return skip("the git remote URL of local marketplace %q carries a credential that cannot be removed", name)
+				case errors.Is(gerr, errNotRepoTop):
+					return skip("local marketplace %q cannot be copied into the image, and %s is not the top level of a git repository, so no remote is proposed: %v", name, source, err)
+				case errors.Is(gerr, errGitUnavailable):
+					return skip("local marketplace %q cannot be copied into the image, and git is not available to propose its remote: %v", name, err)
+				}
+			}
+			return skip("local marketplace %q cannot be copied into the image and has no git remote: %v", name, err)
 		}
-		return source
+		return source, nil
 	}
 	return skip("marketplace %q has the unsupported source type %q", name, m.Source.Source)
+}
+
+var (
+	githubHTTPSRe = regexp.MustCompile(`^https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
+	githubSSHRe   = regexp.MustCompile(`^(?:ssh://)?git@github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
+)
+
+// githubRepo maps a GitHub remote URL to owner/repo.
+func githubRepo(url string) (string, bool) {
+	for _, re := range []*regexp.Regexp{githubHTTPSRe, githubSSHRe} {
+		if m := re.FindStringSubmatch(url); m != nil {
+			return m[1] + "/" + m[2], true
+		}
+	}
+	return "", false
+}
+
+// The reasons gitMarketplace proposes no source.
+var (
+	errGitUnavailable   = errors.New("git is not available")
+	errNotRepoTop       = errors.New("not the top level of a git repository")
+	errNoGitRemote      = errors.New("no git remote")
+	errRemoteCredential = errors.New("the git remote URL carries a credential")
+)
+
+// gitMarketplace proposes a local marketplace directory through its git
+// remote (R-18): origin when present, else the first remote. The source is
+// owner/repo for GitHub and the remote URL, without credentials, otherwise.
+// It reads local git state only and never fetches: unpushed commits against
+// <remote>/HEAD (else the upstream branch), uncommitted changes, and the
+// marketplace name in the remote's .claude-plugin/marketplace.json compared
+// with the locally registered name. Without a remote-tracking ref the
+// unpushed count stays nil (unknown). It returns errGitUnavailable without
+// git, errNotRepoTop when dir lies inside a repository without being its
+// top level (that repository is not the marketplace), errNoGitRemote
+// outside a repository or without a remote, and errRemoteCredential when
+// the remote URL keeps a credential after the user information is removed.
+func gitMarketplace(ctx context.Context, git harness.Git, dir, name, plugin string, notes *[]string) (string, *harness.RemoteInfo, error) {
+	if git == nil {
+		return "", nil, errGitUnavailable
+	}
+	top, err := git.Run(ctx, dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", nil, errGitUnavailable
+		}
+		return "", nil, errNoGitRemote
+	}
+	if !sameDir(top, dir) {
+		return "", nil, errNotRepoTop
+	}
+	out, err := git.Run(ctx, dir, "remote")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "", nil, errNoGitRemote
+	}
+	remotes := strings.Fields(out)
+	remote := remotes[0]
+	if slices.Contains(remotes, "origin") {
+		remote = "origin"
+	}
+	if strings.HasPrefix(remote, "-") {
+		return "", nil, errNoGitRemote
+	}
+	url, err := git.Run(ctx, dir, "remote", "get-url", remote)
+	if err != nil || url == "" {
+		return "", nil, errNoGitRemote
+	}
+	if clean, userinfo, had := harness.SplitUserinfo(url); had && userinfo != "git" {
+		url = clean
+		*notes = append(*notes, fmt.Sprintf(
+			"plugin %s: credentials removed from the git remote URL of local marketplace %q", plugin, name))
+	}
+	if sourceCarriesCredential(url) {
+		return "", nil, errRemoteCredential
+	}
+	info := &harness.RemoteInfo{URL: url, NameMatch: harness.NameUnknown}
+	tracking := ""
+	// The full ref name keeps a remote name from being read as an option.
+	for _, ref := range []string{"refs/remotes/" + remote + "/HEAD", "@{u}"} {
+		if _, err := git.Run(ctx, dir, "rev-parse", "--verify", "--quiet", ref); err == nil {
+			tracking = ref
+			break
+		}
+	}
+	if tracking != "" {
+		if n, err := git.Run(ctx, dir, "rev-list", "--count", tracking+"..HEAD"); err == nil {
+			var count int
+			if _, err := fmt.Sscanf(n, "%d", &count); err == nil {
+				info.UnpushedCommits = &count
+			}
+		}
+		if data, err := git.Run(ctx, dir, "show", tracking+":.claude-plugin/marketplace.json"); err == nil {
+			var mk struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal([]byte(data), &mk) == nil && mk.Name != "" {
+				info.NameMatch = harness.NameMismatch
+				if mk.Name == name {
+					info.NameMatch = harness.NameMatch
+				}
+			}
+		}
+	}
+	if status, err := git.Run(ctx, dir, "status", "--porcelain"); err == nil && status != "" {
+		info.UncommittedChanges = true
+	}
+	source := url
+	if repo, ok := githubRepo(url); ok {
+		source = repo
+	}
+	return source, info, nil
+}
+
+// sameDir reports whether two host paths name the same directory, after
+// resolving symbolic links (git prints the top level resolved).
+func sameDir(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(ra) == filepath.Clean(rb)
+}
+
+// portability decides whether a source resolves the same on every machine
+// that runs plan and build (FR-020): owner/repo, a URL and a path inside the
+// project are portable; a path under the home directory or elsewhere on the
+// host is not, and the reason says why.
+func portability(source string) (bool, string) {
+	const why = " is read on the machine that runs the plan"
+	switch {
+	case strings.HasPrefix(source, "file:"):
+		return false, "file: URL" + why
+	case strings.HasPrefix(source, "./"), !isPathSource(source):
+		return true, ""
+	case strings.HasPrefix(source, "~/"+skillsSubdir+"/"):
+		return false, "source under ~/" + skillsSubdir + why
+	case strings.HasPrefix(source, "~/"+pluginsSubdir+"/"):
+		return false, "source under ~/" + pluginsSubdir + why
+	case strings.HasPrefix(source, "~/"):
+		return false, "source under the home directory" + why
+	default:
+		return false, "source outside the project" + why
+	}
 }
 
 // displayPath shows a host path inside the project as ./<rest>, below the

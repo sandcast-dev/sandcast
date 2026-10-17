@@ -41,6 +41,10 @@ type Component struct {
 	Profiles     []string    `yaml:"profiles,omitempty" json:"profiles,omitempty"`
 	Targets      []string    `yaml:"targets,omitempty" json:"targets,omitempty"`
 	PromotedFrom string      `yaml:"promoted_from,omitempty" json:"promoted_from,omitempty"`
+	// EmulationUnsafe marks a tool known to fail under user-mode emulation
+	// (QEMU). plan and build print a notice when the build platform differs
+	// from the engine host's architecture (FR-016).
+	EmulationUnsafe bool `yaml:"emulation_unsafe,omitempty" json:"emulation_unsafe,omitempty"`
 
 	// Tier and SourceFile are set by the loader and never serialized.
 	Tier       Tier   `yaml:"-" json:"-"`

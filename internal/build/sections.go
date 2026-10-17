@@ -61,19 +61,96 @@ ENV {{env .}}
 {{- end}}
 `))
 
-var shellTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated {{.Program}} configuration
+// Markers of the blocks the 60-shell section appends to system startup
+// files. A block is appended only when its marker is absent, so building
+// FROM an image sandcast built does not add it twice.
+const (
+	SessionEnvMarker  = "# sandcast: session environment"
+	ShellSwitchMarker = "# sandcast: switch interactive terminal sessions to zsh"
+	// CuratedRCPrefix starts the curated rc: a system zprofile that sources
+	// /etc/profile (Debian) may reset PATH after zshenv, so the rc re-applies
+	// the mise shims once more (R-06), and it sets the unexported
+	// plan.CuratedRCLoadedVar that verify's session startup check reads.
+	CuratedRCPrefix = "_sandcast_path 2>/dev/null || true\n" + plan.CuratedRCLoadedVar + "=1\n"
+)
+
+// ShellSwitchHook switches an interactive bash with a terminal on stdin and
+// stdout to a zsh login shell (R-07, FR-008). Non-interactive bash, sessions
+// without a terminal, an already running zsh, a missing /bin/zsh and
+// SANDCAST_NO_SHELL_SWITCH keep bash. The zsh it starts carries
+// SANDCAST_NO_SHELL_SWITCH=1, so a bash the user starts inside that zsh
+// stays bash instead of switching again (zsh does not export ZSH_VERSION).
+const ShellSwitchHook = `case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac`
+
+// SessionEnvContextFile is the build-context path of the session
+// environment script.
+const SessionEnvContextFile = ShellContextDir + "/" + plan.SessionEnvFile
+
+var shellTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: {{.Title}}
 USER root
+{{- if .SessionEnv}}
+COPY {{.EnvContextFile}} {{.EnvPath}}
+RUN chmod 0644 {{.EnvPath}}
+{{- end}}
+{{- if .BashRC}}
+RUN <<'SANDCAST_EOF'
+set -eu
+rc=
+for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc; do
+  if [ -f "$f" ]; then rc=$f; break; fi
+done
+[ -n "$rc" ] || rc=/etc/bash.bashrc
+if ! grep -qsF '{{.EnvMarker}}' "$rc"; then
+  cat >> "$rc" <<'SANDCAST_RC'
+
+{{.EnvMarker}}
+[ -r {{.EnvPath}} ] && . {{.EnvPath}}
+SANDCAST_RC
+fi
+{{- if .Switch}}
+if ! grep -qsF '{{.SwitchMarker}}' "$rc"; then
+  cat >> "$rc" <<'SANDCAST_RC'
+{{.SwitchMarker}}
+{{.SwitchHook}}
+SANDCAST_RC
+fi
+{{- end}}
+SANDCAST_EOF
+{{- end}}
+{{- if .RCPath}}
 {{- if eq .Program "zsh"}}
-COPY {{.ContextFile}} {{.Path}}
-RUN chmod 0644 {{.Path}} \
+COPY {{.ContextFile}} {{.RCPath}}
+RUN chmod 0644 {{.RCPath}} \
  && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
- && (grep -qs '{{.Path}}' "$rc" || printf '\n[ -r {{.Path}} ] && . {{.Path}}\n' >> "$rc")
+ && (grep -qs '{{.RCPath}}' "$rc" || printf '\n[ -r {{.RCPath}} ] && . {{.RCPath}}\n' >> "$rc")
 {{- else}}
-COPY {{.ContextFile}} {{.Path}}
-RUN chmod 0644 {{.Path}} \
+COPY {{.ContextFile}} {{.RCPath}}
+RUN chmod 0644 {{.RCPath}} \
  && for rc in /etc/bash.bashrc /etc/bashrc; do \
-      if [ -f "$rc" ]; then grep -qs '{{.Path}}' "$rc" || printf '\n[ -r {{.Path}} ] && . {{.Path}}\n' >> "$rc"; fi; \
+      if [ -f "$rc" ]; then grep -qs '{{.RCPath}}' "$rc" || printf '\n[ -r {{.RCPath}} ] && . {{.RCPath}}\n' >> "$rc"; fi; \
     done
+{{- end}}
+{{- end}}
+{{- if .ZshEnv}}
+RUN <<'SANDCAST_EOF'
+set -eu
+zshenv=/etc/zsh/zshenv
+if [ -f /etc/zshenv ]; then zshenv=/etc/zshenv; fi
+mkdir -p "$(dirname "$zshenv")"
+if ! grep -qsF '{{.EnvMarker}}' "$zshenv"; then
+  cat >> "$zshenv" <<'SANDCAST_RC'
+
+{{.EnvMarker}}
+[ -r {{.EnvPath}} ] && . {{.EnvPath}}
+zsh-newuser-install() { :; }
+SANDCAST_RC
+fi
+SANDCAST_EOF
+{{- end}}
+{{- if .LoginShell}}
+RUN usermod -s {{.LoginShell}} {{.User}} 2>/dev/null \
+ || chsh -s {{.LoginShell}} {{.User}} 2>/dev/null \
+ || sed -i 's#^\({{.User}}:.*:\)[^:]*$#\1{{.LoginShell}}#' /etc/passwd
 {{- end}}
 `))
 

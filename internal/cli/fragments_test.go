@@ -75,3 +75,37 @@ func TestPromoteAndLearnings(t *testing.T) {
 	assert.Equal(t, "fixed", list[0].Outcome)
 	assert.Equal(t, ExitUsage, ta.run("learnings", "add", "--component", "mytool", "--failure", "x", "--change", "y", "--outcome", "maybe"))
 }
+
+// TestPromoteDefaultsToDeclaredBins covers FR-018: without --bins and
+// without a definition, promote takes the manifest entry's bins; --bins
+// still wins.
+func TestPromoteDefaultsToDeclaredBins(t *testing.T) {
+	ta := newTestApp(t)
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "  - key: zsh\n", "  - key: zsh\n  - key: helix\n    optional: true\n    bins: [hx]\n", 1))
+	ta.write(t, ".sandcast/mise.lock", testLock)
+	rc := filepath.Join(t.TempDir(), "frag")
+	require.NoError(t, os.WriteFile(rc, []byte("USER root\nRUN install -m 0755 /dev/null /usr/local/bin/hx\nUSER sandbox\n"), 0o644))
+	require.Equal(t, 0, ta.run("fragments", "write", "helix", "--file", rc), ta.stderr.String())
+	require.Equal(t, 0, ta.run("promote", "helix", "--yes"), ta.stderr.String())
+	data, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "recipes", "helix.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "bins:\n      - hx\n")
+	assert.NotContains(t, string(data), "- helix\n")
+	// The recipe now defines helix, so promote drops the redundant bins
+	// from the manifest entry and the next plan accepts the manifest.
+	assert.Contains(t, ta.stdout.String(), "removed bins from the manifest entry helix")
+	m, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "manifest.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(m), "key: helix")
+	assert.NotContains(t, string(m), "bins:")
+	require.Equal(t, 0, ta.run("manifest", "validate"), ta.stderr.String()+ta.stdout.String())
+	require.Equal(t, 0, ta.run("plan"), ta.stderr.String())
+
+	ta = newTestApp(t)
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "  - key: zsh\n", "  - key: zsh\n  - key: helix\n    optional: true\n    bins: [hx]\n", 1))
+	require.Equal(t, 0, ta.run("fragments", "write", "helix", "--file", rc), ta.stderr.String())
+	require.Equal(t, 0, ta.run("promote", "helix", "--bins", "helix-term", "--yes"), ta.stderr.String())
+	data, err = os.ReadFile(filepath.Join(ta.dir, ".sandcast", "recipes", "helix.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "- helix-term\n", "--bins wins")
+}

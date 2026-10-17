@@ -61,7 +61,7 @@ sandcast uses mise in two places. Inside images, the `30-mise` section installs 
    podman run --rm --entrypoint /bin/sh localhost/demo:latest -c 'mise --version; mise which go; command -v go; echo "$PATH"'
    ```
 
-   `mise --version` must report the new pin, `mise which` must return a path under `/opt/mise/installs/<tool>/<version>/`, `command -v` must find the shim in `/opt/mise/shims`, and `PATH` must start with `/opt/mise/shims` without any shell activation. Run the same command through a login shell (`sh -l -c '...'`) to check `/etc/profile.d/sandcast-mise.sh`.
+   `mise --version` must report the new pin, `mise which` must return a path under `/opt/mise/installs/<tool>/<version>/`, `command -v` must find the shim in `/opt/mise/shims`, and `PATH` must start with `/opt/mise/shims` without any shell activation. Run the same command through a login shell (`sh -l -c '...'`) to check `/etc/profile.d/sandcast-env.sh`, and run `sandcast verify` to cover the session checks.
 
 5. **Check the host side** with the oldest supported host mise: `sandcast lock --platform linux/amd64 --platform linux/arm64` must write a lockfile that `sandcast plan` accepts for both platforms.
 

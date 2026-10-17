@@ -19,7 +19,7 @@ sandcast skills install
 | user (default) | `sandcast skills install --scope user` | `~/.claude/skills/sandcast-capture/` and `~/.claude/skills/sandcast-build/` |
 | project | `sandcast skills install --scope project` | `.claude/skills/sandcast-capture/` and `.claude/skills/sandcast-build/` in the project |
 
-The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.1.0) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
+The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.2.0) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
 
 The binary and the installed skills must match, because the skills rely on the binary's commands and JSON output. Check them with:
 
@@ -139,6 +139,7 @@ Aliases, functions, shell options, history settings, key bindings, `zstyle` line
 ### What is added or rewritten
 
 - **Completion (zsh)**: when `compdef` or `zstyle ':completion:*'` remain but nothing calls `compinit`, the skill inserts `autoload -Uz compinit && compinit -i -D` before the first of them. Plugin managers load `compinit` as a side effect; without it, tab completion falls back to file names.
+- **Completions of removed plugins (zsh)**: a stripped plugin often provided the completion that a kept `compdef` line refers to (for example `compdef kubecolor=kubectl` after the oh-my-zsh `kubectl` plugin). Before such a line, the skill adds a guarded load of the tool's own zsh completion, `command -v <tool> >/dev/null && source <(<tool> completion zsh)`, so the shell starts without errors whether or not the tool is in the image. When the tool has no completion command, the skill drops the `compdef` line instead.
 - **Starship**: `eval "$(starship init zsh)"` is guarded with `if [[ "$TERM" != "dumb" ]]`, so non-interactive sessions do not print starship errors.
 - **fzf**: `source <(fzf --zsh)` is replaced with a block that falls back to the key bindings shipped in `/usr/share/doc/fzf/examples/` when the installed fzf is older than 0.48. The bash variant does the same for `fzf --bash`.
 
@@ -230,6 +231,19 @@ When you select a harness, the image gets the agent, its configuration for non-i
 | MCP servers | `~/.claude.json` (user servers and the entry for this project) and `.mcp.json` in the project | When a name repeats, Claude Code's precedence applies: the project entry in `~/.claude.json` wins over `.mcp.json`, which wins over the user servers. The shadowed entries are reported as notes. |
 | Plugins | `~/.claude/plugins/installed_plugins.json` | Plugins installed for the user or for this project, as `name@marketplace`, with the marketplace source from `known_marketplaces.json`. Plugins disabled in `~/.claude/settings.json` are skipped with a note. |
 | Skills | `~/.claude/skills/` and `.claude/skills/` in the project | Every directory with a `SKILL.md`. A project skill shadows a user skill with the same name. sandcast's own `sandcast-*` skills are never listed. |
+
+**Portable sources.** Every plugin and skill carries a `portable` marker. A source under `~/.claude/skills`, `~/.claude/plugins` or anywhere else on the host is not portable, and its `reason` says so: the binary reads it on the machine that runs the plan, so `sandcast plan` and `sandcast build` fail in CI and on every other machine. The capture skill bases its offer to copy such a source into the project on this marker. Sources in the project, `owner/repo` and URLs are portable.
+
+**Local marketplaces with a git remote.** A plugin's marketplace can be a local directory outside the project, for example a checkout under `~/dev`. The image cannot copy it, so earlier releases skipped the plugin. When the directory is the top level of a git repository with a remote (`origin` when present), discovery now proposes the plugin with the remote as its source: `owner/repo` for GitHub, else the remote URL with any credentials removed. The `remote` object tells you what the image will get compared with your checkout:
+
+| Field | Meaning |
+|-------|---------|
+| `url` | The remote URL, without credentials. |
+| `unpushed_commits` | Local commits the remote-tracking ref (`<remote>/HEAD`, else the upstream branch) lacks. Push them first, or the image gets the older remote state. `null` when no remote-tracking ref exists, so the count is unknown. |
+| `uncommitted_changes` | The working tree has changes the remote does not have. |
+| `name_match` | `match` when the marketplace file on the remote-tracking ref declares the locally registered name, `mismatch` when it declares another, `unknown` when no remote-tracking ref exists or the marketplace file on it is missing or declares no name. |
+
+Discovery reads local git state only and never fetches, so capture works offline; the values are as fresh as your last fetch. Such plugins stay opt-in like every other plugin. A directory without a remote, a directory that only lies inside another repository, a remote URL that keeps a credential after the user information is removed, or a host without `git` is still skipped with a note.
 
 A stdio server becomes a `command` entry and an HTTP or SSE server becomes a `url` entry. The manifest has no header field, so a URL server keeps only its bearer `Authorization` header, as one `env` entry. When the header references a variable, the entry keeps that variable. When it holds a literal token, the entry key becomes `MCP_<NAME>_TOKEN` and its value becomes a placeholder; the token itself is never written. Other headers and other transports are not baked, and each gets a note.
 

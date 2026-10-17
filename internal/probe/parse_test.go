@@ -49,6 +49,22 @@ func TestParse(t *testing.T) {
 			facts: debian,
 		},
 		{
+			name: "home rc facts and check paths",
+			out: factsOutput + `{"type":"homerc","resets_path":[".bashrc",".bashrc"]}` + "\n" +
+				`{"type":"check","key":"python","exit":0,"path":"/sandbox/.uv/bin/python3","paths":["/sandbox/.uv/bin/python3","/usr/bin/python3"],"out":"Python 3.14.3"}` + "\n" +
+				`{"type":"check","key":"go","exit":0,"path":"","paths":[],"out":""}` + "\n",
+			facts: func() *Facts { f := *debian; f.HomeRCResetsPath = []string{".bashrc"}; return &f }(),
+			checks: []rawCheck{
+				{Key: "python", Path: "/sandbox/.uv/bin/python3", Paths: []string{"/sandbox/.uv/bin/python3", "/usr/bin/python3"}, Out: "Python 3.14.3"},
+				{Key: "go"},
+			},
+		},
+		{
+			name:  "path facts",
+			out:   factsOutput + `{"type":"path","dirs":["/opt/x/bin","/usr/bin","/opt/x/bin",""]}` + "\n",
+			facts: func() *Facts { f := *debian; f.Path = []string{"/opt/x/bin", "/usr/bin"}; return &f }(),
+		},
+		{
 			name: "noise and unknown types are ignored",
 			out: "WARNING: platform mismatch\r\n\n" + factsOutput +
 				`{"type":"future","x":1}` + "\n" + `{"type":"check","key":"go","exit":0,"path":"","out":""}` + "\r\n",

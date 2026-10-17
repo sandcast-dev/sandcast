@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -154,6 +155,78 @@ func scopeArgs(scope, workspace string) []string {
 		return []string{"--workspace", workspace}
 	}
 	return nil
+}
+
+// GatewayEntry is the part of one "openshell gateway list -o json" entry
+// sandcast reads (R-14).
+type GatewayEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	IsRemote bool   `json:"is_remote"`
+	Active   bool   `json:"active"`
+	Endpoint string `json:"endpoint"`
+}
+
+// Remote reports whether the gateway's sandbox driver cannot share the local
+// engine's image storage: a remote or cloud gateway.
+func (g *GatewayEntry) Remote() bool {
+	return g != nil && (g.IsRemote || g.Type == "remote" || g.Type == "cloud")
+}
+
+// ActiveGateway returns the gateway the client talks to, from the local
+// gateway metadata (openshell gateway list, no admin rights needed): the
+// one named by --gateway in Extra or OPENSHELL_GATEWAY, else the one whose
+// endpoint OPENSHELL_GATEWAY_ENDPOINT names, else the entry marked active.
+// It returns nil without an error when the selected gateway is not listed
+// or none is active, so the caller treats it as unknown. Callers treat every error as "unknown": the lookup is best effort
+// and never a requirement.
+func (c *Client) ActiveGateway(ctx context.Context) (*GatewayEntry, error) {
+	out, err := c.run(ctx, "gateway", "list", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list []GatewayEntry
+	if text := strings.TrimSpace(string(out)); text != "" && text != "null" {
+		if err := json.Unmarshal([]byte(text), &list); err != nil {
+			return nil, fmt.Errorf("parse openshell gateway list: %w", err)
+		}
+	}
+	if name := c.selectedGateway(); name != "" {
+		for i := range list {
+			if list[i].Name == name {
+				return &list[i], nil
+			}
+		}
+		return nil, nil
+	}
+	if endpoint := os.Getenv("OPENSHELL_GATEWAY_ENDPOINT"); endpoint != "" {
+		for i := range list {
+			if list[i].Endpoint == endpoint {
+				return &list[i], nil
+			}
+		}
+		return nil, nil
+	}
+	for i := range list {
+		if list[i].Active {
+			return &list[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// selectedGateway is the gateway name a --gateway flag in Extra or the
+// OPENSHELL_GATEWAY variable selects, or "".
+func (c *Client) selectedGateway() string {
+	for i, a := range c.Extra {
+		if a == "--gateway" && i+1 < len(c.Extra) {
+			return c.Extra[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, "--gateway="); ok {
+			return v
+		}
+	}
+	return os.Getenv("OPENSHELL_GATEWAY")
 }
 
 // ListProfiles returns the sorted profile ids visible at scope.

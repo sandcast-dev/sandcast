@@ -24,6 +24,17 @@ jobs:
         with:
           version: v2.14.0
           install-only: true
+      # The skill snippet test runs every snippet under sh, bash and zsh and
+      # fails when a shell is missing.
+      # The verify session tests also run zsh -il on the host. Ubuntu's
+      # /etc/zsh/zshrc runs compinit, which aborts without a terminal when
+      # compaudit finds group or world writable completion directories.
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh
+          zsh -fc 'autoload -Uz compaudit; compaudit' 2>/dev/null | xargs -r sudo chmod g-w,o-w
+          zsh -fc 'autoload -Uz compaudit; compaudit' && echo "compaudit clean"
       - run: make verify
       - run: make build
 

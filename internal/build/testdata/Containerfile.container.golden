@@ -31,8 +31,7 @@ ENV MISE_DATA_DIR=/opt/mise \
     MISE_USE_VERSIONS_HOST=0 \
     PATH=/opt/mise/shims:$PATH
 COPY mise/mise.toml mise/mise.lock /etc/mise/
-COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
  && for attempt in 1 2 3; do \
       if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
       if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
@@ -59,12 +58,31 @@ USER root
 RUN echo other
 USER sandbox
 
-# 60-shell: curated zsh configuration
+# 60-shell: session environment and curated zsh configuration
 USER root
+COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh
+RUN chmod 0644 /etc/profile.d/sandcast-env.sh
 COPY shell/sandcast.zsh /etc/zsh/zshrc.d/sandcast.zsh
 RUN chmod 0644 /etc/zsh/zshrc.d/sandcast.zsh \
  && rc=/etc/zsh/zshrc && if [ -f /etc/zshrc ]; then rc=/etc/zshrc; fi \
  && (grep -qs '/etc/zsh/zshrc.d/sandcast.zsh' "$rc" || printf '\n[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh\n' >> "$rc")
+RUN <<'SANDCAST_EOF'
+set -eu
+zshenv=/etc/zsh/zshenv
+if [ -f /etc/zshenv ]; then zshenv=/etc/zshenv; fi
+mkdir -p "$(dirname "$zshenv")"
+if ! grep -qsF '# sandcast: session environment' "$zshenv"; then
+  cat >> "$zshenv" <<'SANDCAST_RC'
+
+# sandcast: session environment
+[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
+zsh-newuser-install() { :; }
+SANDCAST_RC
+fi
+SANDCAST_EOF
+RUN usermod -s /bin/zsh root 2>/dev/null \
+ || chsh -s /bin/zsh root 2>/dev/null \
+ || sed -i 's#^\(root:.*:\)[^:]*$#\1/bin/zsh#' /etc/passwd
 
 # 90-footer
 WORKDIR /root

@@ -10,12 +10,26 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rhuss/sandcast/internal/build"
+	"github.com/rhuss/sandcast/internal/gateway"
+	"github.com/rhuss/sandcast/internal/imageref"
+	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/pipeline"
+	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/verify"
 )
 
 type buildReport struct {
-	Image          string   `json:"image"`
+	Image string `json:"image"`
+	// ImageRef is the fully qualified reference a gateway pulls (R-12).
+	ImageRef string `json:"image_ref,omitempty"`
+	// SandboxCreate is the command that starts a sandbox from the image
+	// (OpenShell target).
+	SandboxCreate string `json:"sandbox_create,omitempty"`
+	// Pushed reports whether the image was pushed; Digest is the registry
+	// digest when it was (FR-011).
+	Pushed         bool     `json:"pushed"`
+	Digest         string   `json:"digest,omitempty"`
 	StageImage     string   `json:"stage_image,omitempty"`
 	Containerfile  string   `json:"containerfile"`
 	BuildLog       string   `json:"build_log"`
@@ -25,7 +39,10 @@ type buildReport struct {
 	AllowedDomains string             `json:"allowed_domains,omitempty"`
 	Verify         *verify.Report     `json:"verify,omitempty"`
 	Resolutions    []build.Resolution `json:"resolutions"`
-	Error          string             `json:"error,omitempty"`
+	// Notices repeats the plan notices, followed by runtime notices
+	// (FR-002, R-15).
+	Notices []string `json:"notices"`
+	Error   string   `json:"error,omitempty"`
 }
 
 func (a *App) buildCommand() *cobra.Command {
@@ -61,6 +78,16 @@ is never retried. --verify runs every component check afterwards.`,
 			for _, u := range planned.Plan.Unresolved {
 				a.logf("skipping optional unresolved component %s: %s", u.Key, u.Reason)
 			}
+			runtimeNotices := pipeline.RuntimeNotices(cmd.Context(), env, planned)
+			if w := a.gatewayWarning(cmd, env, planned); w != "" {
+				runtimeNotices = append(runtimeNotices, w)
+			}
+			// Shown before the build as well, so an emulation or gateway
+			// pitfall is visible before a long build starts; the report
+			// repeats them.
+			for _, n := range runtimeNotices {
+				a.logf("notice: %s", n)
+			}
 			opts := pipeline.BuildOptions{Verify: doVerify, NoCacheLayers: noCacheLayers, KeepStage: keepStage}
 			if cmd.Flags().Changed("push") {
 				opts.Push = &push
@@ -70,9 +97,11 @@ is never retried. --verify runs every component check afterwards.`,
 			}
 			a.logf("building %s (log: %s)", env.Manifest.Target(planned.Plan.Target).Ref(), env.Layout.RelToRoot(planned.Dir+"/"+build.BuildLogName))
 			built, err := pipeline.Build(cmd.Context(), env, planned, opts)
-			report := buildReportOf(env, built)
+			report := buildReportOf(env, planned, built, runtimeNotices)
 			if err != nil {
 				report.Error = err.Error()
+				// Only a finished build has an image to start a sandbox from.
+				report.SandboxCreate = ""
 			}
 			if a.opts.json {
 				if jerr := writeJSON(a.Stdout, report); jerr != nil {
@@ -126,13 +155,30 @@ func (a *App) printLogTail(path string, n int) {
 	}
 }
 
-func buildReportOf(env pipeline.Env, built *pipeline.Built) buildReport {
-	r := buildReport{Flagged: []string{}, Resolutions: []build.Resolution{}}
+// buildReportOf assembles the report: plan notices first, then the runtime
+// notices (engine host and gateway), then the docker-hub notice of a push.
+func buildReportOf(env pipeline.Env, planned *pipeline.Planned, built *pipeline.Built, runtime []string) buildReport {
+	r := buildReport{Flagged: []string{}, Resolutions: []build.Resolution{}, Notices: []string{}}
+	if planned != nil && planned.Plan != nil {
+		r.Notices = append(r.Notices, planned.Plan.Notices...)
+	}
+	r.Notices = append(r.Notices, runtime...)
 	if built == nil || built.Build == nil {
 		return r
 	}
 	b := built.Build
 	r.Image = b.Image
+	r.Pushed, r.Digest = b.Pushed, b.Digest
+	if ref, err := imageref.Normalize(b.Image); err == nil {
+		r.ImageRef = ref.String()
+		if planned != nil && planned.Plan != nil && planned.Plan.Target == manifest.TargetOpenShell {
+			r.SandboxCreate = "openshell sandbox create --from " + shell.QuoteIfNeeded(r.ImageRef)
+		}
+		if b.Pushed && ref.Registry == imageref.DockerHub {
+			r.Notices = append(r.Notices, plan.Notice(plan.NoticeDockerHub, plan.NoticeSubjectImage,
+				"anonymous pulls from cluster nodes are rate limited; give the gateway's sandbox service account a pull secret for docker.io or push to a registry the cluster already authenticates to"))
+		}
+	}
 	r.StageImage = b.StageImage
 	r.Containerfile = env.Layout.RelToRoot(b.Containerfile)
 	r.BuildLog = env.Layout.RelToRoot(b.BuildLog)
@@ -155,22 +201,32 @@ func buildReportOf(env pipeline.Env, built *pipeline.Built) buildReport {
 }
 
 func printBuildReport(a *App, r buildReport) {
+	pushed := "no"
+	if r.Pushed {
+		pushed = "yes"
+	}
 	if r.Error != "" {
 		_, _ = fmt.Fprintf(a.Stdout, "build failed: %s\n", r.Error)
+		if r.ImageRef != "" {
+			_, _ = fmt.Fprintf(a.Stdout, "image ref: %s\npushed: %s\n", r.ImageRef, pushed)
+		}
 		_, _ = fmt.Fprintf(a.Stdout, "containerfile: %s\nbuild log: %s\n", orDash(r.Containerfile), orDash(r.BuildLog))
 		if r.StageImage != "" {
 			_, _ = fmt.Fprintf(a.Stdout, "stage image kept as %s\n", r.StageImage)
 		}
-		if r.Verify == nil {
-			return
-		}
 	} else {
 		_ = keyValue(a.Stdout,
 			"image", r.Image,
+			"image ref", orDash(r.ImageRef),
+			"pushed", pushed,
+			"digest", orDash(r.Digest),
 			"containerfile", r.Containerfile,
 			"build log", r.BuildLog,
 			"profiles", orDash(r.Profiles),
 		)
+		if r.SandboxCreate != "" {
+			_, _ = fmt.Fprintf(a.Stdout, "sandbox create: %s\n", r.SandboxCreate)
+		}
 		if r.AllowedDomains != "" {
 			_, _ = fmt.Fprintf(a.Stdout, "allowed domains: %s\n", r.AllowedDomains)
 		}
@@ -178,8 +234,27 @@ func printBuildReport(a *App, r buildReport) {
 			_, _ = fmt.Fprintf(a.Stdout, "flagged: profile %s: %s\n", id, r.flagReasons[id])
 		}
 	}
+	for _, n := range r.Notices {
+		_, _ = fmt.Fprintf(a.Stdout, "notice: %s\n", n)
+	}
 	if r.Verify != nil {
 		_, _ = fmt.Fprintln(a.Stdout)
 		printVerify(a, r.Verify)
 	}
+}
+
+// gatewayWarning checks the active gateway for an OpenShell build when the
+// openshell CLI is present (FR-014). It never fails the build.
+func (a *App) gatewayWarning(cmd *cobra.Command, env pipeline.Env, planned *pipeline.Planned) string {
+	if planned == nil || planned.Plan == nil || planned.Plan.Target != manifest.TargetOpenShell || a.Gateway == nil {
+		return ""
+	}
+	if _, err := a.LookPath("openshell"); err != nil {
+		return ""
+	}
+	t := env.Manifest.Target(manifest.TargetOpenShell)
+	if t == nil {
+		return ""
+	}
+	return pipeline.GatewayWarning(cmd.Context(), &gateway.Client{Runner: a.Gateway}, t.Ref())
 }

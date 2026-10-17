@@ -39,6 +39,15 @@ type Facts struct {
 	PackageManager string   `json:"package_manager" yaml:"package_manager"`
 	User           User     `json:"user" yaml:"user"`
 	Shells         []string `json:"shells" yaml:"shells"`
+	// HomeRCResetsPath lists the files among .bashrc, .profile and
+	// .bash_profile in the default user's home that assign PATH without
+	// referencing $PATH (R-05).
+	HomeRCResetsPath []string `json:"home_rc_resets_path,omitempty" yaml:"home_rc_resets_path,omitempty"`
+	// Path lists the directories of the base image's PATH as the probe
+	// container saw it, in order, without empty or duplicate entries. The
+	// session environment re-exports the ones beyond the OpenShell default
+	// PATH (I-1).
+	Path []string `json:"path,omitempty" yaml:"path,omitempty"`
 	// ProbedAt is the RFC 3339 time of the probe run. It is kept out of YAML
 	// so that plans stay byte-identical.
 	ProbedAt string `json:"probed_at" yaml:"-"`
@@ -109,6 +118,10 @@ type CheckResult struct {
 	Status       Status `json:"status" yaml:"status"`
 	// Path is the location of the component's first binary, if found.
 	Path string `json:"path" yaml:"path"`
+	// Paths lists every PATH hit of the component's first binary, in PATH
+	// order (R-02). Path is Paths[0] unless command -v found a builtin or
+	// alias.
+	Paths []string `json:"paths,omitempty" yaml:"paths,omitempty"`
 	// Version is the version parsed from Output.
 	Version string `json:"version" yaml:"version"`
 	// Output is the combined stdout and stderr of the check, cut to
@@ -148,11 +161,17 @@ func Evaluate(req Request, exit int, path, output string) CheckResult {
 // evaluateRaw evaluates one check line. A check that timeout(1) stopped is
 // reported as timed out whatever its exit code.
 func evaluateRaw(req Request, raw rawCheck) CheckResult {
+	var r CheckResult
 	if raw.Timeout {
-		return timedOut(req, raw.Exit, raw.Path, raw.Out,
+		r = timedOut(req, raw.Exit, raw.Path, raw.Out,
 			fmt.Sprintf("timeout: the check did not finish within %s", CheckTimeout))
+	} else {
+		r = Evaluate(req, raw.Exit, raw.Path, raw.Out)
 	}
-	return Evaluate(req, raw.Exit, raw.Path, raw.Out)
+	if len(raw.Paths) > 0 {
+		r.Paths = raw.Paths
+	}
+	return r
 }
 
 // timedOut is the result of a check that did not finish: StatusTimeout with

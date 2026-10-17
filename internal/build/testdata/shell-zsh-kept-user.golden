@@ -1,0 +1,42 @@
+# 60-shell: session environment
+USER root
+COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh
+RUN chmod 0644 /etc/profile.d/sandcast-env.sh
+RUN <<'SANDCAST_EOF'
+set -eu
+rc=
+for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc; do
+  if [ -f "$f" ]; then rc=$f; break; fi
+done
+[ -n "$rc" ] || rc=/etc/bash.bashrc
+if ! grep -qsF '# sandcast: session environment' "$rc"; then
+  cat >> "$rc" <<'SANDCAST_RC'
+
+# sandcast: session environment
+[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
+SANDCAST_RC
+fi
+if ! grep -qsF '# sandcast: switch interactive terminal sessions to zsh' "$rc"; then
+  cat >> "$rc" <<'SANDCAST_RC'
+# sandcast: switch interactive terminal sessions to zsh
+case $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z "$ZSH_VERSION" ] && [ -z "$SANDCAST_NO_SHELL_SWITCH" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac
+SANDCAST_RC
+fi
+SANDCAST_EOF
+RUN <<'SANDCAST_EOF'
+set -eu
+zshenv=/etc/zsh/zshenv
+if [ -f /etc/zshenv ]; then zshenv=/etc/zshenv; fi
+mkdir -p "$(dirname "$zshenv")"
+if ! grep -qsF '# sandcast: session environment' "$zshenv"; then
+  cat >> "$zshenv" <<'SANDCAST_RC'
+
+# sandcast: session environment
+[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
+zsh-newuser-install() { :; }
+SANDCAST_RC
+fi
+SANDCAST_EOF
+RUN usermod -s /bin/zsh sandbox 2>/dev/null \
+ || chsh -s /bin/zsh sandbox 2>/dev/null \
+ || sed -i 's#^\(sandbox:.*:\)[^:]*$#\1/bin/zsh#' /etc/passwd

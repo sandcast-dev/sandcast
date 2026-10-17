@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/require"
 )
 
@@ -175,4 +176,60 @@ func removeImages(t *testing.T, engine string, refs ...string) {
 			_ = exec.Command(engine, "rmi", "-f", r).Run()
 		}
 	})
+}
+
+// sessionManifest builds a zsh image with mise tools and a curated rc that
+// runs a mise tool on startup, so a broken session setup shows as missing
+// binaries and as stderr output (contracts/image-shell.md).
+func sessionManifest(name, image string) string {
+	return `schema_version: 1
+name: ` + name + `
+base_image: nvidia-community-base
+components:
+  - key: starship
+  - key: fzf
+  - key: lsd
+shell:
+  program: zsh
+  rc: |
+    autoload -Uz compinit && compinit -i -D
+    [[ "$TERM" != "dumb" ]] && eval "$(starship init zsh)"
+    alias ls=lsd
+  components: [starship, lsd]
+targets:
+  openshell:
+    image: ` + image + `
+`
+}
+
+// sessionEnvArgs are the env(1) arguments that reproduce the environment
+// OpenShell v0.1.3 gives a session.
+var sessionEnvArgs = []string{"-i", "HOME=/sandbox", "USER=sandbox", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin"}
+
+// planBins returns every binary of every planned component of the target
+// that the manifest lists or the shell program adds. Implicit system
+// components (iproute2, nftables, ca-certificates, curl) are left out: their
+// binaries may sit in /usr/sbin, outside the session PATH, and the session
+// checks of verify cover them through their own checks.
+func planBins(t *testing.T, dir, target string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, ".sandcast", "build", target, "plan.yaml"))
+	require.NoError(t, err)
+	var p struct {
+		Components []struct {
+			Key      string   `yaml:"key"`
+			Bins     []string `yaml:"bins"`
+			Implicit bool     `yaml:"implicit"`
+		} `yaml:"components"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &p))
+	var bins []string
+	for _, c := range p.Components {
+		if c.Implicit && c.Key != "zsh" {
+			continue
+		}
+		bins = append(bins, c.Bins...)
+	}
+	require.NotEmpty(t, bins)
+	return bins
 }

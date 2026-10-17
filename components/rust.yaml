@@ -27,4 +27,7 @@ image:
   # binaries are the processes that open connections.
   runtime_globs: [/opt/rustup/toolchains/*/bin/*]
 provides: [cargo, rustc, rustup, rustfmt, rustdoc]
+# rustup and the toolchain installer crash under QEMU user emulation, for
+# example when an arm64 host builds a linux/amd64 image (issue #9).
+emulation_unsafe: true
 profiles: [crates-io]

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rhuss/sandcast/internal/shell"
+	"github.com/rhuss/sandcast/internal/testutil"
 )
 
 // tricky holds values that break naive quoting or JSON escaping.
@@ -240,4 +241,110 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// TestScriptGolden pins the rendered probe script, so changes to the script
+// are reviewed together with a FormatVersion bump.
+func TestScriptGolden(t *testing.T) {
+	s := Script([]Request{{Key: "go", Bin: "go", Command: "go version"}}, ScriptOptions{Facts: true})
+	testutil.Golden(t, "testdata/script.golden", []byte(s))
+}
+
+// TestScriptRecordsAllPaths checks that every PATH hit of the requested
+// binary is recorded in PATH order, without duplicates, and that
+// directories without the binary, non-executable files and relative PATH
+// entries are ignored (R-02).
+func TestScriptRecordsAllPaths(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "home", "bin")
+	second := filepath.Join(root, "usr", "bin")
+	noexec := filepath.Join(root, "noexec")
+	empty := filepath.Join(root, "empty")
+	for _, d := range []string{first, second, noexec, empty} {
+		require.NoError(t, os.MkdirAll(d, 0o755))
+	}
+	for _, d := range []string{first, second} {
+		require.NoError(t, os.WriteFile(filepath.Join(d, "sandcast-tool"), []byte("#!/bin/sh\necho 1.2.3\n"), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(noexec, "sandcast-tool"), []byte("x"), 0o644))
+	path := strings.Join([]string{first, empty, noexec, "relative", second, first, "/usr/bin", "/bin"}, ":")
+	script := Script([]Request{
+		{Key: "tool", Bin: "sandcast-tool", Command: "sandcast-tool"},
+		{Key: "none", Bin: "sandcast-no-such-binary", Command: "true"},
+	}, ScriptOptions{})
+	for name, sh := range shells(t) {
+		t.Run(name, func(t *testing.T) {
+			_, checks, err := Parse([]byte(runShell(t, sh, script, "PATH="+path)))
+			require.NoError(t, err)
+			require.Len(t, checks, 2)
+			assert.Equal(t, filepath.Join(first, "sandcast-tool"), checks[0].Path)
+			assert.Equal(t, []string{filepath.Join(first, "sandcast-tool"), filepath.Join(second, "sandcast-tool")}, checks[0].Paths)
+			assert.Nil(t, checks[1].Paths)
+		})
+	}
+}
+
+// TestScriptPathFact checks the path fact: the directories of PATH in
+// order, without empty or duplicate entries.
+func TestScriptPathFact(t *testing.T) {
+	script := Script(nil, ScriptOptions{Facts: true})
+	for name, sh := range shells(t) {
+		facts, _, err := Parse([]byte(runShell(t, sh, script, "PATH=/opt/x/bin::"+os.Getenv("PATH")+":/opt/x/bin")))
+		require.NoError(t, err, name)
+		require.NotNil(t, facts, name)
+		require.NotEmpty(t, facts.Path, name)
+		assert.Equal(t, "/opt/x/bin", facts.Path[0], name)
+		assert.NotContains(t, facts.Path, "", name)
+		assert.Equal(t, 1, strings.Count(strings.Join(facts.Path, ":")+":", "/opt/x/bin:"), name)
+	}
+}
+
+// TestScriptHomeRCResetsPath checks the homerc fact: a PATH assignment
+// without $PATH is a reset, one that extends $PATH is not, and missing
+// files are skipped (R-05).
+func TestScriptHomeRCResetsPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  []string
+	}{
+		{
+			name:  "reset in bashrc",
+			files: map[string]string{".bashrc": "# rc\n  export PATH=/usr/local/bin:/usr/bin:/bin\nalias ll='ls -l'\n"},
+			want:  []string{".bashrc"},
+		},
+		{
+			name: "extensions are not resets",
+			files: map[string]string{
+				".bashrc":       `export PATH="$HOME/bin:$PATH"` + "\n" + `PATH=${PATH}:/opt/x` + "\n",
+				".profile":      "# PATH=/only/a/comment\n",
+				".bash_profile": "PATH=\"${PATH:+$PATH:}/opt/y\"\n",
+			},
+		},
+		{
+			name: "several files",
+			files: map[string]string{
+				".profile":      "PATH=/bin\n",
+				".bash_profile": "export PATH=/usr/bin",
+			},
+			want: []string{".profile", ".bash_profile"},
+		},
+		{name: "no files"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := "/sandbox"
+			require.NoError(t, os.MkdirAll(filepath.Join(root, home), 0o755))
+			for name, content := range tt.files {
+				writeFile(t, filepath.Join(root, home, name), content)
+			}
+			script := strings.Replace(Script(nil, ScriptOptions{Facts: true}), "_sysroot=\n", "_sysroot="+shell.Quote(root)+"\n", 1)
+			for name, sh := range shells(t) {
+				facts, _, err := Parse([]byte(runShell(t, sh, script, "HOME="+home)))
+				require.NoError(t, err, name)
+				assert.Equal(t, tt.want, facts.HomeRCResetsPath, name)
+			}
+		})
+	}
 }

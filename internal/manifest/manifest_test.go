@@ -285,3 +285,101 @@ func TestParseRefusesCredentialBeforeDecodeError(t *testing.T) {
 		assert.ErrorContains(t, err, "credential-shaped")
 	})
 }
+
+func TestWarningsDockerHubNamespace(t *testing.T) {
+	tests := []struct {
+		image string
+		want  string
+	}{
+		{"docker.io/openshell-demo", "docker.io/openshell-demo resolves to docker.io/library/openshell-demo; add your namespace (docker.io/<user>/openshell-demo)"},
+		{"openshell-demo", "openshell-demo resolves to docker.io/library/openshell-demo; add your namespace (docker.io/<user>/openshell-demo)"},
+		{"docker.io/rhuss/openshell-demo", ""},
+		{"localhost/demo", ""},
+		{"quay.io/demo", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			m := &Manifest{SchemaVersion: 1, Name: "demo", BaseImage: "nvidia-community-base",
+				Targets: Targets{OpenShell: &Target{Image: tt.image}, Container: &Target{Image: "localhost/plain"}}}
+			w := m.Warnings()
+			if tt.want == "" {
+				assert.Empty(t, w)
+				return
+			}
+			require.Len(t, w, 1)
+			assert.Equal(t, Diagnostic{Path: "$.targets.openshell.image", Message: tt.want}, w[0])
+			assert.Empty(t, m.Validate(), "a warning does not make the manifest invalid")
+		})
+	}
+}
+
+func TestSkeletonOptions(t *testing.T) {
+	m := Skeleton("demo", "base", TargetOpenShell, SkeletonOptions{Image: "quay.io/rhuss/demo", Tag: "v1", Platform: "linux/amd64", Push: true})
+	assert.Equal(t, "linux/amd64", m.Platform)
+	assert.Equal(t, &Target{Image: "quay.io/rhuss/demo", Tag: "v1", Push: true}, m.Targets.OpenShell)
+	assert.Empty(t, m.Validate())
+	d := Skeleton("demo", "base", TargetContainer)
+	assert.Equal(t, &Target{Image: "localhost/demo"}, d.Targets.Container)
+	assert.Empty(t, d.Platform)
+}
+
+func TestComponentBins(t *testing.T) {
+	m := Skeleton("demo", "base", TargetOpenShell)
+	m.Components = []ComponentRef{{Key: "helix", Optional: true, Bins: []string{"hx"}}}
+	assert.Empty(t, m.Validate())
+	data, err := Marshal(m)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "bins:\n")
+	back, err := Parse(data, "m.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hx"}, back.Components[0].Bins)
+	assert.Equal(t, 1, back.SchemaVersion, "schema version stays 1")
+
+	m.Components = []ComponentRef{{Key: "helix", Bins: []string{"hx", "bad name", "hx", "..", "a/b"}}}
+	var paths []string
+	for _, d := range m.Validate() {
+		paths = append(paths, d.Path+": "+d.Message)
+	}
+	assert.Equal(t, []string{
+		`$.components[0].bins[1]: invalid binary name "bad name"`,
+		`$.components[0].bins[2]: duplicate binary name "hx"`,
+		`$.components[0].bins[3]: invalid binary name ".."`,
+		`$.components[0].bins[4]: invalid binary name "a/b"`,
+	}, paths)
+}
+
+// TestTargetImageReference rejects an image that carries its own tag or
+// digest, which would become image:tag:latest, and a tag that makes the
+// reference invalid; a registry port is not a tag.
+func TestTargetImageReference(t *testing.T) {
+	for _, tc := range []struct {
+		image, tag, want string
+	}{
+		{"quay.io/x/demo", "", ""},
+		{"localhost:5000/demo", "v1", ""},
+		{"quay.io/x/demo:v1", "", "carries a tag or digest"},
+		{"quay.io/x/demo@sha256:" + strings.Repeat("a", 64), "", "carries a tag or digest"},
+		{"quay.io/x/demo", "bad tag", "contains whitespace"},
+		{"quay.io/x/demo", "-v1", "invalid tag"},
+	} {
+		t.Run(tc.image+":"+tc.tag, func(t *testing.T) {
+			m := Skeleton("demo", "base", TargetOpenShell)
+			m.Targets.OpenShell.Image, m.Targets.OpenShell.Tag = tc.image, tc.tag
+			m.Targets.Container = &Target{Image: tc.image, Tag: tc.tag}
+			var got []Diagnostic
+			for _, d := range m.Validate() {
+				if strings.HasSuffix(d.Path, ".image") {
+					got = append(got, d)
+				}
+			}
+			if tc.want == "" {
+				assert.Empty(t, got)
+				return
+			}
+			require.Len(t, got, 2, "%v", got)
+			assert.Equal(t, "$.targets.openshell.image", got[0].Path)
+			assert.Equal(t, "$.targets.container.image", got[1].Path)
+			assert.Contains(t, got[0].Message, tc.want)
+		})
+	}
+}

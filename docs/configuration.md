@@ -63,6 +63,7 @@ Each entry selects one component by key.
 | `key` | string | | Kebab-case. Keys must be unique in the list. The key must resolve in a [component tier](#component-tiers) or have an active stored fragment, unless the entry is optional. |
 | `version` | string | the component's own selector | Version selector that overrides the component default, for example `"1.25"`, `">=3.12"`, `"^1.2"` or `"~1.2"`. The lockfile pins the exact version. |
 | `optional` | boolean | `false` | An optional component that does not resolve is reported but does not block the build. |
+| `bins` | list of names | the key | The executables of a component that no tier defines, for example `bins: [hx]` for `helix`. Each name matches `[A-Za-z0-9._+-]+` and appears once. `verify` checks each with `command -v`, the binary conflict check includes them, and `sandcast promote` uses them as the recipe's binaries when `--bins` is not given and then removes `bins` from the entry, because the recipe defines the component from then on. A key that a component tier defines must not set `bins`: its binaries come from the definition, and validation and plan exit 2. The field is additive, so the manifest schema version stays 1. |
 
 You do not need to list components that sandcast adds by itself: the shell program, the components in `shell.components`, the agent component of each harness, `git` when a harness lists plugins, `iproute2` and `nftables` for the OpenShell target, and `curl` and `ca-certificates` whenever a mise tool is installed. The [build guide](guides/build.md#implicit-components) explains these additions.
 
@@ -70,15 +71,15 @@ You do not need to list components that sandcast adds by itself: the shell progr
 
 | Field | Type | Rules |
 |-------|------|-------|
-| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. |
-| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. Write it with `sandcast manifest set-shell`. |
+| `program` | `zsh` or `bash` | Required when `shell` is present. The shell becomes a component and the login shell of the image. With `zsh`, the final user's login shell is `/bin/zsh` (created and kept users alike) and the zsh new-user wizard is disabled; on the OpenShell target, an interactive terminal session that OpenShell starts in bash also switches to a zsh login shell. Set `SANDCAST_NO_SHELL_SWITCH=1` in the sandbox environment to stay in bash. See [the session environment](guides/build.md#the-session-environment). |
+| `rc` | multi-line string | The curated configuration. It is installed as `/etc/zsh/zshrc.d/sandcast.zsh` (zsh) or `/etc/profile.d/sandcast.sh` (bash) and sourced from the system shell configuration. sandcast prepends two lines that re-apply the mise shims and mark the file as read for verify. Write it with `sandcast manifest set-shell`. |
 | `components` | list of keys | Components the configuration references, such as a prompt or a listing tool. Each one is added to the image. |
 
 ### targets
 
 | Field | Type | Default | Rules |
 |-------|------|---------|-------|
-| `targets.<target>.image` | string | | Required. Image name without tag. |
+| `targets.<target>.image` | string | | Required. Image name without tag; validation rejects a tag or digest here (use `tag`). |
 | `targets.<target>.tag` | string | `latest` | Image tag. |
 | `targets.<target>.push` | boolean | `false` | Push the final image after the build, like `sandcast build --push`. `sandcast build --push=false` skips the push for one build. |
 | `targets.container.allowed_domains_file` | string | `allowed-domains.txt` | File name of the allowed-domains list in `.sandcast/build/container/`. The value must be a plain file name: a single path element with no `/` or `\`, not blank, and not `.` or `..`. It must not start with a dot (sandcast keeps hidden files of its own there), and it must not be a name sandcast writes in that directory itself (`.lock`, `build.log`, `plan.yaml`, `policy.yaml`, `verify.yaml`, `Containerfile`, `Containerfile.final`, `profiles`, `mise`, `shell`, `harness`), compared without regard to case. Only the container target accepts this field. |
@@ -168,6 +169,10 @@ The user file merges over the shipped registry by entry name, per target type:
 
 After merging, every target type must have exactly one default. Unknown fields in either file are errors. `sandcast base-images list` shows the merged result.
 
+### The workspace path
+
+For the OpenShell target, the final user's home directory of a base image is its workspace path: OpenShell may mount the workspace volume over it at runtime (`/sandbox` on `nvidia-community-base`). The path comes from the probed image facts, never from a fixed name. A tool the base image provides only under the workspace path counts as missing and sandcast installs it; a tool whose first `PATH` hit lies there but which also exists elsewhere is taken from the other copy. The plan reports both cases as `workspace-path` notices. In the second case the probed version came from the hidden copy, so it counts as unknown: a locked mise component is shadowed and the plan adds an `unknown-version` notice. The container target has no workspace path. See [the build guide](guides/build.md#the-probe-delta).
+
 ### Resolving the base image
 
 The manifest field `base_image` is resolved against the entries of the target being built:
@@ -221,6 +226,7 @@ profiles: [go-proxy]
 | `profiles` | no | OpenShell provider profile ids the component needs. |
 | `targets` | no | `openshell`, `container`, or both (the default when omitted). |
 | `promoted_from` | no | Set by `sandcast promote` on recipes. |
+| `emulation_unsafe` | no | `true` when the tool is known to fail under user-mode emulation (QEMU). `plan` and `build` print an `emulation` notice when the target platform's architecture differs from the container engine host's. The shipped `rust` component sets it. See the [cross-architecture guide](guides/cross-arch.md). |
 
 A component never carries network endpoints. A top-level `endpoints` key is rejected by name, with a message that points to `profiles`. Network access belongs in an OpenShell provider profile.
 
@@ -362,11 +368,11 @@ All sandcast files in a project live under `.sandcast/`. The top level holds com
 | `plan.yaml` | `plan`, `build` | The build plan. |
 | `mise/mise.toml` | `plan`, `build` | The generated mise configuration, when mise tools are planned. |
 | `mise/mise.lock` | `plan`, `build` | A copy of `.sandcast/mise.lock` for the build context. |
-| `mise/sandcast-mise.sh` | `plan`, `build` | Profile script that keeps the mise shims on the `PATH` of login shells. |
 | `policy.yaml` | `plan`, `build` | The image-embedded OpenShell policy (OpenShell target only). |
 | `Containerfile` | `build` | The pass-1 image definition. |
 | `Containerfile.final` | `build` | The pass-2 image definition that adds the adapted profiles. |
 | `shell/sandcast.zsh` or `shell/sandcast.sh` | `build` | The curated shell configuration for the build context. |
+| `shell/sandcast-env.sh` | `build` | The session environment script, installed as `/etc/profile.d/sandcast-env.sh` (see [the session environment](guides/build.md#the-session-environment)). |
 | `harness/` | `build` | Harness files staged for the build context. |
 | `build.log` | `build` | The engine output of both passes. |
 | `profiles/<id>.yaml` | `build`, `profiles export` | The adapted provider profiles. |
@@ -401,3 +407,6 @@ Probe results are keyed by the image digest together with the platform, because 
 | `XDG_CONFIG_HOME` | the same | When set and `SANDCAST_CONFIG_DIR` is not, the configuration directory is `$XDG_CONFIG_HOME/sandcast`. |
 | `SANDCAST_COMPONENT_REGISTRY_URL` | `components refresh` | Overrides the base URL of the remote component registry. |
 | `OPENSHELL_GATEWAY`, `OPENSHELL_GATEWAY_ENDPOINT` | `profiles import` | Not read by sandcast. The `openshell` CLI inherits them and uses them to select the gateway. |
+| `CONTAINER_CONNECTION`, `CONTAINER_HOST` | every command that runs podman | Not read by sandcast. podman inherits them and builds, runs and pushes on the selected connection, for example a remote amd64 host. The `emulation` notice compares the target platform with that host's architecture. See the [cross-architecture guide](guides/cross-arch.md). |
+| `DOCKER_HOST` | every command that runs docker | Not read by sandcast. docker inherits it, with the same effect as the podman variables. |
+| `SANDCAST_NO_SHELL_SWITCH` | images with `shell.program: zsh` | Not read by sandcast. Set in a sandbox's environment, it keeps an interactive OpenShell session in bash instead of switching to zsh. The switched zsh sets it, so a bash started inside that zsh stays bash. |
