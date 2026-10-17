@@ -21,17 +21,37 @@ type ScriptOptions struct {
 }
 
 // CheckTimeout bounds one component check. The probe script enforces it
-// with timeout(1) when the image has a working one; the container deadline
-// (runDeadline) is the backstop for images without it.
+// with a coreutils timeout(1), or with its own setsid(1) watchdog when the
+// image has setsid(1) and sleep(1) but no coreutils timeout(1); the
+// container deadline (runDeadline) is the backstop for images with neither.
 const CheckTimeout = 120 * time.Second
 
 // scriptHelpers defines the shared variables and functions on top of
 // shell.JSONHelpers (_jsafe). _check runs one check command in a child shell
 // with stdin closed, captures stdout and stderr, cuts the output to $_max
-// characters and prints one check line. When the image has a timeout(1)
-// that accepts "timeout SECS CMD" (coreutils, current busybox), every check
-// runs under it with $_tmax seconds; exit 124 (coreutils) or 143 (busybox
-// kills with SIGTERM) then marks the line "timeout":true.
+// characters and prints one check line. Each check is bounded to $_tmax
+// seconds when the image allows it; exit 124 (coreutils) or 143 (SIGTERM)
+// then marks the line "timeout":true.
+//
+// A coreutils timeout(1) moves itself and the check into a new process
+// group and signals that group, so the check runs under it, as a background
+// job whose $! is the group id. busybox timeout(1) signals only the check's
+// own shell, so a process the check started kept the output pipe open until
+// it ended on its own. When timeout(1) is missing or is not coreutils and
+// the image has setsid(1) and sleep(1), the check therefore runs in its own
+// session, and a watchdog sends SIGTERM to the whole process group after
+// $_tmax seconds; the watchdog reports that it fired, so the check is marked
+// with exit 143 even when it traps SIGTERM and exits otherwise.
+//
+// On both paths, whatever is left of the check's process group once the
+// check's shell has exited is killed with SIGKILL: it can no longer change
+// the result, so it gets no graceful stop, and it cannot hold the output
+// open. A process that moves to a process group or session of its own
+// escapes this and is bounded only by the container deadline, as is any
+// check in an image with neither path. A check that exits 124 or 143 by
+// itself while a time limit applies is marked as a timeout as well: its
+// exit status is the only channel back from the check, so the script cannot
+// tell the two apart.
 //
 // When the image has head(1) with -c and cat(1), the output passes through
 // "head -c $_max" before it reaches a shell variable, so a check that prints
@@ -42,17 +62,62 @@ const CheckTimeout = 120 * time.Second
 // finished, so the status is appended after the whole output and split off
 // at the last line break. The check itself gets neither fd 3 nor fd 4.
 // Without head or cat the output is captured whole, as before. Apart from
-// timeout(1), head(1) and cat(1) only shell builtins are used, so the script
+// timeout(1), setsid(1) and sleep(1) for the time limit and head(1) and
+// cat(1) for the output bound, only shell builtins are used, so the script
 // runs in images without coreutils.
+//
+// The watchdog relies on these details. A background job of a shell
+// without job control is not a process group leader, so setsid(1) runs in
+// place instead of forking: the job's $! is then the id of the check's new
+// session and process group, which "kill -TERM -$_cp" and "kill -KILL
+// -$_cp" signal. The watchdog subshell detaches its standard streams and
+// closes fds 3 and 4, so neither it nor its sleep holds a capture pipe open.
+// When it fires it exits 124, a status no signal produces, and _run turns
+// that into 143; a watchdog the main shell stops before its trap is set dies
+// of SIGTERM with 143 and so never counts as fired. Before it signals the
+// check it ignores SIGTERM, because the main shell's kill can arrive as soon
+// as the check has died and must not cut the watchdog off before it reports.
+// Its TERM trap stops the pending sleep when the check ends first; a
+// watchdog stopped before the trap is set leaves its sleep(1) behind, with
+// every stream on /dev/null, until $_tmax seconds have passed.
 const scriptHelpers = shell.JSONHelpers + `_cut='?'
 while [ ${#_cut} -lt "$_max" ]; do _cut=$_cut$_cut; done
 _to=
 if timeout 10 /bin/sh -c : >/dev/null 2>&1; then _to=1; fi
+_sg=
+if command -v setsid >/dev/null 2>&1 && command -v sleep >/dev/null 2>&1; then
+	if [ -z "$_to" ] || ! timeout --version >/dev/null 2>&1; then _sg=1; fi
+fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
 _run() {
-	if [ -n "$_to" ]; then
-		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
+	if [ -n "$_sg" ]; then
+		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		(
+			sleep "$_tmax" &
+			_sp=$!
+			trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
+			wait "$_sp" || exit 0
+			trap '' TERM
+			kill -TERM -"$_cp" 2>/dev/null
+			exit 124
+		) </dev/null >/dev/null 2>&1 3>&- 4>&- &
+		_wp=$!
+		wait "$_cp"
+		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
+		kill "$_wp" 2>/dev/null
+		wait "$_wp" 2>/dev/null
+		[ $? -ne 124 ] || _rc=143
+		return "$_rc"
+	elif [ -n "$_to" ]; then
+		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		wait "$_cp"
+		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
+		return "$_rc"
 	else
 		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
 	fi
@@ -73,7 +138,7 @@ _check() {
 	fi
 	case $_e in '' | *[!0-9]*) _e=-1 ;; esac
 	_x=false
-	if [ -n "$_to" ]; then
+	if [ -n "$_to$_sg" ]; then
 		case $_e in 124 | 143) _x=true ;; esac
 	fi
 	if [ ${#_o} -gt "$_max" ]; then
