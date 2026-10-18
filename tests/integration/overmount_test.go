@@ -45,8 +45,11 @@ targets:
 // bashOvermountManifest builds a bash image with a baked alias. Like the
 // zsh one, its rc prepends $HOME/bin to the PATH, the common pattern that a
 // planted workspace bin/bash wrapper would exploit (see
-// workspaceWithPlantedRC).
-func bashOvermountManifest(image string) string {
+// workspaceWithPlantedRC), and it bakes a readline dotfile, whose INPUTRC
+// is the image env that makes the image carry the session environment
+// script (an image with no mise tools, no env and no base image PATH
+// directory outside the overmount home has none).
+func bashOvermountManifest(image, inputrc string) string {
 	return `schema_version: 1
 name: sc-overmount-bash
 base_image: nvidia-community-base
@@ -56,6 +59,8 @@ shell:
     alias myll='ls -l'
     export SANDCAST_OVERMOUNT_OK=1
     export PATH=$HOME/bin:$PATH
+dotfiles:
+  - path: ` + inputrc + `
 targets:
   openshell:
     image: ` + image + `
@@ -219,10 +224,10 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	assert.Equal(t, "[pwned-planted-bash ]", results["nested"], "case nested: the wrapper is on the PATH, no startup file runs")
 	has("pty-i", alias)
 	has("pty-l", alias)
-	if zdotdir != "" {
-		has("pty-i", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
-		has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
-	}
+	// Both images bake an inputrc; the hooks restore its INPUTRC through the
+	// session environment script.
+	has("pty-i", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
+	has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
 	// The session environment (spec 002) reaches every session the hooks
 	// replace: the MISE_* settings are set and the shims come first on PATH,
 	// in the terminal session, the default agent's login shell and the exec
@@ -419,7 +424,9 @@ func TestOvermountBashSurvives(t *testing.T) {
 	image := repo + ":latest"
 	removeImages(t, engine, image)
 
-	dir := project(t, bashOvermountManifest(repo))
+	dir := project(t, bashOvermountManifest(repo, "dotfiles-src/.inputrc"))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "dotfiles-src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".inputrc"), []byte("set editing-mode vi\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
 	ws := workspaceWithPlantedRC(t)

@@ -269,3 +269,33 @@ func TestCuratedRC(t *testing.T) {
 	p := testPlan(t)
 	assert.Equal(t, "_sandcast_path 2>/dev/null || true\nSANDCAST_RC_LOADED=1\nautoload -Uz compinit && compinit -C\n", CuratedRC(p))
 }
+
+// TestNeedsSessionEnvIgnoresOvermountDirs pins when an OpenShell image
+// carries the session environment script (spec 002 R-04 under P1 of the
+// reconciliation review): a base image PATH directory under the overmount
+// home never reaches a session PATH, so it is no reason for the script
+// either. An image with nothing else to export (no mise tools, no image
+// env, no extra directory outside the home) has no script, and its
+// sessions keep OpenShell's default PATH; image env or an extra directory
+// outside the home brings the script back.
+func TestNeedsSessionEnvIgnoresOvermountDirs(t *testing.T) {
+	p := testPlan(t)
+	p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
+	p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+	p.Image.Env = nil
+	p.ImageFacts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin"}
+	assert.False(t, NeedsSessionEnv(p), "a directory under the overmount home is no reason for the script")
+	got, err := Assemble(p)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "sandcast-env.sh")
+
+	p.ImageFacts.Path = append(p.ImageFacts.Path, "/usr/sbin")
+	assert.True(t, NeedsSessionEnv(p), "an extra directory outside the home")
+	p.ImageFacts.Path = p.ImageFacts.Path[:4]
+	p.Image.Env = []plan.EnvVar{{Name: "INPUTRC", Value: plan.InputRCPath}}
+	assert.True(t, NeedsSessionEnv(p), "image env")
+	got, err = Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n")
+	assert.NotContains(t, plan.SessionEnvScriptFor(p), "/sandbox")
+}
