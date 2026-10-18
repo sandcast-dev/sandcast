@@ -107,6 +107,9 @@ func workspaceWithPlantedRC(t *testing.T, engine, image string) string {
 	}
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(ws, "bin", "bash"), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-bash\nexec /bin/bash \"$@\"\n"), 0o755))
+	// A harmless tool in the same directory: once the session itself put
+	// $HOME/bin on the PATH, every child shell must still find it.
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "bin", "mytool"), []byte("#!/bin/sh\necho MYTOOL\n"), 0o755))
 	// The community base image's PATH starts with /sandbox/.venv/bin, a
 	// directory the workspace hides. Ubuntu's system bashrc calls groups and
 	// /etc/profile calls id by name during startup, so a project that commits
@@ -127,11 +130,16 @@ func workspaceWithPlantedRC(t *testing.T, engine, image string) string {
 // passwd shell. Exec and terminal sessions start with a cleared environment
 // ($E: HOME, USER, TERM, the default PATH, and SHELL set to the bash it
 // found, as the runtime does); the default agent keeps the image ENV, so the
-// agent cases run without $E, with the environment podman gave this script.
-// script(1) provides the pty. Every case prints RESULT <case> pwned=[...]
-// with the sentinels the planted workspace files left behind, then clears
-// them; the first cases are positive controls that source the workspace
-// .bashrc and run the planted .venv/bin binaries by path on purpose.
+// agent cases run without $E, with the environment podman gave this script,
+// and the dirty cases keep it too but inherit a PATH that names the
+// workspace, as a runtime that sets PATH itself would pass it. script(1)
+// provides the pty. Every case prints RESULT <case> pwned=[...] with the
+// sentinels the planted workspace files left behind, then clears them; the
+// first cases are positive controls that source the workspace .bashrc and
+// run the planted .venv/bin binaries by path on purpose. The shells report
+// their PATH and what resolves through /harness/child-report.sh
+// (childReportScript), sourced with a label, so the report line is the
+// same in bash and zsh and no [...] glob reaches an unquoted zsh word.
 const openShellSpawnScript = `#!/bin/sh
 E="env -i HOME=/sandbox USER=sandbox SHELL=/bin/bash PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color"
 report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; rm -f /tmp/pwned-*; }
@@ -141,10 +149,16 @@ $E /bin/bash -c '. /sandbox/.bashrc'
 report control
 /sandbox/.venv/bin/groups >/dev/null; /sandbox/.venv/bin/id >/dev/null; /sandbox/.venv/bin/git --version >/dev/null
 report control-venv
-printf 'echo "AGENT PATH=[$PATH] git=[$(command -v git)]"; exit\n' | script -qec "/bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT agent-pty /'
+printf '. /harness/child-report.sh AGENT\nexit\n' | script -qec "/bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT agent-pty /'
 report agent-pty
-/bin/bash -lc 'echo "AGENT PATH=[$PATH] git=[$(command -v git)]"' | sed 's/^/OUT agent-lc /'
+/bin/bash -lc '. /harness/child-report.sh AGENT' | sed 's/^/OUT agent-lc /'
 report agent-lc
+printf '. /harness/child-report.sh DIRTY\nexit\n' | script -qec "env PATH=/sandbox/.venv/bin:$PATH /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT dirty-pty /'
+report dirty-pty
+env PATH=/sandbox/.venv/bin:$PATH /bin/bash -lc '. /harness/child-report.sh DIRTY' | sed 's/^/OUT dirty-lc /'
+report dirty-lc
+printf 'export PATH=$HOME/bin:$PATH\n. /harness/child-report.sh SESSION\n$SHELL -c ". /harness/child-report.sh CHILD-SHELL"\n/bin/bash -lc ". /harness/child-report.sh CHILD-LOGIN"\nexit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT nested-path /'
+report nested-path
 printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
 report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
@@ -184,6 +198,13 @@ if [ -x /opt/sandcast/shell-login ]; then
 fi
 `
 
+// childReportScript is sourced by a shell of openShellSpawnScript with a
+// label: it prints the shell's PATH, where git and the workspace mytool
+// resolve, the mise data directory of the session environment and the
+// once-per-session marker of the PATH strip.
+const childReportScript = `echo "$1 PATH=[$PATH] git=[$(command -v git)] mytool=[$(command -v mytool)] MISE=[${MISE_DATA_DIR-}] MARK=[${SANDCAST_PATH_STRIPPED-unset}]"
+`
+
 // spawnShellScript is what tmux or an editor's terminal does inside a
 // curated session: start $SHELL as an interactive login shell on a pty of
 // its own (script(1) provides it, as tmux would; an interactive zsh whose
@@ -208,6 +229,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "spawn.sh"), []byte(openShellSpawnScript), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "spawn-shell.sh"), []byte(spawnShellScript), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child-report.sh"), []byte(childReportScript), 0o644))
 	out, err := runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "-v", dir+":/harness:ro", "--entrypoint", "/bin/sh", image, "/harness/spawn.sh")
 	require.NoError(t, err, out)
 
@@ -229,7 +251,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
 	assert.Equal(t, "[pwned-planted-git pwned-planted-groups pwned-planted-id ]", results["control-venv"], "positive control: the planted .venv/bin binaries run when called by path")
-	cases := []string{"agent-pty", "agent-lc", "pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
+	cases := []string{"agent-pty", "agent-lc", "dirty-pty", "dirty-lc", "nested-path", "pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
@@ -238,16 +260,42 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
 	}
 	// The default agent keeps the image ENV (I1 of the round 2 review): the
-	// image PATH leaves out the base image's /sandbox/.venv/bin, and the
-	// session script drops any inherited entry under the overmount home, so
-	// neither the login shell's startup (groups, id) nor a bare git in the
-	// agent's shell reaches the planted binaries. In the curated shell of
-	// the pty case the rc's own $HOME/bin comes first, the user's choice.
+	// image PATH leaves out the base image's /sandbox/.venv/bin, so neither
+	// the login shell's startup (groups, id) nor a bare git in the agent's
+	// shell reaches the planted binaries, and the session environment
+	// reaches the agent through /etc/profile. The dirty cases inherit a
+	// PATH that names the workspace, as a runtime that sets PATH itself
+	// would pass it: the session script drops the entry once, before the
+	// startup files look anything up, and marks the session.
 	has("image-env", "PATH=[")
 	assert.NotContains(t, strings.Join(lines["image-env"], "\n"), "/sandbox", "the image PATH names no directory under the overmount home")
-	has("agent-lc", "AGENT PATH=[/opt/mise/shims:/usr/local/bin:/usr/bin:/bin] git=[/usr/bin/git]")
-	has("agent-pty", "git=[/usr/bin/git]")
-	assert.NotContains(t, strings.Join(lines["agent-pty"], "\n"), "/sandbox/.venv/bin")
+	// The exec forms read no rc and have the session PATH exactly; the pty
+	// forms end in the curated shell, whose rc prepends $HOME/bin.
+	for _, c := range []string{"agent-lc", "dirty-lc"} {
+		has(c, " PATH=[/opt/mise/shims:/usr/local/bin:/usr/bin:/bin] git=[/usr/bin/git] mytool=[] MISE=[/opt/mise] MARK=[1]")
+	}
+	for _, c := range []string{"agent-pty", "dirty-pty"} {
+		has(c, "git=[/usr/bin/git] mytool=[/sandbox/bin/mytool] MISE=[/opt/mise] MARK=[1]")
+		assert.NotContains(t, strings.Join(lines[c], "\n"), "/sandbox/.venv/bin", "case %s", c)
+	}
+	// Once per session (R1 of the round 3 review): a directory under the
+	// home that the session itself put on the PATH, like an activated
+	// virtual environment, stays on the PATH of every child shell that
+	// sources the session script again ($SHELL -c, the curated zsh through
+	// the global zshenv, a login bash through /etc/profile), because the
+	// first shell of the session exported the marker.
+	for _, label := range []string{"SESSION", "CHILD-SHELL", "CHILD-LOGIN"} {
+		line := ""
+		for _, l := range lines["nested-path"] {
+			if strings.HasPrefix(l, label+" ") {
+				line = l
+			}
+		}
+		require.NotEmpty(t, line, "nested-path: a %s report line: %v", label, lines["nested-path"])
+		assert.Contains(t, line, "/sandbox/bin:", "%s keeps the session's own PATH entry under the home", label)
+		assert.Contains(t, line, "mytool=[/sandbox/bin/mytool]", label)
+		assert.Contains(t, line, "MARK=[1]", label)
+	}
 	// A bare "bash" inside the curated session resolves through the curated
 	// PATH, which starts with the workspace $HOME/bin, so the planted wrapper
 	// runs: that is the user's own PATH choice and the positive control that
@@ -264,15 +312,18 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
 	// The session environment (spec 002) reaches every session the hooks
 	// replace: the MISE_* settings are set and the shims come first on PATH,
-	// in the terminal session, the default agent's login shell and the exec
-	// session alike. The base image's only PATH directory beyond the
-	// OpenShell default, /sandbox/.venv/bin, lies under the overmount home
-	// and never reaches a session PATH (P1 of the reconciliation review): the
-	// planted .venv/bin/groups and id, which Ubuntu's startup files call by
-	// name, leave no sentinel in any case above. The curated rc of these manifests prepends $HOME/bin, so the
-	// interactive sessions may carry that in front (bash's prompt repair
-	// puts the shims first again, zsh keeps the rc's order); the exec
-	// session, which reads no rc, has the session PATH exactly.
+	// in the terminal session (pty-i), an interactive login shell started
+	// with a cleared environment (pty-l) and the exec session (lc-env)
+	// alike; the agent cases above cover the default agent, which keeps the
+	// image ENV. The base image's only PATH directory beyond the OpenShell
+	// default, /sandbox/.venv/bin, lies under the overmount home and never
+	// reaches a session PATH (P1 of the reconciliation review): the planted
+	// .venv/bin/groups and id, which Ubuntu's startup files call by name,
+	// leave no sentinel in any case above. The curated rc of these
+	// manifests prepends $HOME/bin, so the interactive sessions may carry
+	// that in front (bash's prompt repair puts the shims first again, zsh
+	// keeps the rc's order); the exec session, which reads no rc, has the
+	// session PATH exactly.
 	sessionPath := "/opt/mise/shims:/usr/local/bin:/usr/bin:/bin]"
 	for _, c := range []string{"pty-i", "pty-l"} {
 		has(c, "SESSION-ENV MISE=[/opt/mise] PATH=[")
