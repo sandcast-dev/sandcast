@@ -34,3 +34,24 @@ func TestSelectUsesHarnessComponentKeys(t *testing.T) {
 	assert.NotContains(t, byKey, "ghost", "a harness without an adapter adds no component")
 	assert.Contains(t, strings.Join(notices, "\n"), "harness ghost has no adapter")
 }
+
+func TestBinsProblem(t *testing.T) {
+	def := &component.Component{Key: "go", Tier: component.TierShipped}
+	assert.Empty(t, BinsProblem(Wanted{Key: "go", Def: def}))
+	assert.Empty(t, BinsProblem(Wanted{Key: "helix", Ref: manifest.ComponentRef{Key: "helix", Bins: []string{"hx"}}}))
+	assert.Equal(t, "go is defined by the shipped tier; its binaries come from the definition, remove bins",
+		BinsProblem(Wanted{Key: "go", Def: def, Ref: manifest.ComponentRef{Key: "go", Bins: []string{"go"}}}))
+}
+
+func TestBuildRefusesBinsOnDefinedComponent(t *testing.T) {
+	m := testManifest()
+	for i := range m.Components {
+		if m.Components[i].Key == "go" {
+			m.Components[i].Bins = []string{"go"}
+		}
+	}
+	_, err := Build(testInputs(t, m, nil))
+	var be *BinsError
+	require.ErrorAs(t, err, &be)
+	assert.Contains(t, err.Error(), "go is defined by the shipped tier")
+}

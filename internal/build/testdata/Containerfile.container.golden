@@ -31,8 +31,7 @@ ENV MISE_DATA_DIR=/opt/mise \
     MISE_USE_VERSIONS_HOST=0 \
     PATH=/opt/mise/shims:$PATH
 COPY mise/mise.toml mise/mise.lock /etc/mise/
-COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
  && for attempt in 1 2 3; do \
       if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
       if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
@@ -61,23 +60,33 @@ USER sandbox
 
 # 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
 USER root
+COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh
+RUN chmod 0644 /etc/profile.d/sandcast-env.sh
 COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc
 RUN chmod 0644 /opt/sandcast/zdotdir/.zshrc
 RUN <<'SANDCAST_EOF'
 set -eu
 install -d /opt/sandcast/zdotdir /etc/zsh
-zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh'
+zshenv_block=/tmp/sandcast-zshenv zshenv_begin='# >>> sandcast zshenv >>>' zshenv_end='# <<< sandcast zshenv <<<'
+cat > "$zshenv_block" <<'SANDCAST_ZSHENV'
+# >>> sandcast zshenv >>>
+export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh
+[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
+zsh-newuser-install() { :; }
+# <<< sandcast zshenv <<<
+SANDCAST_ZSHENV
 for f in /etc/zsh/zshenv /etc/zshenv; do
-  if grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
-    echo "sandcast: replacing the ZDOTDIR export of a previous sandcast build in $f" >&2
-    awk 'index($0, "export ZDOTDIR=") != 1 || index($0, " SANDCAST_SESSION=1") == 0' "$f" > "$f.sandcast"
+  if grep -qsF "$zshenv_begin" "$f" || grep -qs '^export ZDOTDIR=.* SANDCAST_SESSION=1' "$f"; then
+    echo "sandcast: replacing the zshenv block of a previous sandcast build in $f" >&2
+    awk -v b="$zshenv_begin" -v e="$zshenv_end" '$0 == b { skip = 1 } !skip && !(index($0, "export ZDOTDIR=") == 1 && index($0, " SANDCAST_SESSION=1") > 0) { print } $0 == e { skip = 0 }' "$f" > "$f.sandcast"
   else
     cat "$f" > "$f.sandcast" 2>/dev/null || :
   fi
-  printf '%s\n' "$zshenv_line" >> "$f.sandcast"
+  cat "$zshenv_block" >> "$f.sandcast"
   mv "$f.sandcast" "$f"
   chmod 0644 "$f"
 done
+rm -f "$zshenv_block"
 SANDCAST_EOF
 
 # 90-footer

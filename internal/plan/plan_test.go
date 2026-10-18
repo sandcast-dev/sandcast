@@ -75,14 +75,26 @@ func testProbe(wanted []Wanted) *probe.Result {
 		}
 		checks[w.Key] = probe.CheckResult{ComponentKey: w.Key, Status: status, Version: version}
 	}
+	// The base image ships an older starship outside the workspace path
+	// (shadowed by the locked version) and a go that lives only under the
+	// workspace path (installed).
+	if _, ok := checks["starship"]; ok {
+		checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0",
+			Path: "/usr/bin/starship", Paths: []string{"/usr/bin/starship"}}
+	}
+	if _, ok := checks["go"]; ok {
+		checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.14",
+			Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go"}}
+	}
 	return &probe.Result{
 		Facts: probe.Facts{
 			Digest: testDigest, Reference: "ghcr.io/nvidia/openshell-community/sandboxes/base:latest", Platform: "linux/arm64",
-			OS:             probe.OS{ID: "ubuntu", IDLike: "debian", Name: "Ubuntu", Version: "24.04"},
-			PackageManager: "apt-get",
-			User:           probe.User{Name: "sandbox", UID: 1000, GID: 1000, Group: "sandbox", Home: "/sandbox", Shell: "/bin/bash"},
-			Shells:         []string{"/bin/bash", "/bin/sh"},
-			ProbedAt:       "2026-10-08T12:00:00Z",
+			OS:               probe.OS{ID: "ubuntu", IDLike: "debian", Name: "Ubuntu", Version: "24.04"},
+			PackageManager:   "apt-get",
+			User:             probe.User{Name: "sandbox", UID: 1000, GID: 1000, Group: "sandbox", Home: "/sandbox", Shell: "/bin/bash"},
+			Shells:           []string{"/bin/bash", "/bin/sh"},
+			HomeRCResetsPath: []string{".bashrc"},
+			ProbedAt:         "2026-10-08T12:00:00Z",
 		},
 		Checks: checks,
 	}
@@ -493,8 +505,52 @@ func TestBuildDeltaEdgeCases(t *testing.T) {
 		assert.Equal(t, ActionShadow, p.Component("go").Action)
 		assert.Equal(t, SectionMise, p.Component("go").FragmentName)
 		assert.Contains(t, p.Mise.TOML, `go = "1.25"`)
-		assert.Contains(t, p.ProbeDelta, DeltaEntry{ComponentKey: "go", Status: "incompatible", InstalledVersion: "1.20.0", RequiredVersion: "1.25", Action: ActionShadow})
+		assert.Contains(t, p.ProbeDelta, DeltaEntry{ComponentKey: "go", Status: "incompatible", InstalledVersion: "1.20.0", RequiredVersion: "1.25", LockedVersion: "1.25.14", Action: ActionShadow,
+			Notices: []string{"lockfile-shadow: go: base image has 1.20.0, mise.lock pins 1.25.14 for linux/arm64; installing 1.25.14"}})
 		assert.NotContains(t, keysOf(p.Unresolved), "go")
+	})
+
+	t.Run("present at the locked version is skipped", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.24.0", Paths: []string{"/usr/bin/starship"}}
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("starship").Action)
+		for _, n := range p.Notices {
+			assert.NotContains(t, n, "starship:")
+		}
+	})
+
+	t.Run("lock entry without the target platform fails first", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.24.0", Paths: []string{"/usr/bin/starship"}}
+		in.Platform = Selected{Value: "linux/amd64", Source: "flag"}
+		_, err := Build(in)
+		var le *LockError
+		require.ErrorAs(t, err, &le)
+		assert.Equal(t, "linux-x64", le.Platform)
+		require.Len(t, le.Errors, 1)
+		assert.Equal(t, "starship", le.Errors[0].Key, "a present tool still fails for the missing platform")
+	})
+
+	t.Run("present tool without lock entry keeps todays rule", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		delete(in.Lock.Tools, "starship")
+		in.Probe.Checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0", Paths: []string{"/usr/bin/starship"}}
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("starship").Action)
+	})
+
+	t.Run("container target keeps a home binary", func(t *testing.T) {
+		in := testInputs(t, testManifest(), nil)
+		in.Target = manifest.TargetContainer
+		p, err := Build(in)
+		require.NoError(t, err)
+		assert.Equal(t, ActionSkip, p.Component("go").Action, "no workspace volume replaces the home directory")
+		for _, n := range p.Notices {
+			assert.NotContains(t, n, "workspace-path")
+		}
 	})
 
 	t.Run("incompatible package covered by a stored fragment", func(t *testing.T) {
@@ -539,7 +595,7 @@ func TestWriteOutputs(t *testing.T) {
 	lock, err := os.ReadFile("testdata/mise.lock")
 	require.NoError(t, err)
 	require.NoError(t, WriteOutputs(dir, p, lock))
-	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "mise/sandcast-mise.sh", "policy.yaml"} {
+	for _, f := range []string{"plan.yaml", "mise/mise.toml", "mise/mise.lock", "policy.yaml"} {
 		_, err := os.Stat(dir + "/" + f)
 		assert.NoError(t, err, f)
 	}
@@ -1102,4 +1158,78 @@ func TestBakedPathsPerShellKind(t *testing.T) {
 	withAll := paths(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "none"},
 		Dotfiles: []DotfileSelection{{RelocatedTo: GitConfigPath}}, Image: ImageSetup{Dirs: []Dir{{Path: "/opt/go"}}}})
 	assert.Subset(t, withAll, []string{GitConfigPath, "/opt/go"})
+	// A bash image whose base image ships zsh gets the zshenv block too, so
+	// a zsh the user starts never reads a workspace .zshrc.
+	withZsh := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "bash"}, ImageFacts: ImageFacts{Shells: []string{"/bin/bash", "/usr/bin/zsh"}}})
+	assert.Subset(t, withZsh, append(slices.Clone(ZshEnvPaths), ZDotDir))
+}
+
+// TestHomeRCNotices checks the home rc notice is reported for the container
+// target only: in OpenShell images no shell reads a startup file from the
+// home, so a base image rc that resets PATH has no effect there.
+func TestHomeRCNotices(t *testing.T) {
+	facts := probe.Facts{User: probe.User{Home: "/sandbox"}, HomeRCResetsPath: []string{".bashrc", ".profile"}}
+	assert.Equal(t, []string{
+		"home-rc-path: image: /sandbox/.bashrc resets PATH; bash sessions that read it lose the directories set before it",
+		"home-rc-path: image: /sandbox/.profile resets PATH; bash sessions that read it lose the directories set before it",
+	}, homeRCNotices(facts, manifest.TargetContainer))
+	assert.Empty(t, homeRCNotices(facts, manifest.TargetOpenShell), "no OpenShell session reads a home rc file")
+	assert.Empty(t, homeRCNotices(probe.Facts{}, manifest.TargetContainer))
+}
+
+// TestHomeRCNoticesPerTarget: the container target keeps the base image
+// user, whose rc files a directly started bash reads, so the plan reports
+// each one that resets PATH; the OpenShell target reports none, because no
+// shell there reads a home rc file (the probe fact stays in the image
+// facts). A created final user never applies: only the OpenShell target
+// creates one.
+func TestHomeRCNoticesPerTarget(t *testing.T) {
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	in := testInputs(t, m, nil)
+	in.Target = manifest.TargetContainer
+	p, err := Build(in)
+	require.NoError(t, err)
+	require.False(t, p.FinalUser.Created)
+	assert.Contains(t, strings.Join(p.Notices, "\n"), "home-rc-path: image: /sandbox/.bashrc resets PATH; bash sessions that read it lose the directories set before it")
+
+	p, err = Build(testInputs(t, testManifest(), nil))
+	require.NoError(t, err)
+	assert.Equal(t, []string{".bashrc"}, p.ImageFacts.HomeRCResetsPath, "the fact is kept")
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "home-rc-path", "no notice for the OpenShell target")
+}
+
+func TestFactsOfCopiesHomeRCResetsPath(t *testing.T) {
+	f := factsOf(probe.Facts{HomeRCResetsPath: []string{".bashrc"}})
+	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)
+	assert.Nil(t, factsOf(probe.Facts{}).HomeRCResetsPath)
+}
+
+// TestDeclaredBins covers FR-018 in the plan: an undefined component with a
+// stored fragment uses its declared binaries for the check, and declared
+// binaries take part in the conflict check.
+func TestDeclaredBins(t *testing.T) {
+	stored := map[string]StoredFragment{"helix": {Key: "helix", Source: ".sandcast/fragments/helix.containerfile", Body: "RUN true\n"}}
+	m := testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "helix", Optional: true, Bins: []string{"hx", "hx-lsp"}})
+	p, err := Build(testInputs(t, m, stored))
+	require.NoError(t, err)
+	c := p.Component("helix")
+	require.NotNil(t, c)
+	assert.Equal(t, []string{"hx", "hx-lsp"}, c.Bins)
+	assert.Equal(t, "command -v hx && command -v hx-lsp", c.Check.Command)
+	assert.Empty(t, p.Conflicts)
+
+	m = testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "helix", Optional: true})
+	p, err = Build(testInputs(t, m, stored))
+	require.NoError(t, err)
+	assert.Equal(t, "command -v helix", p.Component("helix").Check.Command, "without bins the key is checked")
+
+	m = testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "my-git", Optional: true, Bins: []string{"git"}})
+	p, err = Build(testInputs(t, m, map[string]StoredFragment{"my-git": {Key: "my-git", Source: "x", Body: "RUN true\n"}}))
+	require.NoError(t, err)
+	require.Len(t, p.Conflicts, 1)
+	assert.Equal(t, component.Conflict{Binary: "git", Components: []string{"git", "my-git"}}, p.Conflicts[0])
 }

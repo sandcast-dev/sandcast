@@ -32,6 +32,8 @@ image_facts:
   shells:
     - /bin/bash
     - /bin/sh
+  home_rc_resets_path:
+    - .bashrc
 final_user:
   name: sandbox
   uid: 1000
@@ -64,6 +66,9 @@ probe_delta:
   - component_key: go
     status: missing
     required_version: "1.25"
+    locked_version: 1.25.14
+    ignored_paths:
+      - /sandbox/go/bin/go
     action: install
   - component_key: iproute2
     status: missing
@@ -75,8 +80,10 @@ probe_delta:
     status: missing
     action: install
   - component_key: starship
-    status: missing
-    action: install
+    status: present
+    installed_version: 1.20.0
+    locked_version: 1.24.0
+    action: shadow
   - component_key: zsh
     status: missing
     action: install
@@ -135,8 +142,7 @@ components:
           MISE_USE_VERSIONS_HOST=0 \
           PATH=/opt/mise/shims:$PATH
       COPY mise/mise.toml mise/mise.lock /etc/mise/
-      COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
        && for attempt in 1 2 3; do \
             if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
             if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
@@ -223,7 +229,7 @@ components:
     tier: shipped
     source_file: components/starship.yaml
     installer_kind: mise
-    action: install
+    action: shadow
     fragment_name: 30-mise
     fragment: |
       # 30-mise: tools installed by mise v2026.10.4 in locked mode
@@ -236,8 +242,7 @@ components:
           MISE_USE_VERSIONS_HOST=0 \
           PATH=/opt/mise/shims:$PATH
       COPY mise/mise.toml mise/mise.lock /etc/mise/
-      COPY mise/sandcast-mise.sh /etc/profile.d/sandcast-mise.sh
-      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock /etc/profile.d/sandcast-mise.sh \
+      RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
        && for attempt in 1 2 3; do \
             if curl -fsSL --connect-timeout 20 --max-time 300 -o /usr/local/bin/mise https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl; then break; fi; \
             if [ "$attempt" = 3 ]; then echo "sandcast: could not download mise v2026.10.4 after 3 attempts: https://github.com/jdx/mise/releases/download/v2026.10.4/mise-v2026.10.4-linux-arm64-musl" >&2; exit 1; fi; \
@@ -344,3 +349,10 @@ notices:
   - "added nftables implicitly: required by OpenShell sandbox images"
   - "added curl implicitly: needed by the mise installer"
   - "added ca-certificates implicitly: needed by the mise installer"
+  - component go was found only under /sandbox/go/bin/go (hidden once the workspace is mounted over the home); it is provisioned to /opt/mise instead
+  - "lockfile-shadow: starship: base image has 1.20.0, mise.lock pins 1.24.0 for linux/arm64; installing 1.24.0"
+relocations:
+  - kind: reprovisioned
+    subject: go
+    from: /sandbox/go/bin/go
+    to: /opt/mise

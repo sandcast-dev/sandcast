@@ -1,7 +1,7 @@
 ---
 name: sandcast-build
 description: Build and verify the sandbox image from .sandcast/manifest.yaml, writing and repairing install fragments for components sandcast cannot resolve, then offer promotion to recipes and the OpenShell profile import.
-sandcast_version: 0.1.4
+sandcast_version: 0.2.1
 ---
 
 # sandcast build
@@ -96,7 +96,7 @@ Handle one component at a time.
    ```
 
    Note `check.command` (verify runs it in the built image as the final user), the binaries (`installer.<kind>.bins`, else `provides`, else the key), and why it is unresolved (`reason` from the plan, for example the base image has no package manager the definition supports).
-2. If no tier defines it, verify runs `command -v <key>`, so the fragment must put an executable named exactly `<key>` on the final user's `PATH`. Ask the user which upstream project the tool comes from when it is not obvious.
+2. If no tier defines it, verify checks the binaries the manifest entry declares in `bins` (the plan's `components[].bins` and `check.command` show them, for example `command -v hx` for `helix`), else `command -v <key>`. The fragment must put each of them on the final user's `PATH`. When the tool's executable is not named like the key, do not add a symlink just to satisfy verify: declare the real names with `bins` on the manifest entry instead (`- key: helix`, `optional: true`, `bins: [hx]`). You never edit the manifest, so tell the user the exact entry and suggest `/sandcast-capture` or a manual edit, then plan again. Ask the user which upstream project the tool comes from when it is not obvious.
 3. Read `.sandcast/learnings.yaml` if it exists and look for earlier entries for this key. A change followed by a `fixed` entry worked; reuse it. A change followed by a later failure for the same key (a higher attempt) did not work; never repeat it.
 4. Run `sandcast fragments list --json` to see whether a fragment for this key already exists.
 
@@ -152,7 +152,8 @@ Write every fragment so that `sandcast promote` can turn it into a recipe later.
   - `none`: there is no package manager; use a release binary.
 - **Pinned downloads only**: an exact version in the URL, never `latest`, never an API call at build time, and a sha256 check of every downloaded file before it is used.
 - **Bounded downloads**: every download uses `curl -fsSL --connect-timeout 20 --max-time 300 --retry 3`, so a stalled network fails the build step instead of hanging it, and a transient error is retried.
-- **Locations**: binaries go to `/usr/local/bin`, unpacked trees to `/opt/<key>`, system configuration to `/etc`. Never put anything under `/sandbox`; on Kubernetes the workspace volume is mounted over it. Never write the paths sandcast manages: `/opt/mise`, `/etc/mise`, `/etc/profile.d/sandcast-mise.sh`, `/tmp/sandcast-mise`, `/usr/share/sandcast` (the adapted profile set), `/opt/sandcast` (the curated shell file at `shell.rc_path` in the plan, the shell launchers, relocated dotfiles and harness configuration), the shell hooks `/etc/profile.d/zz-sandcast-shell.sh` and the sandcast block at the top of the system bashrc, and the global zshenv lines that set `ZDOTDIR`. Never write the OpenShell reserved paths `/etc/openshell`, `/etc/openshell-tls`, `/opt/openshell`, `/run/openshell`, `/run/netns`, `/var/run/netns`.
+- **Locations**: binaries go to `/usr/local/bin`, unpacked trees to `/opt/<key>`, system configuration to `/etc`. Never put anything under `/sandbox`; on Kubernetes the workspace volume is mounted over it. Never write the paths sandcast manages: `/opt/mise`, `/etc/mise`, `/etc/profile.d/sandcast-env.sh` (the session environment), `/tmp/sandcast-mise`, `/usr/share/sandcast` (the adapted profile set), `/opt/sandcast` (the curated shell file at `shell.rc_path` in the plan, the shell launchers, relocated dotfiles and harness configuration), the shell hooks `/etc/profile.d/zz-sandcast-shell.sh` and the sandcast block at the top of the system bashrc, and the global zshenv block that sets `ZDOTDIR` and sources the session environment. Never write the OpenShell reserved paths `/etc/openshell`, `/etc/openshell-tls`, `/opt/openshell`, `/run/openshell`, `/run/netns`, `/var/run/netns`.
+
 - **Never the home directory**: never write tool configuration, caches or state into `final_user.home`. On the default OpenShell base image the home is `/sandbox`, and on Kubernetes the workspace volume is mounted over it, so anything written there is lost. Put configuration under `/etc/<key>` or `/opt/<key>` and point the tool there with the environment variable the tool supports, set with `ENV` (for example `<TOOL>_CONFIG_DIR=/etc/<key>`). At runtime the sandbox policy keeps most of the filesystem read-only, so send caches to `/tmp` through the tool's cache variable. If the tool insists on the home directory, do not write it there; tell the user its configuration does not survive on the Kubernetes driver.
 - **Directory ownership**: when the final user must write to a directory you create, create it and its parents explicitly and chown the topmost directory you created, not only the leaf (`install -d -o <uid> -g <gid> <dir>` for each level). A root-owned parent blocks every later tool that needs a sibling directory.
 - **Post-install commands** (for example a tool's `init`) stay inside the single root `RUN`. Create and chown the directories they write first, then run them as the final user with `su -s /bin/sh -c '<cmd> <non-interactive flags>' <final_user.name>`. They must not prompt; pass the tool's non-interactive flags.
@@ -182,16 +183,20 @@ USER sandbox
 
 ### 3d: Store the fragment
 
-Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
+Write the fragment to a private temporary file created with `mktemp`, store it, and delete the file. Run it as one shell command so that `$tmp` survives; it runs unchanged in sh, bash and zsh, in a subshell so that its `exit` and traps never end your own shell, removes the file on every exit path (an interrupt included) and ends with the exit status of `sandcast`. The binary validates the fragment and writes `.sandcast/fragments/<key>.containerfile`:
 
 ```sh
-tmp="$(mktemp)"
-cat > "$tmp" <<'SANDCAST_FRAGMENT'
+(
+tmp="$(mktemp)" || exit
+trap 'rm -f "$tmp"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cat > "$tmp" <<'SANDCAST_FRAGMENT' || exit
 <the fragment>
 SANDCAST_FRAGMENT
-sandcast fragments write <key> --file "$tmp"; status=$?
-rm -f "$tmp"
-[ "$status" -eq 0 ]
+sandcast fragments write <key> --file "$tmp"
+)
 ```
 
 The command also reads the fragment from standard input. If it exits 2, fix what the validation message names and write again. If the message reports a credential-shaped value, remove it; never weaken, split or encode it to get past the check.
@@ -247,13 +252,13 @@ For each component whose fragment you wrote or repaired in this session and that
 
 > The fragment for `<key>` works. Promote it into the project-local recipe `.sandcast/recipes/<key>.yaml`? Future builds then install it deterministically without this skill.
 
-Run the promotion only after the user says yes, and pass the executables the fragment installs:
+Run the promotion only after the user says yes, and pass the executables the fragment installs. Without `--bins`, `sandcast promote` uses the manifest entry's declared `bins`, else the key, so you can leave the flag out when the entry declares them:
 
 ```sh
 sandcast promote <key> --bins <bin1,bin2> --yes
 ```
 
-`--yes` confirms the user's answer you already have; never pass it without that answer. Explain the result: the recipe lives in `.sandcast/recipes/<key>.yaml`, the fragment `.sandcast/fragments/<key>.containerfile` is marked superseded and no longer used, and the next `sandcast plan` resolves the component through the recipe. Suggest committing the recipe, the fragment and `.sandcast/learnings.yaml`.
+`--yes` confirms the user's answer you already have; never pass it without that answer. Explain the result: the recipe lives in `.sandcast/recipes/<key>.yaml`, the fragment `.sandcast/fragments/<key>.containerfile` is marked superseded and no longer used, and the next `sandcast plan` resolves the component through the recipe. When the manifest entry declared `bins`, the binary removed them (the recipe defines the binaries now); this is the one manifest change the binary makes on your behalf, so mention it to the user. Suggest committing the recipe, the fragment and `.sandcast/learnings.yaml`.
 
 Confirm that the recipe path works, because the recipe runs as a script in the recipes section instead of the fragment's `RUN`, and its `ENV` moves to the user section:
 

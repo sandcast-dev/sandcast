@@ -1,0 +1,7 @@
+{
+  "name": "pinned-project",
+  "private": true,
+  "engines": {
+    "node": "^20"
+  }
+}

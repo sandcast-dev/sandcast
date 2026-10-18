@@ -215,6 +215,39 @@ func (l *Lockfile) Version(tool string) string {
 	return entries[0].Version
 }
 
+// Locked returns the exact version the lockfile locks for t on platform (a
+// mise platform name such as linux-arm64). The entry is matched by t's
+// version selector as in Check. An entry of a version-only backend (rust)
+// without platform tables counts for every platform. The second result is
+// false when the tool is not locked, no entry matches the selector, or the
+// entry has no table for platform (R-01).
+func (l *Lockfile) Locked(t Tool, platform string) (string, bool) {
+	if l == nil {
+		return "", false
+	}
+	entry, reason := l.entry(t)
+	if reason != "" || entry.Version == "" {
+		return "", false
+	}
+	if VersionOnlyBackends[entry.Backend] && len(entry.Platforms) == 0 {
+		return entry.Version, true
+	}
+	if _, ok := entry.Platforms[platform]; !ok {
+		return "", false
+	}
+	return entry.Version, true
+}
+
+// HasEntry reports whether the lockfile has an entry matching t's version
+// selector, for any platform.
+func (l *Lockfile) HasEntry(t Tool) bool {
+	if l == nil {
+		return false
+	}
+	_, reason := l.entry(t)
+	return reason == ""
+}
+
 // VersionOnlyBackends are mise backends whose lock entries carry an exact
 // version but no per-platform artifacts because the backend's own installer
 // verifies the download (core:rust installs through rustup, which checks the

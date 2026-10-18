@@ -125,3 +125,35 @@ func TestHarnessListDiscover(t *testing.T) {
 	assert.Contains(t, ta.stdout.String(), "nothing configured")
 	assert.Equal(t, ExitUsage, ta.run("harness", "discover", "vscode"))
 }
+
+func TestComponentsMatchPinnedColumn(t *testing.T) {
+	ta := newTestApp(t)
+	fixture, err := filepath.Abs("../../tests/fixtures/pinned-project")
+	require.NoError(t, err)
+	require.Equal(t, 0, ta.run("components", "match", fixture, "--no-host"), ta.stderr.String())
+	out := ta.stdout.String()
+	assert.Contains(t, out, "PINNED")
+	assert.Regexp(t, `rust\s+project\s+-\s+1\.95\.0\s`, out)
+	assert.Regexp(t, `node\s+project\s+-\s+20\.11\.1\s`, out)
+
+	ta.stdout.Reset()
+	require.Equal(t, 0, ta.run("components", "match", fixture, "--no-host", "--json"))
+	var res capture.Result
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &res))
+	assert.NotNil(t, res.Notes)
+	for _, p := range res.Proposals {
+		if p.Key == "python" {
+			assert.Equal(t, []capture.PinnedVersion{{Value: "3.14.5", File: ".python-version", Kind: capture.PinExact}}, p.PinnedVersions)
+		}
+	}
+}
+
+func TestExtensionDetail(t *testing.T) {
+	assert.Empty(t, extensionDetail(harness.Extension{Name: "x", Source: "owner/repo", Portable: true}))
+	assert.Equal(t, "  (not portable: source under ~/.claude/skills is read on the machine that runs the plan)",
+		extensionDetail(harness.Extension{Source: "~/.claude/skills/x", Reason: "source under ~/.claude/skills is read on the machine that runs the plan"}))
+	assert.Equal(t, "  (from git remote https://github.com/a/b.git, 2 unpushed commit(s), uncommitted changes: true, marketplace name: match)",
+		extensionDetail(harness.Extension{Source: "a/b", Portable: true, Remote: &harness.RemoteInfo{URL: "https://github.com/a/b.git", UnpushedCommits: func() *int { n := 2; return &n }(), UncommittedChanges: true, NameMatch: "match"}}))
+	assert.Equal(t, "  (from git remote https://example.com/a.git, unpushed commits unknown (no remote-tracking ref), uncommitted changes: false, marketplace name: unknown)",
+		extensionDetail(harness.Extension{Source: "https://example.com/a.git", Portable: true, Remote: &harness.RemoteInfo{URL: "https://example.com/a.git", NameMatch: "unknown"}}))
+}

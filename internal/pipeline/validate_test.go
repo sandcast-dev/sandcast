@@ -123,3 +123,44 @@ func TestValidateReferences(t *testing.T) {
 		assert.Contains(t, diags[0].Message, "conflict: binary go is provided by [go othergo]")
 	})
 }
+
+// TestValidateReferencesBins covers FR-018: bins on a shipped key are
+// rejected with the contract's message, bins on an undefined optional key
+// are fine.
+func TestValidateReferencesBins(t *testing.T) {
+	diags := validateProject(t, `schema_version: 1
+name: demo
+base_image: nvidia-community-base
+components:
+  - key: go
+    bins: [go]
+  - key: helix
+    optional: true
+    bins: [hx]
+targets:
+  openshell:
+    image: localhost/demo
+`, map[string]string{})
+	require.Len(t, diags, 1, "%v", diags)
+	assert.Equal(t, "$.components[0].bins", diags[0].Path)
+	assert.Equal(t, "go is defined by the shipped tier; its binaries come from the definition, remove bins", diags[0].Message)
+}
+
+func TestValidateReferencesDeclaredBinsConflict(t *testing.T) {
+	diags := validateProject(t, `schema_version: 1
+name: demo
+base_image: nvidia-community-base
+components:
+  - key: git
+  - key: my-git
+    optional: true
+    bins: [git]
+targets:
+  openshell:
+    image: localhost/demo
+`, map[string]string{})
+	require.Len(t, diags, 1, "%v", diags)
+	assert.Equal(t, "$.components[1].bins[0]", diags[0].Path, "the conflict points at the declared binary")
+	assert.Contains(t, diags[0].Message, "git")
+	assert.Contains(t, diags[0].Message, "my-git")
+}

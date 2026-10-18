@@ -88,6 +88,29 @@ func fromReference(ref, digest string) string {
 	return ref + "@" + digest
 }
 
+// usesMise reports whether the plan installs anything through the 30-mise
+// layer.
+func usesMise(p *plan.Plan) bool {
+	return uniqueFragment(p, plan.SectionMise) != ""
+}
+
+// NeedsSessionEnv reports whether the image carries the session environment
+// script (spec 002 R-04): whenever mise tools are installed (a login shell
+// whose system profile resets PATH needs the shims back, on either target),
+// and for the OpenShell target whenever the components, harnesses or the
+// relocation set image environment variables or the base image has PATH
+// directories beyond the OpenShell default PATH, which an OpenShell session
+// would otherwise lose.
+func NeedsSessionEnv(p *plan.Plan) bool {
+	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path)) > 0))
+}
+
+// CuratedRC is the curated rc file content: CuratedRCPrefix, then the
+// manifest's rc (spec 002 R-06).
+func CuratedRC(p *plan.Plan) string {
+	return CuratedRCPrefix + p.Shell.RC
+}
+
 // ShellContextFile is the build-context path of the curated configuration.
 func ShellContextFile(program string) string {
 	if program == "zsh" {

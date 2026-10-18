@@ -52,6 +52,20 @@ func ShellKind(p *Plan) string {
 	return "sh"
 }
 
+// HasZsh reports whether the image has zsh: in the base image or planned as
+// a component. Such an image gets the global zshenv block even when zsh is
+// not the curated shell, so a zsh the user starts reads its startup files
+// from the ZDOTDIR tree, never from the workspace home (spec 003 FR-002),
+// and never starts its new-user wizard (spec 002).
+func HasZsh(p *Plan) bool {
+	for _, s := range p.ImageFacts.Shells {
+		if path.Base(s) == "zsh" {
+			return true
+		}
+	}
+	return p.Component("zsh") != nil
+}
+
 // RelocationEnv returns the relocation environment variables the image sets so
 // that every process (not only interactive shells) reads baked configuration:
 // ZDOTDIR for zsh plus the per-dotfile variables. The result is sorted by name
@@ -304,6 +318,12 @@ func bakedPaths(p *Plan, policyPaths []string) []bakedPath {
 		shellFiles = append(shellFiles, ShellLoginPath, BashRCPath)
 	default:
 		shellFiles = append(shellFiles, ProfileScriptPath, ShLoginPath)
+	}
+	if ShellKind(p) != "zsh" && HasZsh(p) {
+		// The zshenv block that keeps a zsh the user starts out of the
+		// workspace home (sections.go, zshEnvTemplate).
+		shellFiles = append(shellFiles, ZshEnvPaths...)
+		shellFiles = append(shellFiles, ZDotDir)
 	}
 	if p.Target == manifest.TargetOpenShell {
 		// The shell hooks for shells OpenShell starts directly.

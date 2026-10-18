@@ -30,6 +30,7 @@ The schema is `specs/001-sandcast-standalone-build/contracts/component.schema.ya
 | `profiles` | no | OpenShell provider profile ids the component needs. |
 | `targets` | no | `openshell`, `container`, or both (the default when omitted). |
 | `promoted_from` | no | Set by the promote step on recipes. Never set it by hand. |
+| `emulation_unsafe` | no | `true` when the tool is known to fail under user-mode emulation (QEMU). `sandcast plan` and `sandcast build` then print an `emulation` notice when the build platform's architecture differs from the container engine host's. The shipped `rust` component sets it. See `docs/guides/cross-arch.md`. |
 
 ### match
 

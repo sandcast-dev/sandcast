@@ -34,6 +34,9 @@ func shellKindPlan(t *testing.T, kind string) *plan.Plan {
 	switch kind {
 	case "zsh":
 		p.Shell = plan.Shell{Program: "zsh", RCPath: plan.ZshRCPath, RC: "alias ll='ls -l'\n"}
+		// As plan.Build leaves it: the relocation env is image env, which
+		// makes the plan carry the session environment script.
+		p.Image.Env = []plan.EnvVar{{Name: "ZDOTDIR", Value: plan.ZDotDir}}
 	case "bash":
 		p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
 	default:
@@ -54,7 +57,10 @@ func TestShellSectionZshRelocates(t *testing.T) {
 	// never read /etc/zshenv; other builds read /etc/zshenv. Both are written
 	// so ZDOTDIR is set even when a runtime clears the image ENV (env -i).
 	assert.Contains(t, got, "for f in /etc/zsh/zshenv /etc/zshenv; do")
-	assert.Contains(t, got, "zshenv_line='export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1")
+	// The zshenv block: the export line, the session environment and the
+	// disabled new-user wizard, between markers so a rebuild replaces it.
+	assert.Contains(t, got, shell.ZshEnvBegin+"\nexport ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh\n[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\nzsh-newuser-install() { :; }\n"+shell.ZshEnvEnd+"\n")
+	assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n")
 	assert.Contains(t, got, "install -d /opt/sandcast/zdotdir /etc/zsh")
 	assert.Contains(t, got, "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc")
 	assert.Contains(t, got, `CMD ["/bin/zsh", "-l"]`)
@@ -187,16 +193,25 @@ func TestShellSectionBakesSpawnHooks(t *testing.T) {
 	}
 	zsh, err := shellSection(shellKindPlan(t, "zsh"))
 	require.NoError(t, err)
-	assert.Contains(t, zsh, "export ZDOTDIR=/opt/sandcast/zdotdir\n", "the hooks restore the relocation variables")
+	// The relocation variables reach the hooks through the session
+	// environment script, which both hooks source before they replace the
+	// shell (and the zshenv block sources too): one export list.
+	envLine := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"
+	assert.Equal(t, 3, strings.Count(zsh, envLine), "the zshenv block, the login hook and the bashrc hook source the session environment")
+	assert.NotContains(t, zsh, "export ZDOTDIR=/opt/sandcast/zdotdir\n", "no second export list in the hooks")
 	assert.Contains(t, zsh, "exec /bin/zsh -l -i\n", "an interactive login bash becomes a login zsh")
 	// The curated zsh owns SHELL, so a $SHELL spawner (tmux, an editor's
 	// terminal) starts zsh and not the nested bare bash: both hooks and the
 	// global zshenv export it; a bash image leaves SHELL alone.
 	assert.Equal(t, 2, strings.Count(zsh, "export SHELL=/bin/zsh\n"), "the login hook and the bashrc hook export SHELL")
-	assert.Contains(t, zsh, "SANDCAST_SESSION=1 SHELL=/bin/zsh'", "the global zshenv exports SHELL")
+	assert.Contains(t, zsh, "SANDCAST_SESSION=1 SHELL=/bin/zsh\n", "the global zshenv exports SHELL")
+	// The opt-out of the switch to zsh keeps bash without startup files.
+	assert.Equal(t, 2, strings.Count(zsh, `if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then`+"\n"), "both hooks honor the opt-out")
 	bash, err := shellSection(shellKindPlan(t, "bash"))
 	require.NoError(t, err)
 	assert.NotContains(t, bash, "export SHELL=")
+	assert.NotContains(t, bash, "SANDCAST_NO_SHELL_SWITCH", "a bash image has nothing to switch")
+	assert.NotContains(t, bash, "sandcast-env.sh", "no session environment without mise, image env or extra PATH directories")
 
 	p := shellKindPlan(t, "zsh")
 	p.Target = "container"
@@ -235,8 +250,8 @@ func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 	sysrc := filepath.Join(dir, "bash.bashrc")
 	hook := filepath.Join(dir, "hook")
 	launcher := shell.HookTarget{Program: plan.ShellLoginPath}
-	oldBlock := shell.BashrcHook(nil, shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher})
-	newBlock := shell.BashrcHook([]shell.Export{{Name: "ZDOTDIR", Value: plan.ZDotDir}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash})
+	oldBlock := shell.BashrcHook(nil, shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher}, "")
+	newBlock := shell.BashrcHook([]shell.Export{{Name: "ZDOTDIR", Value: plan.ZDotDir}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}, "")
 	distro := "# System-wide .bashrc file for interactive bash(1) shells.\n[ -z \"$PS1\" ] && return\nshopt -s checkwinsize\n"
 	vars := map[string]string{"sysrc": sysrc, "hook": hook, "hook_begin": shell.HookBegin, "hook_end": shell.HookEnd}
 	require.NoError(t, os.WriteFile(hook, []byte(newBlock), 0o644))
@@ -271,35 +286,42 @@ func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 	assert.NoFileExists(t, sysrc+".sandcast.rest")
 }
 
-// TestZshEnvInstallReplacesPreviousLine runs the zshenv install snippet on a
-// file that carries the export line of a previous sandcast build: the line
-// is replaced by the current one, other content is kept, the build log says
-// so, a second run is idempotent, and a missing file is created.
-func TestZshEnvInstallReplacesPreviousLine(t *testing.T) {
-	f := filepath.Join(t.TempDir(), "zshenv")
-	// The line of a build before SHELL was exported, and the current one.
+// TestZshEnvInstallReplacesPreviousBlock runs the zshenv install snippet on
+// a file that carries the block of a previous sandcast build, or the bare
+// export line of a build before the block existed: both are replaced by the
+// current block, other content is kept, the build log says so, a second run
+// is idempotent, and a missing file is created.
+func TestZshEnvInstallReplacesPreviousBlock(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "zshenv")
+	blockFile := filepath.Join(dir, "block")
 	oldLine := "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"
-	newLine := shell.ZshEnvExport(plan.ZDotDir)
+	oldBlock := shell.ZshEnvBlock(plan.ZDotDir, "")
+	newBlock := shell.ZshEnvBlock(plan.ZDotDir, plan.SessionEnvPath)
+	require.NoError(t, os.WriteFile(blockFile, []byte(newBlock), 0o644))
 	distro := "# /etc/zsh/zshenv: system-wide .zshenv file for zsh(1).\nskip_global_compinit=1\n"
-	vars := map[string]string{"f": f, "zshenv_line": newLine}
+	vars := map[string]string{"f": f, "zshenv_block": blockFile, "zshenv_begin": shell.ZshEnvBegin, "zshenv_end": shell.ZshEnvEnd}
 
-	require.NoError(t, os.WriteFile(f, []byte(distro+oldLine), 0o644))
-	stderr := runInstallScript(t, zshEnvInstallScript, vars)
-	got, err := os.ReadFile(f)
-	require.NoError(t, err)
-	assert.Equal(t, distro+newLine+"\n", string(got), "the previous line is replaced")
-	assert.Contains(t, stderr, "replacing the ZDOTDIR export of a previous sandcast build in "+f)
+	for name, previous := range map[string]string{"block": oldBlock, "bare line": oldLine} {
+		require.NoError(t, os.WriteFile(f, []byte(distro+previous), 0o644))
+		stderr := runInstallScript(t, zshEnvInstallScript, vars)
+		got, err := os.ReadFile(f)
+		require.NoError(t, err)
+		assert.Equal(t, distro+newBlock, string(got), "%s: the previous block is replaced", name)
+		assert.Contains(t, stderr, "replacing the zshenv block of a previous sandcast build in "+f, name)
+	}
 
 	runInstallScript(t, zshEnvInstallScript, vars)
-	got, err = os.ReadFile(f)
+	got, err := os.ReadFile(f)
 	require.NoError(t, err)
-	assert.Equal(t, distro+newLine+"\n", string(got), "a second install is idempotent")
+	assert.Equal(t, distro+newBlock, string(got), "a second install is idempotent")
+	assert.Equal(t, 1, strings.Count(string(got), shell.ZshEnvBegin))
 
 	require.NoError(t, os.Remove(f))
-	stderr = runInstallScript(t, zshEnvInstallScript, vars)
+	stderr := runInstallScript(t, zshEnvInstallScript, vars)
 	got, err = os.ReadFile(f)
 	require.NoError(t, err)
-	assert.Equal(t, newLine+"\n", string(got), "a missing file is created")
+	assert.Equal(t, newBlock, string(got), "a missing file is created")
 	assert.Empty(t, stderr)
 }
 
@@ -337,15 +359,21 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 	for _, d := range p.Dotfiles {
 		assert.False(t, plan.UnderOvermount(plan.DefaultOvermountHome, d.RelocatedTo))
 	}
-	// The per-dotfile relocation variable is restored by both hooks (the
-	// login hook and the bashrc hook) after the runtime cleared the image
-	// ENV, for the zsh kind and the bash kind alike.
-	assert.Equal(t, 2, strings.Count(got, "export STARSHIP_CONFIG=/etc/xdg/starship.toml\n"), "zsh: both hooks export the dotfile variable")
-	b := shellKindPlan(t, "bash")
-	b.Dotfiles = p.Dotfiles
-	got, err = Assemble(b)
-	require.NoError(t, err)
-	assert.Equal(t, 2, strings.Count(got, "export STARSHIP_CONFIG=/etc/xdg/starship.toml\n"), "bash: both hooks export the dotfile variable")
+	// The per-dotfile relocation variable is restored after the runtime
+	// cleared the image ENV through the session environment script, which
+	// carries the image env (plan.Build merges the relocation env into it)
+	// and which both hooks source, for the zsh kind and the bash kind alike.
+	for _, kind := range []string{"zsh", "bash"} {
+		k := shellKindPlan(t, kind)
+		k.Dotfiles = p.Dotfiles
+		k.Image.Env = append(k.Image.Env, plan.EnvVar{Name: "STARSHIP_CONFIG", Value: plan.XDGConfigDir + "/starship.toml"})
+		got, err = Assemble(k)
+		require.NoError(t, err)
+		assert.Contains(t, plan.SessionEnvScriptFor(k), "export STARSHIP_CONFIG='/etc/xdg/starship.toml'\n", kind)
+		assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n", kind)
+		assert.GreaterOrEqual(t, strings.Count(got, "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"), 2, "%s: both hooks source the session environment", kind)
+		assert.NotContains(t, got, "export STARSHIP_CONFIG=", kind)
+	}
 }
 
 // TestDotfileContextFileInjective checks two distinct targets never share a

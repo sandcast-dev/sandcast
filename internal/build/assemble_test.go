@@ -1,6 +1,7 @@
 package build
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/testutil"
 )
 
@@ -148,4 +150,122 @@ func TestFromReferenceReplacesPinnedDigest(t *testing.T) {
 	assert.Equal(t, "ghcr.io/x/y:1@"+testDigest, fromReference("ghcr.io/x/y:1", testDigest))
 	assert.Equal(t, "ghcr.io/x/y:1@"+testDigest, fromReference("ghcr.io/x/y:1@sha256:"+strings.Repeat("a", 64), testDigest))
 	assert.Equal(t, "localhost:5000/y@"+testDigest, fromReference("localhost:5000/y", testDigest))
+}
+
+// TestShellSection covers the 60-shell variants of the merged shell model
+// (spec 002 contracts/image-shell.md reconciled with spec 003): the session
+// environment script and the places that source it, the curated rc
+// relocated out of the home, the zshenv block, the opt-out of the switch to
+// zsh and the final user's login shell.
+func TestShellSection(t *testing.T) {
+	envLine := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh"
+	noSwitch := `if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then`
+	tests := []struct {
+		name    string
+		mutate  func(p *plan.Plan)
+		present []string
+		absent  []string
+		golden  string
+		order   []string
+	}{
+		{
+			name: "openshell zsh with rc and created user",
+			present: []string{"COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc",
+				shell.ZshEnvBegin, "zsh-newuser-install() { :; }", envLine, noSwitch, "usermod -s /bin/zsh sandbox", "exec /bin/zsh -i\n", "exec /bin/zsh -l -i\n"},
+			absent: []string{"/etc/zsh/zshrc.d", "exec /bin/zsh -l\n"},
+		},
+		{
+			name:    "openshell zsh without rc and kept user",
+			mutate:  func(p *plan.Plan) { p.Shell.RC, p.Shell.RCPath = "", ""; p.FinalUser.Created = false },
+			present: []string{"usermod -s /bin/zsh sandbox", `sed -i 's|^\(sandbox:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*$|\1/bin/zsh|' /etc/passwd`, shell.ZshEnvBegin, envLine},
+			absent:  []string{"COPY shell/sandcast.zsh"},
+			golden:  "testdata/shell-zsh-kept-user.golden",
+		},
+		{
+			name: "openshell without mise but with image env ships the env script",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "none"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+			},
+			present: []string{"COPY shell/sandcast-env.sh", "cat > /opt/sandcast/shell-login", envLine},
+			absent:  []string{noSwitch, "zshenv", "/bin/zsh"},
+		},
+		{
+			name: "openshell bash program: the launcher, nothing to switch",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
+			},
+			present: []string{"COPY shell/sandcast.sh /opt/sandcast/bashrc", envLine, "exec /opt/sandcast/shell-login -i\n"},
+			absent:  []string{noSwitch, "zshenv", "/bin/zsh"},
+			golden:  "testdata/shell-bash.golden",
+			// The launcher sources the session environment before it starts
+			// bash, so a non-interactive run has it too.
+			order: []string{"cat > /opt/sandcast/shell-login", envLine, "exec bash --noprofile --rcfile /opt/sandcast/bashrc"},
+		},
+		{
+			name: "zsh in the base image gets the zshenv block",
+			mutate: func(p *plan.Plan) {
+				p.Shell = plan.Shell{Program: "none"}
+				p.ImageFacts.Shells = []string{"/bin/bash", "/usr/bin/zsh"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
+			},
+			present: []string{"zsh-newuser-install", shell.ZshEnvBegin, "export ZDOTDIR=/opt/sandcast/zdotdir", "cat > /opt/sandcast/shell-login"},
+			absent:  []string{noSwitch, "exec /bin/zsh"},
+		},
+		{
+			name: "container target gets no hooks and keeps the user",
+			mutate: func(p *plan.Plan) {
+				p.Target = "container"
+				p.Policy = ""
+				p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
+			},
+			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", shell.ZshEnvBegin},
+			absent:  []string{"/etc/bash.bashrc", "zz-sandcast-shell.sh", "usermod"},
+		},
+		{
+			name: "container bash without mise: the launcher, no session script",
+			mutate: func(p *plan.Plan) {
+				p.Target = "container"
+				p.Policy = ""
+				p.Shell = plan.Shell{Program: "none"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+			},
+			present: []string{"# 60-shell: curated bash configuration", "cat > /opt/sandcast/shell-login"},
+			absent:  []string{"sandcast-env.sh", "zshenv"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testPlan(t)
+			if tt.mutate != nil {
+				tt.mutate(p)
+			}
+			got, err := Assemble(p)
+			require.NoError(t, err)
+			for _, s := range tt.present {
+				assert.Contains(t, got, s)
+			}
+			for _, s := range tt.absent {
+				assert.NotContains(t, got, s)
+			}
+			last := -1
+			for _, o := range tt.order {
+				i := strings.Index(got, o)
+				require.GreaterOrEqual(t, i, 0, o)
+				assert.Greater(t, i, last, "order: %s", o)
+				last = i
+			}
+			if tt.golden != "" {
+				section, err := shellSection(p)
+				require.NoError(t, err)
+				testutil.Golden(t, tt.golden, []byte(section))
+			}
+		})
+	}
+}
+
+func TestCuratedRC(t *testing.T) {
+	p := testPlan(t)
+	assert.Equal(t, "_sandcast_path 2>/dev/null || true\nSANDCAST_RC_LOADED=1\nautoload -Uz compinit && compinit -C\n", CuratedRC(p))
 }

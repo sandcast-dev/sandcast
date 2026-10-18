@@ -123,6 +123,9 @@ type fakeGateway struct {
 	// failAfter makes every import after the first failAfter imports fail
 	// (0: never).
 	failAfter int
+	// gateways answers "gateway list -o json"; empty fails the call like a
+	// CLI without gateway metadata.
+	gateways string
 }
 
 func (g *fakeGateway) Run(_ context.Context, bin string, argv []string) ([]byte, []byte, error) {
@@ -135,6 +138,8 @@ func (g *fakeGateway) Run(_ context.Context, bin string, argv []string) ([]byte,
 	switch {
 	case joined == "--version":
 		return []byte("openshell " + g.version + "\n"), nil, nil
+	case joined == "gateway list -o json" && g.gateways != "":
+		return []byte(g.gateways), nil, nil
 	case strings.HasPrefix(joined, "profile list"):
 		var items []string
 		for _, id := range g.existing {
@@ -200,6 +205,9 @@ type testApp struct {
 
 func newTestApp(t *testing.T) *testApp {
 	t.Helper()
+	// The gateway lookup reads these; a developer's shell must not decide.
+	t.Setenv("OPENSHELL_GATEWAY", "")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 	t.Setenv("SANDCAST_CACHE_DIR", t.TempDir())
 	t.Setenv("SANDCAST_CONFIG_DIR", t.TempDir())
 	ta := &testApp{eng: newScriptedEngine(), gw: &fakeGateway{version: "0.1.3"}, dir: t.TempDir(), home: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}

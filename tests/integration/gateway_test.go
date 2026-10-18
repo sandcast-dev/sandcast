@@ -227,3 +227,53 @@ targets:
 	assert.Equal(t, 5, ee.ExitCode(), "the exit status survives the pty login exec")
 	assert.Empty(t, pwned(), "the pty login exec runs no workspace startup or logout file")
 }
+
+// TestGatewaySession covers FR-025 and SC-003 against a real v0.1.3
+// gateway: a sandbox started from the zsh session image resolves every
+// component binary through openshell sandbox exec (bash -lc), and an
+// interactive terminal session switches to zsh, resolves the mise tools and
+// prints no error lines.
+func TestGatewaySession(t *testing.T) {
+	env := startGateway(t)
+	img := "localhost/sandcast-it-gateway-session:latest"
+	dir := project(t, sessionManifest("sc-gw-session", "localhost/sandcast-it-gateway-session"))
+	removeImages(t, "podman", img)
+	require.Zero(t, sandcast(t, dir, nil, "lock", "--platform", hostPlatform()).code)
+	require.Zero(t, sandcast(t, dir, nil, "build", "--verify").code)
+
+	name := "sc-gw-session"
+	_, err := openshell(t, env, "sandbox", "create", "--name", name, "--detach", "--no-auto-providers", "--from", img)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = openshell(t, env, "sandbox", "delete", name) })
+
+	out, err := openshell(t, env, "sandbox", "exec", "-n", name, "--no-tty", "--", "command", "-v", "starship")
+	require.NoError(t, err)
+	assert.Contains(t, out, "/opt/mise/shims/starship")
+
+	// 100% of the component binaries resolve in an exec session.
+	bins := planBins(t, dir, "openshell")
+	var script strings.Builder
+	for _, b := range bins {
+		script.WriteString("command -v " + b + " >/dev/null || echo MISSING " + b + "\n")
+	}
+	script.WriteString("echo RESOLVED\n")
+	out, err = openshell(t, env, "sandbox", "exec", "-n", name, "--no-tty", "--", "sh", "-c", script.String())
+	require.NoError(t, err)
+	assert.Contains(t, out, "RESOLVED")
+	assert.NotContains(t, out, "MISSING", "every component binary resolves in the session")
+
+	// An interactive terminal session: OpenShell starts bash -i, the hook
+	// switches to zsh, and the curated rc loads without error lines.
+	cmd := exec.Command("openshell", "sandbox", "exec", "--tty", "-n", name, "--", "bash", "-i")
+	cmd.Env = append(cmd.Environ(), env...)
+	cmd.Stdin = strings.NewReader("echo ZSH=$ZSH_VERSION; command -v starship; exit\n")
+	raw, err := cmd.CombinedOutput()
+	t.Logf("interactive session:\n%s", raw)
+	require.NoError(t, err)
+	session := string(raw)
+	assert.Regexp(t, `ZSH=5\.`, session, "the interactive session runs zsh")
+	assert.Contains(t, session, "/opt/mise/shims/starship")
+	for _, bad := range []string{"command not found", "not found:", "error", "zsh-newuser-install", "Z Shell configuration function"} {
+		assert.NotContains(t, strings.ToLower(session), strings.ToLower(bad), "no error lines on session start")
+	}
+}

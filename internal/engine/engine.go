@@ -99,8 +99,30 @@ type Engine interface {
 	ImageExists(ctx context.Context, ref string) (bool, error)
 	// Labels returns the image labels of ref.
 	Labels(ctx context.Context, ref string) (map[string]string, error)
-	// Push pushes ref to its registry.
-	Push(ctx context.Context, ref string) error
+	// Push pushes ref to its registry, writes the engine output to log (may
+	// be nil) and returns the registry digest of the pushed manifest, ""
+	// when the engine did not report one (R-11).
+	Push(ctx context.Context, ref string, log io.Writer) (digest string, err error)
+	// HostArch returns the architecture of the machine the engine runs
+	// containers on, in GOARCH form (amd64, arm64). For a remote connection
+	// (CONTAINER_CONNECTION, CONTAINER_HOST, DOCKER_HOST) that is the remote
+	// host (R-13).
+	HostArch(ctx context.Context) (string, error)
+}
+
+// NormalizeArch maps the architecture names engines report (x86_64,
+// aarch64) to GOARCH form.
+func NormalizeArch(arch string) string {
+	switch a := strings.TrimSpace(arch); a {
+	case "x86_64", "x86-64":
+		return "amd64"
+	case "aarch64":
+		return "arm64"
+	case "armv7l", "armhf":
+		return "arm"
+	default:
+		return a
+	}
 }
 
 // WithStderr adds the trimmed stderr of a failed engine command to err,

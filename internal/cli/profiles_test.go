@@ -96,10 +96,13 @@ func TestProfilesImportGatewayAndWorkspacePassThrough(t *testing.T) {
 	for _, c := range ta.gw.calls[1:] { // the first call is the version check
 		require.GreaterOrEqual(t, len(c), 5, strings.Join(c, " "))
 		assert.Equal(t, []string{"--gateway", "test"}, c[1:3], strings.Join(c, " "))
-		assert.Contains(t, strings.Join(c, " "), "--workspace team", strings.Join(c, " "))
 		ops[c[3]+" "+c[4]]++
+		if c[3] == "gateway" {
+			continue // the active gateway lookup has no workspace
+		}
+		assert.Contains(t, strings.Join(c, " "), "--workspace team", strings.Join(c, " "))
 	}
-	assert.Equal(t, map[string]int{"profile list": 1, "profile export": 1, "profile update": 1, "profile import": 2}, ops)
+	assert.Equal(t, map[string]int{"gateway list": 1, "profile list": 1, "profile export": 1, "profile update": 1, "profile import": 2}, ops)
 }
 
 func TestProfilesImportPlatformScopeUpdate(t *testing.T) {
@@ -273,4 +276,30 @@ func TestProfilesExportRefusesImageProfileWithCredential(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(ta.dir, ".sandcast", "build", "openshell", "profiles", "github.yaml"))
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "the build directory is left alone")
+}
+
+// TestProfilesImportGatewayWarning covers FR-014 for profiles import: the
+// adapted index names localhost/demo, the active gateway is remote, so the
+// report warns and the import still succeeds; a failed lookup warns not.
+func TestProfilesImportGatewayWarning(t *testing.T) {
+	ta := builtProject(t)
+	ta.gw.gateways = `[{"active": true, "name": "cluster", "type": "remote", "is_remote": true}]`
+	require.Equal(t, 0, ta.run("profiles", "import", "--json"), ta.stderr.String())
+	var rep pipeline.ImportReport
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+	require.Len(t, rep.Warnings, 1)
+	assert.Contains(t, rep.Warnings[0], "gateway: image: the active gateway cluster is remote and cannot pull localhost/demo:latest")
+	assert.Contains(t, rep.Warnings[0], "targets.openshell.image")
+	assert.Contains(t, rep.Warnings[0], "targets.openshell.push")
+	assert.NotEmpty(t, rep.Imported)
+
+	ta = builtProject(t)
+	ta.gw.gateways = `[{"active": true, "name": "cluster", "type": "remote", "is_remote": true}]`
+	require.Equal(t, 0, ta.run("profiles", "import", "--dry-run"), ta.stderr.String())
+	assert.Contains(t, ta.stdout.String(), "warning: gateway: image:")
+
+	ta = builtProject(t)
+	require.Equal(t, 0, ta.run("profiles", "import", "--json"), ta.stderr.String())
+	require.NoError(t, json.Unmarshal(ta.stdout.Bytes(), &rep))
+	assert.Empty(t, rep.Warnings, "a failed gateway lookup yields no warning")
 }

@@ -101,7 +101,7 @@ report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; r
 rm -f /tmp/pwned-*
 $E /bin/bash -c '. /sandbox/.bashrc'
 report control
-printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
 report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
 $E /bin/bash -lc 'exit 3'; echo "OUT lc rc=$?"
@@ -114,8 +114,12 @@ $E /tmp/le.sh | sed 's/^/OUT le-script /'; $E /tmp/le.sh; echo "OUT le-script rc
 report options
 $E /bin/bash -c 'echo C-OK' | sed 's/^/OUT c /'
 report c
-printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
+printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"; exit\n' | script -qec "$E /bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-l /'
 report pty-l
+$E /bin/bash -lc 'echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"' | sed 's/^/OUT lc-env /'
+report lc-env
+printf 'echo "NOSWITCH BASH=[${BASH_VERSION%%.*}] ZSH=[${ZSH_VERSION-}] MISE=[$MISE_DATA_DIR]"; alias myll; exit\n' | script -qec "$E SANDCAST_NO_SHELL_SWITCH=1 /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT noswitch /'
+report noswitch
 printf 'echo FROM-STDIN; exit 4\n' | $E /bin/bash -l | sed 's/^/OUT pipe-l /'
 printf 'exit 4\n' | $E /bin/bash -l; echo "OUT pipe-l rc=$?"
 report pipe-l
@@ -180,7 +184,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
-	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
+	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
@@ -201,6 +205,24 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	if zdotdir != "" {
 		has("pty-i", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
 		has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
+	}
+	// The session environment (spec 002) reaches every session the hooks
+	// replace: the MISE_* settings are set, the shims come first on PATH and
+	// the base image's PATH directories beyond the OpenShell default follow
+	// (the community base image's PATH adds /sandbox/.venv/bin), in the
+	// terminal session, the default agent's login shell and the exec session
+	// alike.
+	for _, c := range []string{"pty-i", "pty-l", "lc-env"} {
+		has(c, "SESSION-ENV MISE=[/opt/mise] PATH=[/opt/mise/shims:/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin]")
+	}
+	// The opt-out of the switch to zsh: the session stays bash, without any
+	// startup file (no curated rc, no workspace rc) but with the session
+	// environment. A bash image has nothing to switch and keeps its launcher.
+	has("noswitch", "NOSWITCH BASH=[5] ZSH=[] MISE=[/opt/mise]")
+	if zdotdir != "" {
+		has("noswitch", "myll: not found")
+	} else {
+		has("noswitch", alias)
 	}
 	has("lc", "LC 0=zero @=a b")
 	has("lc", "rc=3")

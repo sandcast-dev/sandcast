@@ -1,6 +1,7 @@
 package build
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -18,6 +19,7 @@ import (
 	"github.com/rhuss/sandcast/internal/fsutil"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/profile"
+	"github.com/rhuss/sandcast/internal/redact"
 	"github.com/rhuss/sandcast/internal/verify"
 	"github.com/rhuss/sandcast/internal/version"
 )
@@ -90,6 +92,11 @@ type Result struct {
 	Resolutions   []Resolution           `json:"resolutions"`
 	Profiles      *profile.AdaptedSet    `json:"-"`
 	Flagged       []profile.IndexProfile `json:"flagged"`
+	// Pushed is true once the push of Image succeeded.
+	Pushed bool `json:"pushed"`
+	// Digest is the registry digest of the pushed manifest, when the engine
+	// reported one.
+	Digest string `json:"digest,omitempty"`
 }
 
 // Ref returns name:tag.
@@ -280,9 +287,21 @@ func Run(ctx context.Context, o Options) (*Result, error) {
 		return res, err
 	}
 	if o.Push {
-		if err := o.Engine.Push(ctx, res.Image); err != nil {
-			return res, fmt.Errorf("push %s: %w", res.Image, err)
+		// The push output joins build.log after the credential scan, so it
+		// passes through the same replacement first.
+		var out bytes.Buffer
+		digest, err := o.Engine.Push(ctx, res.Image, &out)
+		text, _ := redact.Replace(out.String())
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
 		}
+		_, _ = fmt.Fprintf(log, "### sandcast push: %s\n%s", res.Image, text)
+		_ = logFile.Sync()
+		if err != nil {
+			msg, _ := redact.Replace(err.Error())
+			return res, fmt.Errorf("push %s: %s", res.Image, msg)
+		}
+		res.Pushed, res.Digest = true, digest
 	}
 	return res, nil
 }
@@ -415,8 +434,9 @@ func withMCPProfiles(p *plan.Plan, all profile.Set, res []Resolution) (profile.S
 	return out, binaries, nil
 }
 
-// writeContext writes the Containerfile, the curated shell configuration
-// and the harness files into the build context.
+// writeContext writes the Containerfile, the curated shell configuration,
+// the session environment script and the harness files into the build
+// context.
 func writeContext(dir string, p *plan.Plan, containerfile string) error {
 	if err := fsutil.AtomicWriteFile(filepath.Join(dir, ContainerfileName), []byte(containerfile), 0o644); err != nil {
 		return err
@@ -427,7 +447,13 @@ func writeContext(dir string, p *plan.Plan, containerfile string) error {
 	}
 	if p.Shell.RCPath != "" {
 		file := filepath.Join(dir, filepath.FromSlash(ShellContextFile(p.Shell.Program)))
-		if err := fsutil.AtomicWriteFile(file, []byte(p.Shell.RC), 0o644); err != nil {
+		if err := fsutil.AtomicWriteFile(file, []byte(CuratedRC(p)), 0o644); err != nil {
+			return err
+		}
+	}
+	if NeedsSessionEnv(p) {
+		file := filepath.Join(dir, filepath.FromSlash(SessionEnvContextFile))
+		if err := fsutil.AtomicWriteFile(file, []byte(plan.SessionEnvScriptFor(p)), 0o644); err != nil {
 			return err
 		}
 	}

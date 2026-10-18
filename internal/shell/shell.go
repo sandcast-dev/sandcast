@@ -47,13 +47,12 @@ func SafeAbsPath(p string) bool {
 // installs the distribution package, which puts it there.
 const ZshProgram = "/bin/zsh"
 
-// ZshEnvExport returns the single line sandcast adds to the global zshenv
-// (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv elsewhere) to relocate
-// zsh's startup files out of the overmounted home. zsh reads its global zshenv
-// first and unconditionally, before any $HOME file, so setting ZDOTDIR there
-// means zsh never sources a workspace $HOME/.zshrc, even when the image ENV
-// was cleared (spec 003 research R1, FR-002). The caller quotes the line for
-// the Containerfile.
+// ZshEnvExport returns the export line of the global zshenv block
+// (ZshEnvBlock) that relocates zsh's startup files out of the overmounted
+// home. zsh reads its global zshenv first and unconditionally, before any
+// $HOME file, so setting ZDOTDIR there means zsh never sources a workspace
+// $HOME/.zshrc, even when the image ENV was cleared (spec 003 research R1,
+// FR-002).
 //
 // The line also exports SessionVar, so a bash the user starts from a curated
 // zsh session is recognized as nested by the bashrc hook (see BashrcHook),
@@ -63,6 +62,28 @@ const ZshProgram = "/bin/zsh"
 // The curated zsh owns SHELL instead.
 func ZshEnvExport(zdotdir string) string {
 	return "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1 SHELL=" + ZshProgram
+}
+
+// ZshEnvBegin and ZshEnvEnd delimit the block sandcast writes to the global
+// zshenv files (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv
+// elsewhere), so a build on an image that already carries one replaces it.
+const (
+	ZshEnvBegin = "# >>> sandcast zshenv >>>"
+	ZshEnvEnd   = "# <<< sandcast zshenv <<<"
+)
+
+// ZshEnvBlock returns the block sandcast appends to the global zshenv: the
+// ZshEnvExport line, the session environment (spec 002: every zsh gets the
+// MISE_* settings, the component environment and the shims first on PATH,
+// also when the runtime cleared the environment; sessionEnv is the script
+// path, "" for none) and a no-op zsh-newuser-install, so zsh never starts
+// its new-user wizard in a home without .zshrc (an empty workspace volume).
+func ZshEnvBlock(zdotdir, sessionEnv string) string {
+	return ZshEnvBegin + "\n" +
+		ZshEnvExport(zdotdir) + "\n" +
+		SessionEnvSource(sessionEnv) +
+		"zsh-newuser-install() { :; }\n" +
+		ZshEnvEnd + "\n"
 }
 
 // LoginLauncher returns the /opt/sandcast/shell-login script: a POSIX sh
@@ -89,16 +110,38 @@ func ZshEnvExport(zdotdir string) string {
 // exec chain from its command that ends in an interactive bash keeps the pid,
 // so that bash would be waved through to the workspace ~/.bashrc. The
 // launcher also exports SessionVar (see BashrcHook).
-func LoginLauncher(rcfile string) string {
+//
+// sessionEnv names the session environment script (spec 002
+// /etc/profile.d/sandcast-env.sh); the launcher sources it first, so a
+// bash it starts for a caller with a cleared environment (su -, a $SHELL
+// -c command) carries the MISE_* settings, the component environment and
+// the shims first on PATH whether or not that bash reads the system
+// bashrc. Empty means none.
+func LoginLauncher(rcfile, sessionEnv string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: bash under the OpenShell home overmount must never\n" +
 		"# read a startup file from the workspace home. Launch bash with no profile\n" +
 		"# files and the baked rcfile in place of the home .bashrc.\n" +
+		SessionEnvSource(sessionEnv) +
 		SessionVar + "=1\n" +
 		"export " + SessionVar + "\n" +
 		shOptionFilter +
 		guardExport +
 		"exec bash --noprofile --rcfile " + QuoteIfNeeded(rcfile) + ` "$@"` + "\n"
+}
+
+// SessionEnvSource returns the line that sources the session environment
+// script at path when it is readable, or "" for an empty path. The script
+// is POSIX sh and idempotent, so every entry point sources it: the
+// launchers and the hooks before they replace the shell, and the global
+// zshenv. It comes before anything that sets _sandcast_ variables, because
+// the script's bash part uses and unsets _sandcast_i and _sandcast_k.
+func SessionEnvSource(path string) string {
+	if path == "" {
+		return ""
+	}
+	p := QuoteIfNeeded(path)
+	return "[ -r " + p + " ] && . " + p + "\n"
 }
 
 // guardExport is the launcher block that exports GuardVar for an interactive
@@ -127,13 +170,15 @@ fi
 // arguments (for example a -c command), without -l and --login: a caller
 // that passes them (an editor's environment probe, su -l, a tmux
 // default-command) would otherwise make /bin/sh a login shell that reads the
-// workspace .profile. See shOptionFilter.
-func ShLoginLauncher(profile string) string {
+// workspace .profile. See shOptionFilter. sessionEnv is the session
+// environment script, sourced first as in LoginLauncher.
+func ShLoginLauncher(profile, sessionEnv string) string {
 	return "#!/bin/sh\n" +
 		"# Written by sandcast: a login shell under the OpenShell home overmount\n" +
 		"# would read a profile file from the workspace home. Point $ENV at the\n" +
 		"# baked profile and exec a non-login shell so that workspace file is\n" +
 		"# never sourced.\n" +
+		SessionEnvSource(sessionEnv) +
 		"ENV=" + QuoteIfNeeded(profile) + "\n" +
 		SessionVar + "=1\n" +
 		"export ENV " + SessionVar + "\n" +

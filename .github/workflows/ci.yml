@@ -24,11 +24,24 @@ jobs:
         with:
           version: v2.14.0
           install-only: true
+      # The skill snippet test runs every snippet under sh, bash and zsh and
+      # fails when a shell is missing.
+      # The verify session tests also run zsh -il on the host. Ubuntu's
+      # /etc/zsh/zshrc runs compinit, which aborts without a terminal when
+      # compaudit finds group or world writable completion directories.
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y zsh
+          zsh -fc 'autoload -Uz compaudit; compaudit' 2>/dev/null | xargs -r sudo chmod g-w,o-w
+          zsh -fc 'autoload -Uz compaudit; compaudit' && echo "compaudit clean"
       - run: make verify
       - run: make build
 
   integration:
-    runs-on: ubuntu-latest
+    # sandcast needs podman 5 (heredoc RUN instructions); Ubuntu 24.04 ships
+    # podman 4.9, Ubuntu 26.04 ships podman 5.
+    runs-on: ubuntu-26.04
     needs: verify
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +53,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman
           podman version
+          major=$(podman version --format '{{.Client.Version}}' | cut -d. -f1)
+          test "$major" -ge 5 || { echo "podman 5 or newer required"; exit 1; }
       # sandcast lock needs a host mise; the integration tests fail instead of
       # skipping without it because CI is set. The release comes from the pin
       # in internal/version.MisePin and is checked against SHASUMS256.txt.

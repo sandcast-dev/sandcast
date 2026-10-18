@@ -15,9 +15,11 @@ import (
 
 	"github.com/rhuss/sandcast/internal/engine"
 	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/redact"
+	"github.com/rhuss/sandcast/internal/shell"
 )
 
 // FileName is the verify report in build/<target>/.
@@ -41,13 +43,39 @@ type ImageRef struct {
 	Digest    string `yaml:"digest" json:"digest"`
 }
 
+// Conditions a check runs under (R-08, FR-010). ConditionImage runs with
+// the image environment; the session conditions reproduce the cleared
+// environment of an OpenShell session.
+const (
+	ConditionImage            = "image"
+	ConditionSessionBashLogin = "session:bash-login"
+	ConditionSessionBashInter = "session:bash-interactive"
+	ConditionSessionZsh       = "session:zsh"
+	sessionPrefix             = "session."
+	sessionStartupKey         = "session.zsh.startup"
+	sessionBashStartupKey     = "session.bash.startup"
+	// bashNoTTYNoise are the lines bash -i prints to stderr when it runs
+	// without a terminal; the bash startup check ignores them.
+	bashNoTTYNoise = "-e 'cannot set terminal process group' -e 'no job control in this shell'"
+	// zshNoTTYNoise is the note zsh -i prints when startup code enables the
+	// line editor (fzf key bindings do) without a terminal; a terminal
+	// session never shows it, so the zsh startup check ignores it.
+	zshNoTTYNoise = `-e "can't change option: zle"`
+	sessionTerm   = "xterm-256color"
+)
+
 // Result is the outcome of one component check.
 type Result struct {
 	ComponentKey string `yaml:"component_key" json:"component_key"`
-	OK           bool   `yaml:"ok" json:"ok"`
-	Status       string `yaml:"status" json:"status"`
-	Version      string `yaml:"version,omitempty" json:"version,omitempty"`
-	Output       string `yaml:"output" json:"output"`
+	// Condition is ConditionImage or one of the session conditions.
+	Condition string `yaml:"condition" json:"condition"`
+	OK        bool   `yaml:"ok" json:"ok"`
+	Status    string `yaml:"status" json:"status"`
+	Version   string `yaml:"version,omitempty" json:"version,omitempty"`
+	Output    string `yaml:"output" json:"output"`
+	// Notes name the binaries a session check skipped because they do not
+	// resolve in the image environment either.
+	Notes []string `yaml:"notes,omitempty" json:"notes,omitempty"`
 }
 
 // Requests turns the plan's components into check requests, sorted by key.
@@ -86,11 +114,149 @@ func checkHash(c plan.Check) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// SessionRequests returns the session-condition checks of an OpenShell plan
+// (spec 002 R-08, FR-010), sorted by key; none for the container target.
+// Each component check runs again, unchanged and with the same
+// expectations, in a login bash (bash -lc, as openshell sandbox exec runs)
+// and in an interactive bash that reads it from stdin (as openshell sandbox
+// connect runs), both started with OpenShell's cleared environment. The
+// shell hooks of the image replace both before any file in the home is
+// read (spec 003): the login bash by a bash without startup files that
+// keeps the session environment, the interactive bash by the curated shell
+// (zsh, the bash launcher, or bash without startup files), which reads the
+// check from stdin with its binaries as positional parameters. A
+// component's binary therefore has to resolve through the session PATH and
+// run with the session's MISE_* settings. Before the check, every binary
+// of the component that resolves in the image environment must resolve
+// through the session PATH too (binsPrelude). With shell.program zsh, the
+// checks also run in an interactive login zsh (zsh -il), as the login hook
+// starts it. The selected shell program's startup check
+// (session.zsh.startup or session.bash.startup, an interactive shell in
+// both cases) fails when the startup writes to stderr (apart from the notes
+// a shell prints only because verify runs it without a terminal) or does
+// not read the curated rc.
+func SessionRequests(p *plan.Plan) []probe.Request {
+	if p.Target != manifest.TargetOpenShell {
+		return nil
+	}
+	env := sessionEnv(p.FinalUser)
+	zsh := p.Shell.Program == "zsh"
+	var reqs []probe.Request
+	add := func(key, command string, c plan.Check, bin string) {
+		c.Command = command
+		reqs = append(reqs, probe.Request{
+			Key:            key,
+			Command:        command,
+			Bin:            bin,
+			Selector:       c.Version,
+			ExpectExit:     c.ExpectExit,
+			StdoutContains: c.StdoutContains,
+			Hash:           checkHash(c),
+		})
+	}
+	for _, c := range p.Components {
+		if c.Check.Command == "" {
+			continue
+		}
+		bin := ""
+		if len(c.Bins) > 0 {
+			bin = c.Bins[0]
+		}
+		check := sessionBinsCheck + c.Check.Command
+		pre, post := binsPrelude(c)
+		add(sessionPrefix+"bash-login."+c.Key, pre+env+" bash -lc "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
+		// bash -i prints its prompts and job control notes to stderr; the
+		// check's own stderr is kept through the group redirection. -s
+		// passes the binaries as positional parameters.
+		add(sessionPrefix+"bash-interactive."+c.Key,
+			pre+"printf '%s\\n' "+shell.Quote("{ "+check+"\n} 2>&1")+" | "+env+" bash -i -s -- $_sb 2>/dev/null"+post, c.Check, bin)
+		if zsh {
+			add(sessionPrefix+"zsh."+c.Key, pre+env+" zsh -il -c "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
+		}
+	}
+	probeRC := ":"
+	if p.Shell.RCPath != "" {
+		probeRC = `[ -n "${` + plan.CuratedRCLoadedVar + `-}" ] || echo "sandcast: the curated rc ` + p.Shell.RCPath + ` was not read" >&2`
+	}
+	switch p.Shell.Program {
+	case "zsh":
+		add(sessionStartupKey,
+			`_err=$(`+env+` zsh -il -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+zshNoTTYNoise+`); `+
+				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, "zsh")
+	case "bash":
+		add(sessionBashStartupKey,
+			`_err=$(`+env+` bash -i -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+bashNoTTYNoise+`); `+
+				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, "bash")
+	}
+	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Key < reqs[j].Key })
+	return reqs
+}
+
+// NotCheckedPrefix starts the output line of a session check for a binary
+// that does not resolve in the image environment and is therefore not
+// required in the session; Run moves these lines into Result.Notes.
+const NotCheckedPrefix = "sandcast: not checked in the session: "
+
+// sessionBinsCheck runs in the session shell before the component check:
+// every binary passed as a positional parameter must resolve through the
+// session PATH, else the check fails with exit 127 (FR-010).
+const sessionBinsCheck = `for _b in "$@"; do command -v "$_b" >/dev/null || { echo "sandcast: $_b does not resolve through the session PATH" >&2; exit 127; }; done
+`
+
+// binsPrelude returns the shell code around a session check command. The
+// prelude runs in the verify container's image environment and collects in
+// $_sb the component's binaries that resolve there (the build-time image
+// PATH, /usr/sbin included); the session shell must resolve exactly those.
+// The postlude keeps the session shell's exit status and prints a note line
+// for every binary that does not resolve in the image environment either. A
+// component whose only binary is its key and does not resolve (a component
+// without executables, such as ca-certificates) is checked by its own check
+// alone, without a note.
+func binsPrelude(c plan.Component) (string, string) {
+	words := make([]string, len(c.Bins))
+	for i, b := range c.Bins {
+		words[i] = shell.Quote(b)
+	}
+	pre := "_sb= _sk=; for _b in " + strings.Join(words, " ") +
+		`; do if command -v "$_b" >/dev/null 2>&1; then _sb="$_sb $_b"; else _sk="$_sk $_b"; fi; done; `
+	post := "; _rc=$?"
+	if len(c.Bins) != 1 || c.Bins[0] != c.Key {
+		post += `; for _b in $_sk; do echo "` + NotCheckedPrefix + `$_b does not resolve in the image environment"; done`
+	}
+	post += `; exit "$_rc"`
+	return pre, post
+}
+
+// sessionEnv is the env -i prefix that reproduces the environment OpenShell
+// gives a session: only HOME, USER, TERM and the default PATH.
+func sessionEnv(u plan.FinalUser) string {
+	return "env -i HOME=" + shell.QuoteIfNeeded(u.Home) + " USER=" + shell.QuoteIfNeeded(u.Name) +
+		" TERM=" + sessionTerm + " PATH=" + strings.Join(plan.OpenShellDefaultPath, ":")
+}
+
+// condition maps a request key to its condition.
+func condition(key string) string {
+	switch {
+	case strings.HasPrefix(key, sessionPrefix+"bash-login."):
+		return ConditionSessionBashLogin
+	case strings.HasPrefix(key, sessionPrefix+"bash-interactive."), key == sessionBashStartupKey:
+		return ConditionSessionBashInter
+	case strings.HasPrefix(key, sessionPrefix+"zsh."):
+		return ConditionSessionZsh
+	}
+	return ConditionImage
+}
+
+// IsSession reports whether r ran under session conditions.
+func (r Result) IsSession() bool { return r.Condition != "" && r.Condition != ConditionImage }
+
 // Run executes every component check of the plan inside image as the
-// image's final user, under the container engine only (no gateway). It
-// returns the full report; err wraps ErrChecksFailed when any check failed.
+// image's final user, under the container engine only (no gateway), and for
+// the OpenShell target the session-condition checks in the same container
+// run. It returns the full report; err wraps ErrChecksFailed when any check
+// failed, session checks included.
 func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan.Plan) (*Report, error) {
-	reqs := Requests(p)
+	reqs := append(Requests(p), SessionRequests(p)...)
 	checks, err := probe.RunChecks(ctx, eng, image, platform, reqs)
 	if err != nil {
 		return nil, fmt.Errorf("verify %s: %w", image, err)
@@ -107,6 +273,7 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 		c := checks[req.Key]
 		r := Result{
 			ComponentKey: req.Key,
+			Condition:    condition(req.Key),
 			OK:           c.Status == probe.StatusPresent,
 			Status:       string(c.Status),
 			Version:      c.Version,
@@ -115,6 +282,7 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 		if r.Status == "" {
 			r.Status = string(probe.StatusMissing)
 		}
+		r.Output, r.Notes = splitNotes(r.Output)
 		report.Results = append(report.Results, r)
 		if r.OK {
 			report.Passed++
@@ -127,6 +295,22 @@ func Run(ctx context.Context, eng engine.Engine, image, platform string, p *plan
 		return report, fmt.Errorf("%w: %s", ErrChecksFailed, strings.Join(failed, ", "))
 	}
 	return report, nil
+}
+
+// splitNotes moves the NotCheckedPrefix lines of a check output into notes.
+func splitNotes(output string) (string, []string) {
+	if !strings.Contains(output, NotCheckedPrefix) {
+		return output, nil
+	}
+	var keep, notes []string
+	for _, line := range strings.Split(output, "\n") {
+		if note, ok := strings.CutPrefix(line, NotCheckedPrefix); ok {
+			notes = append(notes, note+"; not checked in the session")
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.TrimRight(strings.Join(keep, "\n"), "\n"), notes
 }
 
 // Write stores the report as YAML.

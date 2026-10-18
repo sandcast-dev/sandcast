@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"sort"
 	"strconv"
@@ -153,6 +154,10 @@ func UnderOvermount(prefix, p string) bool {
 	return p == prefix || strings.HasPrefix(p, prefix+"/")
 }
 
+// CuratedRCLoadedVar is set (not exported) by the first lines of the curated
+// rc, so verify can tell that a session read it.
+const CuratedRCLoadedVar = "SANDCAST_RC_LOADED"
+
 // LockPathRel is the committed lockfile path recorded in the plan.
 const LockPathRel = ".sandcast/mise.lock"
 
@@ -187,6 +192,10 @@ type Inputs struct {
 	// Dotfiles are the non-shell dotfiles the pipeline read from the host for
 	// the plan to redact, relocate and bake (spec 003 US3).
 	Dotfiles []DotfileInput
+	// KindedNotices are notices with a kind prefix (R-15) gathered outside
+	// the plan, such as reference warnings; they are sorted together with
+	// the plan's own kinded notices.
+	KindedNotices []string
 }
 
 // LockError reports lockfile gaps for the selected platform; plan exits 2.
@@ -260,6 +269,24 @@ func Build(in Inputs) (*Plan, error) {
 	}
 
 	overmount := OvermountPrefix(p)
+	var binsProblems []string
+	for _, w := range in.Wanted {
+		if p := BinsProblem(w); p != "" {
+			binsProblems = append(binsProblems, p)
+		}
+	}
+	if len(binsProblems) > 0 {
+		return nil, &BinsError{Problems: binsProblems}
+	}
+	// A mise tool whose lock entry lacks the target platform fails the plan
+	// before any comparison (001 edge case): the lockfile cannot decide its
+	// version. Tools without any lock entry keep today's rules and fail
+	// below only when they need installing.
+	if err := checkPlatformEntries(in.Lock, in.Wanted, misePlatform); err != nil {
+		return nil, err
+	}
+	deltaNotices := slices.Clone(in.KindedNotices)
+
 	var (
 		packages   []string
 		packageIdx []int
@@ -278,7 +305,7 @@ func Build(in Inputs) (*Plan, error) {
 		hasStored := anyStored && !stored.Superseded
 		if w.Def == nil {
 			if hasStored {
-				p.Components = append(p.Components, fragmentComponent(w.Key, stored))
+				p.Components = append(p.Components, fragmentComponent(w, stored))
 				fragmentDirs = append(fragmentDirs, OptDir(w.Key))
 				continue
 			}
@@ -294,24 +321,28 @@ func Build(in Inputs) (*Plan, error) {
 		if !ok {
 			return nil, fmt.Errorf("%w %s", ErrMissingCheck, w.Key)
 		}
-		// A base-image tool whose only copy lives under the overmount home is
-		// hidden once the workspace volume is mounted, so it is treated as not
-		// present and re-provisioned to a persistent location (FR-009, R7).
-		// The probe cache keeps the raw result; this is a pure function of the
-		// cached result plus the known overmount prefix, applied at plan time.
-		if overmount != "" && check.Status == probe.StatusPresent && UnderOvermount(overmount, check.Path) {
-			to := reprovisionTarget(w.Def)
-			reprovisioned = append(reprovisioned, RelocationNotice{
-				Kind: NoticeReprovisioned, Subject: w.Key, From: check.Path, To: to,
-			})
-			check.Status = probe.StatusMissing
-			check.Path = ""
+		// The workspace rule of DeltaFor is keyed on the overmount home of
+		// the base image (spec 003 FR-009, spec 002 FR-003): a tool whose
+		// every PATH hit lies under it is hidden once the workspace volume
+		// is mounted, counts as missing, and is provisioned to a persistent
+		// location, which the plan reports. The probe cache keeps the raw
+		// result; this is a pure function of the cached result plus the
+		// known overmount prefix, applied at plan time.
+		opts := DeltaOptions{PackageManager: facts.PackageManager, Platform: in.Platform.Value, WorkspacePath: overmount}
+		if t, ok := miseTool(w); ok {
+			opts.LockedVersion, _ = in.Lock.Locked(t, misePlatform)
 		}
-		entry, reason := DeltaFor(w.Def, w.Selector(), check, facts.PackageManager)
+		entry, reason := DeltaFor(w.Def, w.Selector(), check, opts)
+		if entry.Status == string(probe.StatusMissing) && len(entry.IgnoredPaths) > 0 {
+			reprovisioned = append(reprovisioned, RelocationNotice{
+				Kind: NoticeReprovisioned, Subject: w.Key, From: strings.Join(entry.IgnoredPaths, ", "), To: reprovisionTarget(w.Def),
+			})
+		}
+		deltaNotices = append(deltaNotices, entry.Notices...)
 		p.ProbeDelta = append(p.ProbeDelta, entry)
 		if entry.Action == ActionUnresolvable {
 			if hasStored {
-				c := fragmentComponent(w.Key, stored)
+				c := fragmentComponent(w, stored)
 				describe(&c, w.Def, w.Selector())
 				p.Components = append(p.Components, c)
 				installed = append(installed, w.Def)
@@ -363,7 +394,7 @@ func Build(in Inputs) (*Plan, error) {
 		p.Components = append(p.Components, c)
 	}
 
-	if conflicts := component.Conflicts(defs); len(conflicts) > 0 {
+	if conflicts := component.Conflicts(append(defs, SyntheticDefinitions(in.Wanted)...)); len(conflicts) > 0 {
 		p.Conflicts = conflicts
 	}
 
@@ -464,13 +495,45 @@ func Build(in Inputs) (*Plan, error) {
 		}
 	}
 
+	// Kinded notices (R-15) follow the other notices, sorted by kind and
+	// subject so the plan stays deterministic.
+	// The probed rc files belong to the base image user's home; a created
+	// final user has another home, so they do not apply.
+	if !user.Created {
+		deltaNotices = append(deltaNotices, homeRCNotices(facts, in.Target)...)
+	}
+	SortNotices(deltaNotices)
+	p.Notices = append(p.Notices, deltaNotices...)
+
 	sort.Slice(p.ProbeDelta, func(i, j int) bool { return p.ProbeDelta[i].ComponentKey < p.ProbeDelta[j].ComponentKey })
 	sort.Slice(p.Components, func(i, j int) bool { return p.Components[i].Key < p.Components[j].Key })
 	sort.Slice(p.Unresolved, func(i, j int) bool { return p.Unresolved[i].Key < p.Unresolved[j].Key })
 	return p, nil
 }
 
-func fragmentComponent(key string, f StoredFragment) Component {
+// homeRCNotices reports the home-directory rc files of the base image that
+// reset PATH (spec 002 FR-007), for the container target only: there a bash
+// started directly still reads them and loses the directories set before.
+// In OpenShell images no shell ever reads a startup file from the home
+// (spec 003 FR-002), so the files have no effect and nothing is reported;
+// the probe fact stays in the image facts of the plan.
+func homeRCNotices(facts probe.Facts, target string) []string {
+	if target == manifest.TargetOpenShell {
+		return nil
+	}
+	var out []string
+	for _, f := range facts.HomeRCResetsPath {
+		file := path.Join(facts.User.Home, f)
+		out = append(out, Notice(NoticeHomeRCPath, NoticeSubjectImage, file+" resets PATH; bash sessions that read it lose the directories set before it"))
+	}
+	return out
+}
+
+// fragmentComponent is the planned component of a stored fragment. Its
+// binaries are the manifest entry's declared bins, else the key (FR-018).
+func fragmentComponent(w Wanted, f StoredFragment) Component {
+	key := w.Key
+	bins := DeclaredBins(w.Ref)
 	return Component{
 		Key:           key,
 		Tier:          string(component.TierProject),
@@ -479,13 +542,42 @@ func fragmentComponent(key string, f StoredFragment) Component {
 		Action:        ActionInstall,
 		FragmentName:  SectionFragments + "/" + key,
 		Fragment:      StoredFragmentText(key, f.Source, f.Body),
-		Bins:          []string{key},
-		Check:         Check{Command: DefaultCheck(key)},
+		Bins:          bins,
+		Check:         Check{Command: DefaultCheck(bins...)},
 	}
 }
 
-// DefaultCheck is the check used for components without a definition.
-func DefaultCheck(bin string) string { return "command -v " + bin }
+// DeclaredBins returns the binaries a manifest entry declares, else its
+// key.
+func DeclaredBins(ref manifest.ComponentRef) []string {
+	if len(ref.Bins) > 0 {
+		return slices.Clone(ref.Bins)
+	}
+	return []string{ref.Key}
+}
+
+// DefaultCheck is the check used for components without a definition: every
+// binary must resolve, "command -v a && command -v b".
+func DefaultCheck(bins ...string) string {
+	parts := make([]string, len(bins))
+	for i, b := range bins {
+		parts[i] = "command -v " + b
+	}
+	return strings.Join(parts, " && ")
+}
+
+// SyntheticDefinitions turns the manifest entries no tier defines but that
+// declare bins into definitions for the conflict check, so declared
+// binaries conflict with other components like defined ones (FR-018).
+func SyntheticDefinitions(wanted []Wanted) []*component.Component {
+	var out []*component.Component
+	for _, w := range wanted {
+		if w.Def == nil && len(w.Ref.Bins) > 0 {
+			out = append(out, &component.Component{Key: w.Key, Provides: slices.Clone(w.Ref.Bins)})
+		}
+	}
+	return out
+}
 
 // describe copies what build and verify need from the definition.
 func describe(c *Component, def *component.Component, selector string) {
@@ -591,6 +683,28 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// checkPlatformEntries fails for mise components whose lock entry exists
+// but has no artifact for platform.
+func checkPlatformEntries(lock *mise.Lockfile, wanted []Wanted, platform string) error {
+	if lock == nil {
+		return nil
+	}
+	var gaps []mise.Tool
+	for _, w := range wanted {
+		t, ok := miseTool(w)
+		if !ok || !lock.HasEntry(t) {
+			continue
+		}
+		if _, ok := lock.Locked(t, platform); !ok {
+			gaps = append(gaps, t)
+		}
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	return &LockError{Platform: platform, Errors: lock.Check(gaps, platform)}
 }
 
 func checkLock(lock *mise.Lockfile, tools []mise.Tool, platform string) error {
@@ -726,7 +840,9 @@ func factsOf(f probe.Facts) ImageFacts {
 			Name: f.User.Name, UID: f.User.UID, GID: f.User.GID, Group: f.User.Group,
 			Home: f.User.Home, Shell: f.User.Shell,
 		},
-		Shells: shells,
+		Shells:           shells,
+		HomeRCResetsPath: slices.Clone(f.HomeRCResetsPath),
+		Path:             slices.Clone(f.Path),
 	}
 }
 

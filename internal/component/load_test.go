@@ -89,6 +89,7 @@ func TestParseRejects(t *testing.T) {
 		{"host tool path", "key: x\nname: X\nmatch: {host_tools: [./.sandcast/x.sh]}\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\n", "bare command name"},
 		{"host tool absolute", "key: x\nname: X\nmatch: {host_tools: [/tmp/x]}\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\n", "bare command name"},
 		{"bad owner", "key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\nimage: {dirs: [{path: /x, owner: nobody}]}\n", "root or user"},
+		{"emulation flag not a bool", "key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\nemulation_unsafe: sometimes\n", "EmulationUnsafe"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,6 +98,17 @@ func TestParseRejects(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.want)
 		})
 	}
+}
+
+// TestParseEmulationUnsafe checks the strict decoder accepts the field and
+// the shipped rust component sets it (FR-016).
+func TestParseEmulationUnsafe(t *testing.T) {
+	c, err := Parse([]byte("key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\nemulation_unsafe: true\n"), "x.yaml", TierProject)
+	require.NoError(t, err)
+	assert.True(t, c.EmulationUnsafe)
+	c, err = Parse([]byte(goYAML), "go.yaml", TierShipped)
+	require.NoError(t, err)
+	assert.False(t, c.EmulationUnsafe)
 }
 
 func TestLoadDir(t *testing.T) {

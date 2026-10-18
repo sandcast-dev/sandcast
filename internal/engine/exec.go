@@ -7,13 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/rhuss/sandcast/internal/imageref"
 )
 
 // Commander runs one engine command. The default implementation uses
@@ -350,10 +354,106 @@ func (e *Exec) Labels(ctx context.Context, ref string) (map[string]string, error
 	return labels, nil
 }
 
-// Push implements Engine.
-func (e *Exec) Push(ctx context.Context, ref string) error {
-	_, _, err := e.run(ctx, []string{"push", ref})
-	return err
+// Push implements Engine. podman writes the registry digest to a file
+// (push --digestfile), which also works through a remote connection.
+// docker prints "digest: sha256:..." in its push output; without that line
+// the digest comes from the image's repository digests for the pushed
+// repository. The local image digest is no substitute: a registry may
+// store a recompressed manifest with a different digest.
+func (e *Exec) Push(ctx context.Context, ref string, log io.Writer) (string, error) {
+	if log == nil {
+		log = io.Discard
+	}
+	var output bytes.Buffer
+	out := io.MultiWriter(log, &output)
+	if e.Kind != Docker {
+		f, err := os.CreateTemp("", "sandcast-digest-*")
+		if err != nil {
+			return "", fmt.Errorf("push %s: %w", ref, err)
+		}
+		path := f.Name()
+		_ = f.Close()
+		defer func() { _ = os.Remove(path) }()
+		if _, _, err := e.exec(ctx, []string{"push", "--digestfile", path, ref}, out); err != nil {
+			return "", WithStderr(fmt.Errorf("%s push: %w", e.Bin, err), lastLines(output.Bytes(), 5))
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", nil
+		}
+		return validDigest(strings.TrimSpace(string(data))), nil
+	}
+	if _, _, err := e.exec(ctx, []string{"push", ref}, out); err != nil {
+		return "", WithStderr(fmt.Errorf("%s push: %w", e.Bin, err), lastLines(output.Bytes(), 5))
+	}
+	if m := pushDigestRe.FindSubmatch(output.Bytes()); m != nil {
+		return string(m[1]), nil
+	}
+	inspect, _, err := e.run(ctx, digestArgs(Docker, ref))
+	if err != nil {
+		return "", nil
+	}
+	return repoDigestFor(ref, inspect), nil
+}
+
+// HostArch implements Engine.
+func (e *Exec) HostArch(ctx context.Context) (string, error) {
+	format := "{{.Host.Arch}}"
+	if e.Kind == Docker {
+		format = "{{.Architecture}}"
+	}
+	out, _, err := e.run(ctx, []string{"info", "--format", format})
+	if err != nil {
+		return "", err
+	}
+	arch := NormalizeArch(string(out))
+	if arch == "" {
+		return "", fmt.Errorf("%s info: no host architecture", e.Bin)
+	}
+	return arch, nil
+}
+
+var pushDigestRe = regexp.MustCompile(`digest: (sha256:[0-9a-f]{64})`)
+
+// validDigest returns d when it has the sha256:<64 hex> form, else "".
+func validDigest(d string) string {
+	if strings.HasPrefix(d, "sha256:") && len(d) == len("sha256:")+64 {
+		return d
+	}
+	return ""
+}
+
+// repoDigestFor picks the digest of the repository ref names from docker's
+// RepoDigests JSON, comparing normalized names.
+func repoDigestFor(ref string, inspect []byte) string {
+	want, err := imageref.Normalize(ref)
+	if err != nil {
+		return ""
+	}
+	var repoDigests []string
+	if json.Unmarshal(bytes.TrimSpace(inspect), &repoDigests) != nil {
+		return ""
+	}
+	for _, rd := range repoDigests {
+		name, dig, ok := strings.Cut(rd, "@")
+		if !ok {
+			continue
+		}
+		got, err := imageref.Normalize(name)
+		if err == nil && got.Name() == want.Name() {
+			return validDigest(dig)
+		}
+	}
+	return ""
+}
+
+// lastLines returns the last n lines of out.
+func lastLines(out []byte, n int) []byte {
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return []byte(strings.Join(lines, "\n"))
 }
 
 // gracefulCancel makes a cancelled context stop the child with SIGTERM and

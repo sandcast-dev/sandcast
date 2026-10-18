@@ -18,9 +18,9 @@ func TestCacheLayout(t *testing.T) {
 	require.NoError(t, c.StoreFacts(testDigest, "linux/arm/v7", Facts{}))
 
 	hex := strings.TrimPrefix(testDigest, "sha256:")
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts", hex+"_linux-arm64.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts", hex+"_linux-arm-v7.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks", hex+"_linux-arm64", "go-0123456789ab.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm64.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm-v7.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks-v3", hex+"_linux-arm64", "go-0123456789ab.json"))
 
 	f, ok := c.LookupFacts(testDigest, "linux/arm64")
 	require.True(t, ok)
@@ -28,6 +28,36 @@ func TestCacheLayout(t *testing.T) {
 	r, ok := c.LookupCheck(testDigest, "linux/arm64", "go", hash)
 	require.True(t, ok)
 	assert.Equal(t, CheckResult{ComponentKey: "go", CheckHash: hash, Status: StatusPresent}, *r)
+}
+
+// TestCacheFormatVersion checks that entries of format 1 (directories
+// without a version suffix) are never read, and current entries round-trip.
+func TestCacheFormatVersion(t *testing.T) {
+	c := &Cache{Dir: t.TempDir()}
+	hash := strings.Repeat("a", 64)
+	hex := strings.TrimPrefix(testDigest, "sha256:")
+	old := filepath.Join(c.Dir, "probe", "facts", hex+"_linux-arm64.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(old), 0o755))
+	require.NoError(t, os.WriteFile(old, []byte(`{"digest":"`+testDigest+`","platform":"linux/arm64","package_manager":"apk"}`), 0o644))
+	oldCheck := filepath.Join(c.Dir, "probe", "checks", hex+"_linux-arm64", "go-"+hash[:12]+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(oldCheck), 0o755))
+	require.NoError(t, os.WriteFile(oldCheck, []byte(`{"component_key":"go","check_hash":"`+hash+`","status":"present"}`), 0o644))
+
+	_, ok := c.LookupFacts(testDigest, "linux/arm64")
+	assert.False(t, ok, "format 1 facts must not be read")
+	_, ok = c.LookupCheck(testDigest, "linux/arm64", "go", hash)
+	assert.False(t, ok, "format 1 checks must not be read")
+
+	require.NoError(t, c.StoreFacts(testDigest, "linux/arm64", Facts{PackageManager: "apt-get", HomeRCResetsPath: []string{".bashrc"}}))
+	require.NoError(t, c.StoreCheck(testDigest, "linux/arm64", CheckResult{ComponentKey: "go", CheckHash: hash, Status: StatusPresent, Paths: []string{"/usr/bin/go"}}))
+	f, ok := c.LookupFacts(testDigest, "linux/arm64")
+	require.True(t, ok)
+	assert.Equal(t, "apt-get", f.PackageManager)
+	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)
+	r, ok := c.LookupCheck(testDigest, "linux/arm64", "go", hash)
+	require.True(t, ok)
+	assert.Equal(t, []string{"/usr/bin/go"}, r.Paths)
+	assert.Equal(t, 3, FormatVersion)
 }
 
 func TestCacheMisses(t *testing.T) {

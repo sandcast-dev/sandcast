@@ -16,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml/parser"
 
 	"github.com/rhuss/sandcast/internal/fsutil"
+	"github.com/rhuss/sandcast/internal/imageref"
 	"github.com/rhuss/sandcast/internal/redact"
 	"github.com/rhuss/sandcast/internal/version"
 )
@@ -69,7 +70,15 @@ type ComponentRef struct {
 	Key      string `yaml:"key" json:"key"`
 	Version  string `yaml:"version,omitempty" json:"version,omitempty"`
 	Optional bool   `yaml:"optional,omitempty" json:"optional,omitempty"`
+	// Bins declares the executables of a component no tier defines (for
+	// example hx for helix). verify checks them and promote defaults its
+	// binaries to them; a tier-defined key must not set them (R-10,
+	// FR-018).
+	Bins []string `yaml:"bins,omitempty" json:"bins,omitempty"`
 }
+
+// binPattern is the binary name pattern of contracts/manifest-component.md.
+var binPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 
 // HarnessRef selects an agent harness and the extensions baked with it.
 type HarnessRef struct {
@@ -185,6 +194,32 @@ func (m *Manifest) Harness(name string) *HarnessRef {
 	return nil
 }
 
+// Warnings returns findings that do not make the manifest invalid (R-16):
+// a target image that names a Docker Hub repository without a namespace
+// (a bare name or docker.io/<name>) resolves to docker.io/library/<name>,
+// the namespace of the official images, which is almost never what a
+// sandbox image means (FR-012).
+func (m *Manifest) Warnings() []Diagnostic {
+	var out []Diagnostic
+	for _, name := range m.TargetNames() {
+		t := m.Target(name)
+		if t == nil || t.Image == "" {
+			continue
+		}
+		ref, err := imageref.Normalize(t.Image)
+		if err != nil || !ref.DockerHubNoNamespace() {
+			continue
+		}
+		base := strings.TrimPrefix(ref.Repository, "library/")
+		out = append(out, Diagnostic{
+			Path: "$.targets." + name + ".image",
+			Message: fmt.Sprintf("%s resolves to %s; add your namespace (docker.io/<user>/%s)",
+				t.Image, ref.Name(), base),
+		})
+	}
+	return out
+}
+
 // Diagnostic is one validation finding with its location.
 type Diagnostic struct {
 	Path    string `json:"path" yaml:"path"`
@@ -293,6 +328,17 @@ func (m *Manifest) Validate() []Diagnostic {
 			add(path, "duplicate component key %s (also at components[%d])", safeValue(c.Key), j)
 		}
 		seen[c.Key] = i
+		bins := map[string]bool{}
+		for j, b := range c.Bins {
+			bp := fmt.Sprintf("$.components[%d].bins[%d]", i, j)
+			switch {
+			case !binPattern.MatchString(b) || b == "." || b == "..":
+				add(bp, "invalid binary name %s", safeValue(b))
+			case bins[b]:
+				add(bp, "duplicate binary name %s", safeValue(b))
+			}
+			bins[b] = true
+		}
 	}
 	for i, h := range m.Harnesses {
 		base := fmt.Sprintf("$.harnesses[%d]", i)
@@ -341,6 +387,8 @@ func (m *Manifest) Validate() []Diagnostic {
 	if t := m.Targets.OpenShell; t != nil {
 		if t.Image == "" {
 			add("$.targets.openshell.image", "required")
+		} else if msg := imageProblem(t); msg != "" {
+			add("$.targets.openshell.image", "%s", msg)
 		}
 		if t.AllowedDomainsFile != "" {
 			add("$.targets.openshell.allowed_domains_file", "only the container target writes an allowed-domains file")
@@ -349,6 +397,8 @@ func (m *Manifest) Validate() []Diagnostic {
 	if t := m.Targets.Container; t != nil {
 		if t.Image == "" {
 			add("$.targets.container.image", "required")
+		} else if msg := imageProblem(t); msg != "" {
+			add("$.targets.container.image", "%s", msg)
 		}
 		if t.AllowedDomainsFile != "" {
 			if err := CheckAllowedDomainsFile(t.AllowedDomainsFile); err != nil {
@@ -357,6 +407,27 @@ func (m *Manifest) Validate() []Diagnostic {
 		}
 	}
 	return diags
+}
+
+// imageProblem reports a target image that carries its own tag or digest
+// (the tag belongs in the tag field; image:tag would become
+// image:tag:latest) or whose reference with the tag is not a valid image
+// reference.
+func imageProblem(t *Target) string {
+	name := t.Image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if strings.ContainsAny(name, ":@") {
+		return fmt.Sprintf("%s carries a tag or digest; set the image name here and the tag in the tag field", safeValue(t.Image))
+	}
+	if _, err := imageref.Normalize(t.Ref()); err != nil {
+		if len(redact.Scan(err.Error())) > 0 {
+			return "invalid image reference " + redactedValue
+		}
+		return err.Error()
+	}
+	return ""
 }
 
 // CheckAllowedDomainsFile fails when name cannot be the container target's
@@ -550,20 +621,42 @@ func SortedKeys(m map[string]string) []string {
 }
 
 // Skeleton returns the manifest sandcast init writes.
-func Skeleton(name, baseImage, target string) *Manifest {
+func Skeleton(name, baseImage, target string, opts ...SkeletonOptions) *Manifest {
+	var o SkeletonOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	m := &Manifest{
 		SchemaVersion: version.ManifestSchemaVersion,
 		Name:          name,
 		BaseImage:     baseImage,
+		Platform:      o.Platform,
 		Components:    []ComponentRef{},
 	}
-	image := "localhost/" + name
+	t := &Target{Image: "localhost/" + name, Tag: o.Tag, Push: o.Push}
+	if o.Image != "" {
+		t.Image = o.Image
+	}
 	if target == TargetContainer {
-		m.Targets.Container = &Target{Image: image}
+		m.Targets.Container = t
 	} else {
-		m.Targets.OpenShell = &Target{Image: image}
+		m.Targets.OpenShell = t
 	}
 	return m
+}
+
+// SkeletonOptions are the sandcast init flags that shape the skeleton
+// (R-17, FR-015). Zero values keep the defaults: localhost/<name>, tag
+// latest, no platform (the host at plan time) and no push.
+type SkeletonOptions struct {
+	// Image is the target image name without tag.
+	Image string
+	// Tag is the target image tag.
+	Tag string
+	// Platform is the manifest platform (linux/amd64 or linux/arm64).
+	Platform string
+	// Push sets targets.<target>.push.
+	Push bool
 }
 
 // Equal reports whether two manifests encode to the same bytes.

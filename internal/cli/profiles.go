@@ -251,6 +251,9 @@ OPENSHELL_GATEWAY, OPENSHELL_GATEWAY_ENDPOINT or its active gateway.`,
 }
 
 func printImportReport(a *App, rep *pipeline.ImportReport) {
+	for _, w := range rep.Warnings {
+		_, _ = fmt.Fprintf(a.Stdout, "warning: %s\n", w)
+	}
 	verb := ""
 	if rep.DryRun {
 		verb = "would be "

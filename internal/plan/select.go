@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
@@ -123,6 +124,26 @@ func Select(m *manifest.Manifest, set *component.Set, target string, harnessComp
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out, notices
+}
+
+// BinsProblem explains why a manifest entry must not declare bins: a
+// component tier defines the key, so its binaries come from the definition
+// (FR-018). It returns "" when the entry may declare them.
+func BinsProblem(w Wanted) string {
+	if w.Def == nil || len(w.Ref.Bins) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s is defined by the %s tier; its binaries come from the definition, remove bins", w.Key, w.Def.Tier)
+}
+
+// BinsError reports manifest entries that declare bins for a tier-defined
+// component; plan exits 2.
+type BinsError struct {
+	Problems []string
+}
+
+func (e *BinsError) Error() string {
+	return "manifest components declare bins for defined components:\n  " + strings.Join(e.Problems, "\n  ")
 }
 
 // MiseTools returns the mise tools of the wanted components with

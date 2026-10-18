@@ -1,0 +1,219 @@
+# sandcast probe script
+_sysroot=
+_max=2048
+_tmax=120
+_nl='
+'
+_tab=$(printf '\t')
+_cr=$(printf '\r')
+_jsafe() {
+	LC_ALL=C
+	case $1 in
+	*\"* | *\\* | *[[:cntrl:]]*) ;;
+	*) printf '%s' "$1"; return 0 ;;
+	esac
+	_s=$1 _r=
+	while [ -n "$_s" ]; do
+		_t=${_s#?}
+		_c=${_s%"$_t"}
+		[ -n "$_c" ] || break
+		_s=$_t
+		case $_c in
+		\\) _r="$_r\\\\" ;;
+		\") _r="$_r\\\"" ;;
+		"$_tab") _r="$_r\\t" ;;
+		"$_nl") _r="$_r\\n" ;;
+		"$_cr") _r="$_r\\r" ;;
+		[[:cntrl:]]) _r="$_r$(printf '\\u%04x' "'$_c")" ;;
+		*) _r="$_r$_c" ;;
+		esac
+	done
+	printf '%s' "$_r"
+}
+_cut='?'
+while [ ${#_cut} -lt "$_max" ]; do _cut=$_cut$_cut; done
+_to=
+if timeout 10 /bin/sh -c : >/dev/null 2>&1; then _to=1; fi
+_sg=
+if command -v setsid >/dev/null 2>&1 && command -v sleep >/dev/null 2>&1; then
+	if [ -z "$_to" ] || ! timeout --version >/dev/null 2>&1; then _sg=1; fi
+fi
+_hd=
+if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
+_run() {
+	if [ -n "$_sg" ]; then
+		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		(
+			sleep "$_tmax" &
+			_sp=$!
+			trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
+			wait "$_sp" || exit 0
+			trap '' TERM
+			kill -TERM -"$_cp" 2>/dev/null
+			exit 124
+		) </dev/null >/dev/null 2>&1 3>&- 4>&- &
+		_wp=$!
+		wait "$_cp"
+		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
+		kill "$_wp" 2>/dev/null
+		wait "$_wp" 2>/dev/null
+		[ $? -ne 124 ] || _rc=143
+		return "$_rc"
+	elif [ -n "$_to" ]; then
+		timeout "$_tmax" /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
+		_cp=$!
+		wait "$_cp"
+		_rc=$?
+		kill -KILL -"$_cp" 2>/dev/null
+		return "$_rc"
+	else
+		/bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&-
+	fi
+}
+_paths() {
+	_ps= _seen=$_nl
+	_cifs=$IFS
+	IFS=:
+	set -f
+	for _d in $PATH; do
+		case $_d in '' | [!/]*) continue ;; esac
+		case $_seen in *"$_nl$_d/$1$_nl"*) continue ;; esac
+		if [ -f "$_d/$1" ] && [ -x "$_d/$1" ]; then
+			_seen=$_seen$_d/$1$_nl
+			_ps=$_ps\"$(_jsafe "$_d/$1")\",
+		fi
+	done
+	set +f
+	IFS=$_cifs
+	_ps=${_ps%,}
+}
+_check() {
+	_p= _ps=
+	if [ -n "$2" ]; then
+		_p=$(command -v "$2" 2>/dev/null) || _p=
+		_paths "$2"
+	fi
+	if [ -n "$_hd" ]; then
+		_o=$( { _st=$( { { _run "$3"; echo "$?" >&3; } | { head -c "$_max"; cat >/dev/null; } >&4; } 3>&1 ); printf '\n%s' "$_st"; } 4>&1 )
+		_e=${_o##*"$_nl"}
+		_o=${_o%"$_nl"*}
+		while :; do
+			case $_o in *"$_nl") _o=${_o%"$_nl"} ;; *) break ;; esac
+		done
+	else
+		_o=$(_run "$3")
+		_e=$?
+	fi
+	case $_e in '' | *[!0-9]*) _e=-1 ;; esac
+	_x=false
+	if [ -n "$_to$_sg" ]; then
+		case $_e in 124 | 143) _x=true ;; esac
+	fi
+	if [ ${#_o} -gt "$_max" ]; then
+		_t=${_o#$_cut}
+		if [ "$_t" != "$_o" ]; then _o=${_o%"$_t"}; fi
+	fi
+	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"out":"%s","timeout":%s}\n' \
+		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$(_jsafe "$_o")" "$_x"
+}
+_os_id= _os_id_like= _os_name= _os_version=
+_osr=$_sysroot/etc/os-release
+[ -r "$_osr" ] || _osr=$_sysroot/usr/lib/os-release
+if [ -r "$_osr" ]; then
+	while IFS='=' read -r _k _v || [ -n "$_k" ]; do
+		case $_v in
+		\"*\") _v=${_v#\"}; _v=${_v%\"} ;;
+		\'*\') _v=${_v#\'}; _v=${_v%\'} ;;
+		esac
+		case $_k in
+		ID) _os_id=$_v ;;
+		ID_LIKE) _os_id_like=$_v ;;
+		NAME) _os_name=$_v ;;
+		VERSION_ID) _os_version=$_v ;;
+		esac
+	done < "$_osr"
+fi
+printf '{"type":"os","id":"%s","id_like":"%s","name":"%s","version":"%s"}\n' \
+	"$(_jsafe "$_os_id")" "$(_jsafe "$_os_id_like")" "$(_jsafe "$_os_name")" "$(_jsafe "$_os_version")"
+_pm=none
+for _x in apt-get dnf yum apk; do
+	if command -v "$_x" >/dev/null 2>&1; then _pm=$_x; break; fi
+done
+printf '{"type":"pkgmgr","name":"%s"}\n' "$(_jsafe "$_pm")"
+_uname=$(id -un 2>/dev/null) || _uname=
+_uid=$(id -u 2>/dev/null) || _uid=
+_gid=$(id -g 2>/dev/null) || _gid=
+_gname=$(id -gn 2>/dev/null) || _gname=
+case $_uid in '' | *[!0-9]*) _uid=-1 ;; esac
+case $_gid in '' | *[!0-9]*) _gid=-1 ;; esac
+_pwset() { _pw_name=$1 _pw_uid=$3 _pw_home=$6 _pw_shell=$7; }
+_pwent() {
+	_oifs=$IFS
+	IFS=:
+	set -f
+	_pwset $1
+	set +f
+	IFS=$_oifs
+}
+_pw_name= _pw_uid= _pw_home= _pw_shell=
+if [ "$_uid" != -1 ]; then
+	if command -v getent >/dev/null 2>&1; then
+		_line=$(getent passwd "$_uid" 2>/dev/null) || _line=
+		_pwent "${_line%%"$_nl"*}"
+	fi
+	if [ "$_pw_uid" != "$_uid" ] && [ -r "$_sysroot/etc/passwd" ]; then
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_pwent "$_line"
+			if [ "$_pw_uid" = "$_uid" ]; then break; fi
+		done < "$_sysroot/etc/passwd"
+	fi
+	if [ "$_pw_uid" != "$_uid" ]; then _pw_name= _pw_home= _pw_shell=; fi
+fi
+[ -n "$_uname" ] || _uname=$_pw_name
+_home=${HOME:-$_pw_home}
+printf '{"type":"user","name":"%s","uid":%s,"gid":%s,"group":"%s","home":"%s","shell":"%s"}\n' \
+	"$(_jsafe "$_uname")" "$_uid" "$_gid" "$(_jsafe "$_gname")" "$(_jsafe "$_home")" "$(_jsafe "$_pw_shell")"
+_shells=
+if [ -r "$_sysroot/etc/shells" ]; then
+	while IFS= read -r _line || [ -n "$_line" ]; do
+		case $_line in '' | '#'*) continue ;; esac
+		if [ -f "$_line" ]; then _shells="$_shells\"$(_jsafe "$_line")\","; fi
+	done < "$_sysroot/etc/shells"
+fi
+printf '{"type":"shells","list":[%s"/bin/sh"]}\n' "$_shells"
+_rcs=
+if [ -n "$_home" ]; then
+	for _f in .bashrc .profile .bash_profile; do
+		[ -r "$_sysroot$_home/$_f" ] || continue
+		_hit=
+		while IFS= read -r _line || [ -n "$_line" ]; do
+			_line=${_line#"${_line%%[![:space:]]*}"}
+			case $_line in
+			'#'*) continue ;;
+			export\ PATH=* | PATH=* | readonly\ PATH=* | declare\ -x\ PATH=*) ;;
+			*) continue ;;
+			esac
+			case $_line in
+			*'$PATH'* | *'${PATH}'* | *'${PATH:'*) ;;
+			*) _hit=1 ;;
+			esac
+		done < "$_sysroot$_home/$_f"
+		if [ -n "$_hit" ]; then _rcs="$_rcs\"$(_jsafe "$_f")\","; fi
+	done
+fi
+printf '{"type":"homerc","resets_path":[%s]}\n' "${_rcs%,}"
+_pdirs=
+_cifs=$IFS
+IFS=:
+set -f
+for _d in $PATH; do
+	case $_d in '') continue ;; esac
+	_pdirs="$_pdirs\"$(_jsafe "$_d")\","
+done
+set +f
+IFS=$_cifs
+printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
+_check 'go' 'go' 'go version'
+exit 0

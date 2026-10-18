@@ -150,7 +150,9 @@ func (p *Probed) Delta() (entries []plan.DeltaEntry, reasons []string) {
 		if w.Def == nil {
 			continue
 		}
-		e, reason := plan.DeltaFor(w.Def, w.Selector(), p.Result.Checks[w.Key], p.Result.Facts.PackageManager)
+		// sandcast probe reports the base image as it is: no lockfile
+		// comparison and no workspace rule, which are plan decisions.
+		e, reason := plan.DeltaFor(w.Def, w.Selector(), p.Result.Checks[w.Key], plan.DeltaOptions{PackageManager: p.Result.Facts.PackageManager})
 		entries = append(entries, e)
 		if reason != "" {
 			reasons = append(reasons, w.Key+": "+reason)

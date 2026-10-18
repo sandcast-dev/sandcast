@@ -243,3 +243,46 @@ specifiers = ["latest"]
 		t.Fatalf("want only jq to fail, got %v", errs)
 	}
 }
+
+func TestLocked(t *testing.T) {
+	l, err := ParseLock([]byte(`lockfile_version = 3
+
+[[tools.gh]]
+version = "2.102.0"
+backend = "aqua:cli/cli"
+specifiers = ["latest"]
+
+[tools.gh."platforms.linux-arm64"]
+checksum = "sha256:aa"
+url = "https://example.com/gh-arm64"
+
+[[tools.rust]]
+version = "1.95.0"
+backend = "core:rust"
+specifiers = ["1.95.0"]
+`))
+	require.NoError(t, err)
+	tests := []struct {
+		name     string
+		tool     Tool
+		platform string
+		want     string
+		ok       bool
+	}{
+		{name: "platform hit", tool: Tool{Key: "gh", Tool: "gh"}, platform: "linux-arm64", want: "2.102.0", ok: true},
+		{name: "platform miss", tool: Tool{Key: "gh", Tool: "gh"}, platform: "linux-x64"},
+		{name: "selector miss", tool: Tool{Key: "gh", Tool: "gh", Version: "2.93"}, platform: "linux-arm64"},
+		{name: "version-only backend", tool: Tool{Key: "rust", Tool: "rust", Version: "1.95.0"}, platform: "linux-x64", want: "1.95.0", ok: true},
+		{name: "unknown tool", tool: Tool{Key: "node", Tool: "node"}, platform: "linux-arm64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := l.Locked(tt.tool, tt.platform)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+	var none *Lockfile
+	_, ok := none.Locked(Tool{Key: "gh", Tool: "gh"}, "linux-arm64")
+	assert.False(t, ok)
+}

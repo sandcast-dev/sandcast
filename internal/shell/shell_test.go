@@ -38,7 +38,7 @@ func TestZshEnvExport(t *testing.T) {
 // rcfile in place of ~/.bashrc, and forwards its arguments (spec 003 US2).
 // --norc must be absent because it disables --rcfile.
 func TestLoginLauncher(t *testing.T) {
-	got := LoginLauncher("/opt/sandcast/bashrc")
+	got := LoginLauncher("/opt/sandcast/bashrc", "")
 	assert.True(t, strings.HasPrefix(got, "#!/bin/sh\n"), "has a shebang")
 	assert.Contains(t, got, "--noprofile")
 	assert.NotContains(t, got, "--norc", "--norc makes bash ignore --rcfile")
@@ -89,7 +89,7 @@ func TestLoginLauncherDropsLogin(t *testing.T) {
 	rc := filepath.Join(dir, "bashrc")
 	require.NoError(t, os.WriteFile(rc, []byte("alias myll='ls -l'\n"), 0o644))
 	launcher := filepath.Join(dir, "shell-login")
-	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc)), 0o755))
+	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc, "")), 0o755))
 
 	for _, tc := range []struct {
 		args []string
@@ -138,7 +138,7 @@ func TestLoginLauncherGuardForInteractiveOnly(t *testing.T) {
 	rc := filepath.Join(dir, "bashrc")
 	require.NoError(t, os.WriteFile(rc, []byte(""), 0o644))
 	launcher := filepath.Join(dir, "shell-login")
-	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc)), 0o755))
+	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc, "")), 0o755))
 	const probe = `echo "GUARD=${SANDCAST_SHELL_PID-unset} PID=$$"`
 	script := filepath.Join(dir, "probe.sh")
 	require.NoError(t, os.WriteFile(script, []byte(probe+"\n"), 0o644))
@@ -209,7 +209,7 @@ func TestLoginLauncherLoadsRCFile(t *testing.T) {
 	rc := filepath.Join(dir, "bashrc")
 	require.NoError(t, os.WriteFile(rc, []byte("echo RCFILE_LOADED\nalias myll='ls -l'\n"), 0o644))
 	launcher := filepath.Join(dir, "shell-login")
-	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc)), 0o755))
+	require.NoError(t, os.WriteFile(launcher, []byte(LoginLauncher(rc, "")), 0o755))
 
 	cmd := exec.Command(sh, launcher, "-i", "-c", "alias myll; echo CMD_RAN")
 	cmd.Env = []string{"HOME=" + home, "PATH=" + filepath.Dir(bash) + ":/usr/bin:/bin", "TERM=dumb"}
@@ -224,13 +224,13 @@ func TestLoginLauncherLoadsRCFile(t *testing.T) {
 // the baked profile, exports it, and execs a non-login /bin/sh with the
 // filtered arguments, and it is valid sh (spec 003 FR-002, FR-011).
 func TestShLoginLauncher(t *testing.T) {
-	got := ShLoginLauncher("/etc/profile.d/sandcast.sh")
+	got := ShLoginLauncher("/etc/profile.d/sandcast.sh", "")
 	assert.True(t, strings.HasPrefix(got, "#!/bin/sh\n"), "has a shebang")
 	assert.Contains(t, got, "ENV=/etc/profile.d/sandcast.sh\n")
 	assert.Contains(t, got, "export ENV SANDCAST_SESSION\n")
 	assert.Contains(t, got, `exec /bin/sh "$@"`+"\n")
 	assert.NotContains(t, got, "exec /bin/sh -l", "never a login shell")
-	assert.Contains(t, ShLoginLauncher("/opt/a b/profile"), "ENV='/opt/a b/profile'\n", "the profile path is quoted")
+	assert.Contains(t, ShLoginLauncher("/opt/a b/profile", ""), "ENV='/opt/a b/profile'\n", "the profile path is quoted")
 	if sh, err := exec.LookPath("sh"); err == nil {
 		require.NoError(t, exec.Command(sh, "-n", "-c", got).Run(), "launcher is valid sh")
 	}
@@ -254,7 +254,7 @@ func TestShLoginLauncherDropsLogin(t *testing.T) {
 	profile := filepath.Join(dir, "profile.sh")
 	require.NoError(t, os.WriteFile(profile, []byte(""), 0o644))
 	launcher := filepath.Join(dir, "sh-login")
-	require.NoError(t, os.WriteFile(launcher, []byte(ShLoginLauncher(profile)), 0o755))
+	require.NoError(t, os.WriteFile(launcher, []byte(ShLoginLauncher(profile, "")), 0o755))
 
 	for _, tc := range []struct {
 		args []string
@@ -299,5 +299,43 @@ func TestJSONHelpersBuiltinsOnly(t *testing.T) {
 		var got string
 		require.NoError(t, json.Unmarshal(out, &got), "output %q", out)
 		assert.Equal(t, v, got)
+	}
+}
+
+// TestLaunchersSourceSessionEnv checks both launchers source the session
+// environment script before they start the shell, so a non-interactive run
+// (su - user -c, $SHELL -c), which reads no system bashrc, still carries
+// the exported settings and the shims first on PATH (spec 002 FR-006), and
+// that the line is absent without a script path.
+func TestLaunchersSourceSessionEnv(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	dir := t.TempDir()
+	env := filepath.Join(dir, "sandcast-env.sh")
+	require.NoError(t, os.WriteFile(env, []byte("export MISE_DATA_DIR='/opt/mise'\n_sandcast_path() { case \"${PATH:-}\" in /opt/mise/shims:*) ;; *) PATH=\"/opt/mise/shims${PATH:+:$PATH}\" ;; esac; export PATH; }\n_sandcast_path\n"), 0o644))
+	rc := filepath.Join(dir, "bashrc")
+	require.NoError(t, os.WriteFile(rc, []byte(""), 0o644))
+	line := "[ -r " + env + " ] && . " + env + "\n"
+	got := LoginLauncher(rc, env)
+	assert.Contains(t, got, line)
+	assert.Less(t, strings.Index(got, line), strings.Index(got, "_sandcast_opts="), "sourced before the option scan sets _sandcast_ variables")
+	assert.NotContains(t, LoginLauncher(rc, ""), "] && . ")
+	assert.Contains(t, ShLoginLauncher("/etc/profile.d/sandcast.sh", env), line)
+	assert.NotContains(t, ShLoginLauncher("/etc/profile.d/sandcast.sh", ""), "] && . ")
+
+	for name, text := range map[string]string{"shell-login": LoginLauncher(rc, env), "sh-login": ShLoginLauncher("/etc/profile.d/sandcast.sh", env)} {
+		launcher := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(launcher, []byte(text), 0o755))
+		cmd := exec.Command(sh, launcher, "-c", `echo "MISE=[$MISE_DATA_DIR] PATH=[$PATH]"`)
+		cmd.Env = []string{"HOME=" + dir, "PATH=" + filepath.Dir(bash) + ":/usr/bin:/bin", "TERM=dumb"}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", name, out)
+		assert.Equal(t, "MISE=[/opt/mise] PATH=[/opt/mise/shims:"+filepath.Dir(bash)+":/usr/bin:/bin]\n", string(out), name)
 	}
 }
