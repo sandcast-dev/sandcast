@@ -55,26 +55,40 @@ const ZshProgram = "/bin/zsh"
 // FR-002).
 //
 // The line also exports SessionVar, so a bash the user starts from a curated
-// zsh session is recognized as nested by the bashrc hook (see BashrcHook),
-// and SHELL: OpenShell sets SHELL=/bin/bash for its sessions, so a program
-// that starts $SHELL from the curated zsh (tmux, an editor's terminal) would
-// otherwise get a login bash that the hooks turn into the nested bare bash.
-// The curated zsh owns SHELL instead.
-func ZshEnvExport(zdotdir string) string {
-	return zshEnvExport(zdotdir, true)
-}
-
-// zshEnvExport is ZshEnvExport with or without SHELL: an image whose
-// curated shell is not zsh keeps the launcher as $SHELL, so a zsh the user
-// starts there relocates its startup files and marks the session, nothing
-// more.
-func zshEnvExport(zdotdir string, ownShell bool) string {
+// zsh session is recognized as nested by the bashrc hook (see BashrcHook).
+// With ownShell it exports SHELL as well: OpenShell sets SHELL=/bin/bash for
+// its sessions, so a program that starts $SHELL from the curated zsh (tmux,
+// an editor's terminal) would otherwise get a login bash that the hooks
+// turn into the nested bare bash; the curated zsh owns SHELL instead. An
+// image whose curated shell is not zsh keeps the launcher as $SHELL, so a
+// zsh the user starts there relocates its startup files and marks the
+// session, nothing more.
+func ZshEnvExport(zdotdir string, ownShell bool) string {
 	line := "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1"
 	if ownShell {
 		line += " SHELL=" + ZshProgram
 	}
 	return line
 }
+
+// ZshEnvMode selects what the global zshenv block does for zsh's startup
+// files, besides the session environment and the disabled new-user wizard
+// that every block carries.
+type ZshEnvMode int
+
+const (
+	// ZshEnvSessionOnly writes no export: a container image whose curated
+	// shell is not zsh, where the home is never overmounted, so a zsh keeps
+	// reading the image home's own startup files.
+	ZshEnvSessionOnly ZshEnvMode = iota
+	// ZshEnvRelocate exports ZDOTDIR and the session mark: an OpenShell
+	// image whose curated shell is not zsh, where a zsh the user starts
+	// must never read a workspace .zshrc; $SHELL stays the launcher.
+	ZshEnvRelocate
+	// ZshEnvCurated exports ZDOTDIR, the session mark and SHELL: the zsh
+	// kind, on both targets.
+	ZshEnvCurated
+)
 
 // ZshEnvBegin and ZshEnvEnd delimit the block sandcast writes to the global
 // zshenv files (/etc/zsh/zshenv on Debian and Ubuntu, /etc/zshenv
@@ -84,21 +98,20 @@ const (
 	ZshEnvEnd   = "# <<< sandcast zshenv <<<"
 )
 
-// ZshEnvBlock returns the block sandcast appends to the global zshenv: with
-// relocate, the export line that moves zsh's startup files to zdotdir and
-// marks the session (and, with ownShell, makes zsh own $SHELL; see
-// ZshEnvExport); then the session environment (spec 002: every zsh gets the
-// MISE_* settings, the component environment and the shims first on PATH,
-// also when the runtime cleared the environment; sessionEnv is the script
-// path, "" for none) and a no-op zsh-newuser-install, so zsh never starts
-// its new-user wizard in a home without .zshrc (an empty workspace volume).
-// Without relocate (a container image whose curated shell is not zsh, where
-// the home is never overmounted) a zsh keeps reading the image home's own
-// startup files.
-func ZshEnvBlock(zdotdir, sessionEnv string, relocate, ownShell bool) string {
+// ZshEnvBlock returns the block sandcast appends to the global zshenv: the
+// export line the mode selects (ZshEnvExport, none for ZshEnvSessionOnly),
+// the session environment (spec 002: every zsh gets the MISE_* settings, the
+// component environment and the shims first on PATH, also when the runtime
+// cleared the environment; sessionEnv is the script path, "" for none) and
+// a no-op zsh-newuser-install, so zsh never starts its new-user wizard in a
+// home without .zshrc (an empty workspace volume).
+func ZshEnvBlock(zdotdir, sessionEnv string, mode ZshEnvMode) string {
 	b := ZshEnvBegin + "\n"
-	if relocate {
-		b += zshEnvExport(zdotdir, ownShell) + "\n"
+	switch mode {
+	case ZshEnvRelocate:
+		b += ZshEnvExport(zdotdir, false) + "\n"
+	case ZshEnvCurated:
+		b += ZshEnvExport(zdotdir, true) + "\n"
 	}
 	return b +
 		SessionEnvSource(sessionEnv) +

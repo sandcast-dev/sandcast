@@ -30,7 +30,20 @@ func TestSafeAbsPath(t *testing.T) {
 }
 
 func TestZshEnvExport(t *testing.T) {
-	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh", ZshEnvExport("/opt/sandcast/zdotdir"))
+	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh", ZshEnvExport("/opt/sandcast/zdotdir", true))
+	assert.Equal(t, "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1", ZshEnvExport("/opt/sandcast/zdotdir", false), "a curated shell other than zsh keeps the launcher as SHELL")
+}
+
+// TestZshEnvBlockModes checks the three modes of the global zshenv block:
+// every block sources the session environment and disables the new-user
+// wizard; the relocate mode adds the ZDOTDIR export without SHELL, the
+// curated mode the export with SHELL, and the session-only mode no export.
+func TestZshEnvBlockModes(t *testing.T) {
+	tail := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\nzsh-newuser-install() { :; }\n" + ZshEnvEnd + "\n"
+	assert.Equal(t, ZshEnvBegin+"\n"+tail, ZshEnvBlock("/opt/sandcast/zdotdir", "/etc/profile.d/sandcast-env.sh", ZshEnvSessionOnly))
+	assert.Equal(t, ZshEnvBegin+"\nexport ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"+tail, ZshEnvBlock("/opt/sandcast/zdotdir", "/etc/profile.d/sandcast-env.sh", ZshEnvRelocate))
+	assert.Equal(t, ZshEnvBegin+"\nexport ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh\n"+tail, ZshEnvBlock("/opt/sandcast/zdotdir", "/etc/profile.d/sandcast-env.sh", ZshEnvCurated))
+	assert.Equal(t, ZshEnvBegin+"\nzsh-newuser-install() { :; }\n"+ZshEnvEnd+"\n", ZshEnvBlock("/opt/sandcast/zdotdir", "", ZshEnvSessionOnly), "no session script, no source line")
 }
 
 // TestLoginLauncher checks the baked bash launcher closes the workspace
