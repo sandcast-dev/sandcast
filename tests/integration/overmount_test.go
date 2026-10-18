@@ -118,7 +118,7 @@ printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-
 report pty-l
 $E /bin/bash -lc 'echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"' | sed 's/^/OUT lc-env /'
 report lc-env
-printf 'echo "NOSWITCH BASH=[${BASH_VERSION%%.*}] ZSH=[${ZSH_VERSION-}] MISE=[$MISE_DATA_DIR]"; alias myll; exit\n' | script -qec "$E SANDCAST_NO_SHELL_SWITCH=1 /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT noswitch /'
+printf 'echo "NOSWITCH BASH=[${BASH_VERSION%%%%.*}] ZSH=[${ZSH_VERSION-}] MISE=[$MISE_DATA_DIR]"; alias myll; exit\n' | script -qec "$E SANDCAST_NO_SHELL_SWITCH=1 /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT noswitch /'
 report noswitch
 printf 'echo FROM-STDIN; exit 4\n' | $E /bin/bash -l | sed 's/^/OUT pipe-l /'
 printf 'exit 4\n' | $E /bin/bash -l; echo "OUT pipe-l rc=$?"
@@ -211,10 +211,16 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	// the base image's PATH directories beyond the OpenShell default follow
 	// (the community base image's PATH adds /sandbox/.venv/bin), in the
 	// terminal session, the default agent's login shell and the exec session
-	// alike.
-	for _, c := range []string{"pty-i", "pty-l", "lc-env"} {
-		has(c, "SESSION-ENV MISE=[/opt/mise] PATH=[/opt/mise/shims:/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin]")
+	// alike. The curated rc of these manifests prepends $HOME/bin, so the
+	// interactive sessions may carry that in front (bash's prompt repair
+	// puts the shims first again, zsh keeps the rc's order); the exec
+	// session, which reads no rc, has the session PATH exactly.
+	sessionPath := "/opt/mise/shims:/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin]"
+	for _, c := range []string{"pty-i", "pty-l"} {
+		has(c, "SESSION-ENV MISE=[/opt/mise] PATH=[")
+		has(c, sessionPath)
 	}
+	has("lc-env", "SESSION-ENV MISE=[/opt/mise] PATH=["+sessionPath)
 	// The opt-out of the switch to zsh: the session stays bash, without any
 	// startup file (no curated rc, no workspace rc) but with the session
 	// environment. A bash image has nothing to switch and keeps its launcher.
