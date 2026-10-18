@@ -78,6 +78,11 @@ func runEngine(t *testing.T, name string, args ...string) (string, error) {
 func workspaceWithPlantedRC(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
+	// OpenShell gives the sandbox user a writable workspace volume. Rootless
+	// podman maps the image user to a subordinate uid that does not own this
+	// host directory (t.TempDir creates it with mode 0700), so the test opens
+	// it to every uid; otherwise writes into the home fail on Linux CI.
+	require.NoError(t, os.Chmod(ws, 0o777))
 	for _, rc := range []string{".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, rc), []byte("touch /tmp/pwned-"+strings.TrimPrefix(rc, ".")+"\n"), 0o644))
 	}
