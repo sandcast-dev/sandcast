@@ -390,6 +390,10 @@ func checkOvermountGuard(p *Plan, overmount string, policyPaths []string) error 
 		guarded[e.Name] = true
 	}
 	for _, e := range p.Image.Env {
+		if e.Name == SessionPathMarker {
+			return fmt.Errorf("image env %s is reserved: the session environment script sets it once per session after it dropped the entries under the overmount home %s from the inherited PATH, and an image that carried it would skip that; remove it from the component or harness",
+				e.Name, overmount)
+		}
 		if !guarded[e.Name] {
 			continue
 		}

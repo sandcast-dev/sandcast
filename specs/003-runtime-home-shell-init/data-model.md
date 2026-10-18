@@ -60,13 +60,13 @@ A reported decision made because of the overmount.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `kind` | enum `relocated` \| `reprovisioned` | Whether a baked path was placed outside the home, or a `/sandbox`-only base tool was scheduled for install. |
+| `kind` | enum `relocated` \| `reprovisioned` \| `hidden` | Whether a baked path was placed outside the home, a base tool found only under the overmount home was scheduled for install, or such a tool stays unresolved because no definition or stored fragment can install it. |
 | `subject` | string | Component key or dotfile path. |
-| `from` | string | Only for `reprovisioned`: the probed path under the overmount home. Omitted for `relocated`, whose source is the `subject`. |
-| `to` | string | The persistent location chosen. |
+| `from` | string | For `reprovisioned` and `hidden`: the probed paths under the overmount home, comma separated. Omitted for `relocated`, whose source is the `subject`. |
+| `to` | string | For `reprovisioned` and `relocated`: the persistent location chosen. Absent for `hidden`. |
 
 Notices appear in the plan output and the build log; they are informational, not errors.
 
 ## Probe reclassification (plan delta)
 
-Not a stored entity: a pure function at plan time. Input: a cached `CheckResult{status, Path}` plus the base image's overmount prefix (the registry entry's `overmount_home`, default `/sandbox`, recorded in the plan as `base_image.overmount_home`). Output: if `status == present` and `Path` is under the prefix, treat as `missing` and schedule install; emit a `RelocationNotice{kind: reprovisioned}`.
+Not a stored entity: a pure function at plan time. Input: a cached `CheckResult{status, Path}` plus the base image's overmount prefix (the registry entry's `overmount_home`, default `/sandbox`, recorded in the plan as `base_image.overmount_home`). Output: if `status == present` and every `PATH` hit is under the prefix, treat as `missing`; emit a `RelocationNotice{kind: reprovisioned}` with the install location when an installer or a stored fragment provisions the tool, and a `RelocationNotice{kind: hidden}` without `to` when nothing can, in which case the component stays unresolved.

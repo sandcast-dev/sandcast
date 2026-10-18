@@ -133,19 +133,24 @@ func TestSessionPathDirs(t *testing.T) {
 	base := []string{"/opt/mise/shims", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/opt/x/bin/", "/usr/bin",
 		"/sbin", "/bin", "/usr/sbin", "/opt/has space", "relative/bin", "/opt/$HOME", "/sandbox/.local/bin", "/sandbox/.venv/bin", "/sandbox/.local/bin"}
 	all := []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}
-	kept, hidden := sessionPathDirs(base, "")
-	assert.Equal(t, all, kept, "no overmount: every plain extra directory")
+	assert.Equal(t, all, sessionPathDirs(base, ""), "no overmount: every plain extra directory")
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, sessionPathDirs(base, "/sandbox"))
+	assert.Equal(t, all, sessionPathDirs(base, "/sandboxes"), "the overmount home is matched as a path prefix, not a string prefix")
+	assert.Empty(t, sessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	assert.Empty(t, sessionPathDirs(nil, "/sandbox"))
+
+	// The split the image PATH and the notices use: outside keeps every
+	// entry once, cleaned, in order; hidden collects the entries under the
+	// overmount home and the ones that are not absolute (a relative entry,
+	// a tilde entry, and the empty entry, which is the current directory),
+	// which resolve into the mounted workspace. Without an overmount home
+	// nothing is hidden.
+	outside, hidden := splitOvermountPath([]string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin/", "~/.local/bin", ".", "", "bin", "/usr/local/bin", "/sandbox", "/bin", "/sandboxes/bin", "/sandbox/.venv/bin"}, "/sandbox")
+	assert.Equal(t, []string{"/usr/local/bin", "/usr/bin", "/bin", "/sandboxes/bin"}, outside)
+	assert.Equal(t, []string{"/sandbox/.venv/bin", "~/.local/bin", ".", "bin", "/sandbox"}, hidden, "once each, in order; the empty entry is the current directory")
+	outside, hidden = splitOvermountPath([]string{"/sandbox/.venv/bin", ".", "/usr/bin"}, "")
+	assert.Equal(t, []string{"/sandbox/.venv/bin", ".", "/usr/bin"}, outside)
 	assert.Empty(t, hidden)
-	kept, hidden = sessionPathDirs(base, "/sandbox")
-	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, kept)
-	assert.Equal(t, []string{"/sandbox/.local/bin", "/sandbox/.venv/bin"}, hidden, "the hidden directories, once each, in order")
-	kept, hidden = sessionPathDirs(base, "/sandboxes")
-	assert.Equal(t, all, kept, "the overmount home is matched as a path prefix, not a string prefix")
-	assert.Empty(t, hidden)
-	kept, _ = sessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox")
-	assert.Empty(t, kept)
-	kept, _ = sessionPathDirs(nil, "/sandbox")
-	assert.Empty(t, kept)
 
 	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: base}}
 	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, SessionPathDirsFor(p), "the default overmount home applies")
@@ -167,15 +172,23 @@ func TestSessionPathDirs(t *testing.T) {
 func TestSessionEnvScriptStripsOvermountPath(t *testing.T) {
 	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/bin", "/sandbox/.venv/bin", "/bin"}}}
 	text := SessionEnvScriptFor(p)
-	i := strings.Index(text, "case $_sandcast_pd in \"\" | /sandbox | /sandbox/*) ;;")
+	i := strings.Index(text, "case $_sandcast_pd in \"\" | [!/]* | /sandbox | /sandbox/*) ;;")
 	require.GreaterOrEqual(t, i, 0, text)
-	assert.Less(t, i, strings.Index(text, "_sandcast_path() {"), "the strip runs once, before the function is defined and called")
+	assert.Less(t, i, strings.Index(text, "_sandcast_path() {"), "the strip runs before the function is defined and called")
 	assert.NotContains(t, strings.SplitN(text, "_sandcast_path() {", 2)[1], "_sandcast_pd", "the strip is not part of _sandcast_path")
+	assert.Contains(t, text, `if [ -z "${SANDCAST_PATH_STRIPPED-}" ]; then`, "the strip runs once per session")
+	assert.Contains(t, text, "PATH=$_sandcast_pnew SANDCAST_PATH_STRIPPED=1\n\texport PATH SANDCAST_PATH_STRIPPED\n")
 	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", ImageFacts: p.ImageFacts}), "_sandcast_pd", "no strip on the container target")
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sandcast-env.sh")
 	require.NoError(t, os.WriteFile(script, []byte(text), 0o644))
+	// The inherited PATH as the community base image sets it, plus the home
+	// itself, a directory whose name only starts like the home, an empty
+	// entry (the current directory, the workspace in a session), a relative
+	// entry and a tilde entry, which resolve into the workspace as well.
+	inherited := "PATH=/sandbox/.venv/bin:/usr/local/bin:/sandbox:/usr/bin::bin:~/.local/bin:/sandboxes/bin:/bin:/sandbox/.local/bin"
+	stripped := MiseShimsDir + ":/usr/local/sbin:/usr/local/bin:/usr/bin:/sandboxes/bin:/bin"
 	ran := 0
 	for _, sh := range []string{"sh", "dash", "bash", "zsh"} {
 		path, err := exec.LookPath(sh)
@@ -183,19 +196,38 @@ func TestSessionEnvScriptStripsOvermountPath(t *testing.T) {
 			continue
 		}
 		ran++
-		// The inherited PATH as the community base image sets it, plus the
-		// home itself, a directory whose name only starts like the home, and
-		// an empty entry (the current directory, the workspace in a session).
-		cmd := exec.Command(path, "-c", `. "$1"; printf '%s\n' "$PATH"; PATH=/sandbox/bin:$PATH; _sandcast_path; printf '%s\n' "$PATH"; printf '%s\n' "${_sandcast_pd-unset}${_sandcast_prest-unset}${_sandcast_pnew-unset}"`, sh, script)
-		cmd.Env = []string{"PATH=/sandbox/.venv/bin:/usr/local/bin:/sandbox:/usr/bin::/sandboxes/bin:/bin:/sandbox/.local/bin", "HOME=/sandbox"}
+		cmd := exec.Command(path, "-c", `. "$1"; printf '%s\n' "$PATH"; PATH=/sandbox/bin:$PATH; _sandcast_path; printf '%s\n' "$PATH"; printf '%s\n' "${_sandcast_pd-unset}${_sandcast_prest-unset}${_sandcast_pnew-unset}"; env | grep '^SANDCAST_PATH_STRIPPED='`, sh, script)
+		cmd.Env = []string{inherited, "HOME=/sandbox"}
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%s: %s", sh, out)
-		assert.Equal(t, MiseShimsDir+":/usr/local/sbin:/usr/local/bin:/usr/bin:/sandboxes/bin:/bin\n"+
-			MiseShimsDir+":/sandbox/bin:"+MiseShimsDir+":/usr/local/sbin:/usr/local/bin:/usr/bin:/sandboxes/bin:/bin\n"+
-			"unsetunsetunset\n", string(out),
-			"%s: the inherited entries under the overmount home are gone; a later one survives the repair, which only puts the shims first again; the loop variables are unset", sh)
+		assert.Equal(t, stripped+"\n"+
+			MiseShimsDir+":/sandbox/bin:"+stripped+"\n"+
+			"unsetunsetunset\nSANDCAST_PATH_STRIPPED=1\n", string(out),
+			"%s: the inherited entries under the overmount home and the ones that are not absolute are gone; a later one survives the repair, which only puts the shims first again; the loop variables are unset; the marker is exported", sh)
+
+		// Once per session: a child shell that sources the script again (a
+		// zsh through the global zshenv, a login bash, the launchers) keeps
+		// the directory under the home that the session put on PATH later,
+		// such as an activated virtual environment, and a shell started with
+		// a cleared environment or the image environment, which never carry
+		// the marker, strips again.
+		cmd = exec.Command(path, "-c", `. "$1"; PATH=/sandbox/.venv/bin:$PATH; "$0" -c '. "$1"; printf "%s\n" "$PATH"' "$0" "$1"; env -i PATH="$PATH" HOME=/sandbox "$0" -c '. "$1"; printf "%s\n" "$PATH"' "$0" "$1"`, sh, script)
+		cmd.Env = []string{inherited, "HOME=/sandbox"}
+		out, err = cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", sh, out)
+		assert.Equal(t, MiseShimsDir+":/sandbox/.venv/bin:"+stripped+"\n"+stripped+"\n", string(out),
+			"%s: a child shell keeps the activated venv; a fresh environment strips once more", sh)
 	}
 	assert.Positive(t, ran)
+	if zsh, err := exec.LookPath("zsh"); err == nil {
+		// zsh -f reads no startup file, so sourcing the script is the only
+		// thing the child does, as the global zshenv block would.
+		cmd := exec.Command(zsh, "-f", "-c", `. "$1"; PATH=/sandbox/.venv/bin:$PATH; zsh -f -c '. "$1"; print -r -- "$PATH"' zsh "$1"`, "zsh", script)
+		cmd.Env = []string{inherited, "HOME=/sandbox"}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		assert.Equal(t, MiseShimsDir+":/sandbox/.venv/bin:"+stripped+"\n", string(out), "a child zsh keeps the activated venv")
+	}
 }
 
 // TestSessionEnvScriptBasePath sources the OpenShell script with the

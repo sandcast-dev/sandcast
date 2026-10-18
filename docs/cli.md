@@ -280,8 +280,8 @@ Each `probe_delta` entry of a mise component that `mise.lock` locks for the targ
 | Kind | Meaning |
 |------|---------|
 | `lockfile-shadow` | The base image has a different version than `mise.lock`; the locked version is installed. |
-| `unknown-version` | The base image's version could not be read, or came from a copy under the workspace path; the locked version is installed. |
-| `workspace-path` | OpenShell target: the first `PATH` hit of a binary lies under the overmount home (`base_image.overmount_home`) while another copy decides, or a base image `PATH` directory under the overmount home is left out of the image `PATH` and the session `PATH`. A binary hidden at every hit is reported as a relocation notice instead (`reprovisioned`, or `hidden` when nothing can install it). |
+| `unknown-version` | The base image's version could not be read, or came from a copy under the overmount home; the locked version is installed. |
+| `workspace-path` | OpenShell target: the first `PATH` hit of a binary lies under the overmount home (`base_image.overmount_home`) while another copy decides, or a base image `PATH` entry under the overmount home or not absolute (`.`, `bin`, `~/.local/bin`) is left out of the image `PATH` and the session `PATH`. A binary hidden at every hit is reported as a relocation notice instead (`reprovisioned`, or `hidden` when nothing can install it). |
 | `home-rc-path` | Container target only: a home directory rc file of the base image resets `PATH`. In OpenShell images no shell reads a home rc file, so none is reported. |
 | `reference` | A target image is a Docker Hub reference without a namespace; the notice names the reference it resolves to (`docker.io/library/<name>`). |
 

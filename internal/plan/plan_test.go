@@ -1249,8 +1249,9 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)")
 	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
+	assert.Equal(t, 1, strings.Count(strings.Join(p.Notices, "\n"), "/sandbox/.venv/bin lies under"), "once per directory")
 	script := SessionEnvScriptFor(p)
 	assert.NotContains(t, script, "/sandbox/.venv/bin")
 	assert.NotContains(t, script, "/sandbox/.local/bin")
@@ -1276,23 +1277,72 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 // order and without duplicates, the OpenShell default PATH when nothing is
 // left, and a component or harness PATH replaced with a notice.
 func TestSetImagePath(t *testing.T) {
+	set := func(setup *ImageSetup, basePath []string, overmount string) (notices, hidden []string) {
+		t.Helper()
+		return setImagePath(setup, basePath, overmount)
+	}
 	setup := ImageSetup{Env: []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}}
-	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/bin"}, ""))
+	notices, hidden := set(&setup, []string{"/sandbox/.venv/bin", ".", "/usr/bin"}, "")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
 	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "no overmount home: untouched")
-	assert.Empty(t, setImagePath(&setup, []string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	notices, hidden = set(&setup, []string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
 	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "a clean base PATH: untouched")
 
-	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin/", "/usr/local/bin", "/sandbox", "/bin", "/sandboxes/bin"}, "/sandbox"))
+	// Entries under the overmount home and entries that are not absolute
+	// (relative, tilde, empty) go; the rest keeps its order, once each.
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "~/.local/bin", "/usr/local/bin", ".", "/usr/bin/", "", "bin", "/usr/local/bin", "/sandbox", "/bin", "/sandboxes/bin"}, "/sandbox")
+	assert.Empty(t, notices, "a base image PATH is rewritten without a notice; the plan reports the hidden entries")
+	assert.Equal(t, []string{"/sandbox/.venv/bin", "~/.local/bin", ".", "bin", "/sandbox"}, hidden)
 	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}, {Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin:/sandboxes/bin"}}, setup.Env)
 
 	setup = ImageSetup{}
-	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, "/sandbox"))
+	_, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, "/sandbox")
+	assert.Equal(t, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, hidden)
 	assert.Equal(t, []EnvVar{{Name: "PATH", Value: strings.Join(OpenShellDefaultPath, ":")}}, setup.Env, "nothing left: the OpenShell default PATH")
 
-	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin"}}}
-	assert.Equal(t, []string{"component or harness env PATH=/opt/tool/bin:/usr/bin is replaced by the image PATH /usr/bin:/bin, which leaves out the directories under the overmount home /sandbox"},
-		setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	// A component or harness PATH is the PATH the image ends up with: its
+	// $PATH entry stands for the base image's PATH, its own directories
+	// outside the home are kept, and the change is reported.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:$PATH"}}}
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Equal(t, []string{"component or harness env PATH=/opt/tool/bin:$PATH is replaced by the image PATH /opt/tool/bin:/usr/bin:/bin, which leaves out the entries under the overmount home /sandbox and the entries that are not absolute"}, notices)
+	assert.Equal(t, []string{"/sandbox/.venv/bin"}, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}, setup.Env)
+	// A component PATH that names the home on a clean base is filtered too.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/sandbox/.local/bin:${PATH}"}}}
+	notices, hidden = set(&setup, []string{"/usr/bin", "/bin"}, "/sandbox")
+	assert.Len(t, notices, 1)
+	assert.Equal(t, []string{"/sandbox/.local/bin"}, hidden)
 	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/usr/bin:/bin"}}, setup.Env)
+	// A clean component PATH on a dirty base stays as it is: it never
+	// included the base image's entries.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}}
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}, setup.Env)
+
+	assert.Equal(t, "base image PATH entry . is not absolute and would resolve from the working directory or the home, the mounted workspace in a session; it is left out of the image PATH and the session PATH", hiddenPathReason(".", "/sandbox"))
+	assert.Contains(t, hiddenPathReason("/sandbox/.venv/bin", "/sandbox"), "base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH")
+}
+
+// TestBuildRefusesSessionPathMarker: the once-per-session marker of the
+// session environment script must never be part of the image environment,
+// or the default agent's session would skip the strip of the inherited
+// PATH; a component that sets it fails the plan on the OpenShell target.
+func TestBuildRefusesSessionPathMarker(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	for _, w := range in.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Env[SessionPathMarker] = "1"
+		}
+	}
+	_, err := Build(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "image env SANDCAST_PATH_STRIPPED is reserved")
 }
 
 // TestBuildWorkspaceRuleMixedAndMultiHit covers the workspace rule at the

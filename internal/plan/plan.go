@@ -286,16 +286,6 @@ func Build(in Inputs) (*Plan, error) {
 		return nil, err
 	}
 	deltaNotices := slices.Clone(in.KindedNotices)
-	// A base image PATH directory under the overmount home never reaches the
-	// image PATH (setImagePath) or a session's PATH (sessionPathDirs): the
-	// workspace mounted there may come from an untrusted project. The plan
-	// says so once per directory.
-	_, hiddenDirs := sessionPathDirs(p.ImageFacts.Path, overmount)
-	for _, d := range hiddenDirs {
-		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
-			"base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated",
-			d, overmount)))
-	}
 
 	var (
 		packages   []string
@@ -457,7 +447,16 @@ func Build(in Inputs) (*Plan, error) {
 	// baked configuration too (research R3). They win over component and
 	// harness env, and each replaced value is reported.
 	envNotices := mergeRelocationEnv(&p.Image, RelocationEnv(p))
-	envNotices = append(envNotices, setImagePath(&p.Image, p.ImageFacts.Path, overmount)...)
+	// A PATH entry under the overmount home, or one that is not absolute,
+	// never reaches the image PATH (setImagePath) or a session's PATH
+	// (sessionPathDirs): the workspace mounted there may come from an
+	// untrusted project. The plan says so once per entry, from the same
+	// split that writes the image PATH.
+	pathNotices, hiddenPath := setImagePath(&p.Image, p.ImageFacts.Path, overmount)
+	envNotices = append(envNotices, pathNotices...)
+	for _, d := range hiddenPath {
+		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, hiddenPathReason(d, overmount)))
+	}
 
 	// Every overmount decision is reported in plan.yaml and in the output of
 	// sandcast plan and sandcast build, sorted by subject so rebuilds are
@@ -531,49 +530,69 @@ func Build(in Inputs) (*Plan, error) {
 	return p, nil
 }
 
-// setImagePath sets the image PATH when the base image's PATH names a
-// directory under the overmount home: the OpenShell default agent inherits
+// setImagePath rewrites the image PATH when the PATH the image ends up with
+// (imagePathEntries) names an entry under the overmount home or one that is
+// not absolute (splitOvermountPath): the OpenShell default agent inherits
 // the image ENV, and the community base image's PATH starts with
 // /sandbox/.venv/bin, which would put the mounted workspace ahead of
 // /usr/bin for every command the agent runs and for Ubuntu's system bashrc,
-// which calls groups by name (spec 003 FR-002, SC-002). The value is the
-// base image's PATH without those directories, in its order, or the
-// OpenShell default PATH when nothing is left; the 30-mise layer prepends
-// the shims to it. A component or harness PATH is replaced, with a notice,
-// as a relocation value would be. Without an overmount home, or when the
-// base PATH is clean, the image keeps the base image's PATH.
-func setImagePath(setup *ImageSetup, basePath []string, overmount string) []string {
+// which calls groups by name (spec 003 FR-002, SC-002). The value is that
+// PATH without those entries, in its order, or the OpenShell default PATH
+// when nothing is left; the 30-mise layer prepends the shims to it. A
+// component or harness PATH keeps its own directories outside the home and
+// is reported when it changed. Without an overmount home, or when nothing
+// has to go, the image keeps its PATH as it is. It returns the notices and
+// the hidden entries, which the plan reports one by one.
+func setImagePath(setup *ImageSetup, basePath []string, overmount string) (notices, hidden []string) {
 	if overmount == "" {
-		return nil
+		return nil, nil
 	}
-	var kept []string
-	hidden := false
-	for _, d := range basePath {
-		d = path.Clean(d)
-		switch {
-		case UnderOvermount(overmount, d):
-			hidden = true
-		case !slices.Contains(kept, d):
-			kept = append(kept, d)
-		}
-	}
-	if !hidden {
-		return nil
-	}
-	if len(kept) == 0 {
-		kept = slices.Clone(OpenShellDefaultPath)
-	}
-	value := strings.Join(kept, ":")
 	env := envMap(setup.Env)
-	var notices []string
-	if prev, ok := env["PATH"]; ok && prev != value {
+	entries, fromEnv := imagePathEntries(env["PATH"], basePath)
+	outside, hidden := splitOvermountPath(entries, overmount)
+	if len(hidden) == 0 {
+		return nil, nil
+	}
+	if len(outside) == 0 {
+		outside = slices.Clone(OpenShellDefaultPath)
+	}
+	value := strings.Join(outside, ":")
+	if fromEnv && env["PATH"] != value {
 		notices = append(notices, fmt.Sprintf(
-			"component or harness env PATH=%s is replaced by the image PATH %s, which leaves out the directories under the overmount home %s",
-			prev, value, overmount))
+			"component or harness env PATH=%s is replaced by the image PATH %s, which leaves out the entries under the overmount home %s and the entries that are not absolute",
+			env["PATH"], value, overmount))
 	}
 	env["PATH"] = value
 	setup.Env = sortedEnv(env)
-	return notices
+	return notices, hidden
+}
+
+// imagePathEntries returns the entries of the PATH the image ends up with:
+// a component or harness PATH value (fromEnv), whose $PATH or ${PATH} entry
+// stands for the base image's PATH, as ENV expands it at build time, or the
+// base image's PATH itself.
+func imagePathEntries(envPath string, basePath []string) (entries []string, fromEnv bool) {
+	if envPath == "" {
+		return basePath, false
+	}
+	for _, e := range strings.Split(envPath, ":") {
+		if e == "$PATH" || e == "${PATH}" {
+			entries = append(entries, basePath...)
+			continue
+		}
+		entries = append(entries, e)
+	}
+	return entries, true
+}
+
+// hiddenPathReason is the workspace-path notice for one entry that
+// setImagePath left out of the image PATH and that the session script never
+// adds.
+func hiddenPathReason(entry, overmount string) string {
+	if !path.IsAbs(entry) {
+		return fmt.Sprintf("base image PATH entry %s is not absolute and would resolve from the working directory or the home, the mounted workspace in a session; it is left out of the image PATH and the session PATH", entry)
+	}
+	return fmt.Sprintf("base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)", entry, overmount)
 }
 
 // homeRCNotices reports the home-directory rc files of the base image that
