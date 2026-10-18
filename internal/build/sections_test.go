@@ -188,7 +188,10 @@ func TestShellSectionBakesSpawnHooks(t *testing.T) {
 		assert.Contains(t, got, "for f in /etc/bash.bashrc /etc/bash/bashrc; do", kind)
 		assert.Contains(t, got, `grep -qsF "$f" "$bash_bin"`, "%s: the system bashrc is the one compiled into bash", kind)
 		assert.Contains(t, got, `{ cat "$hook"; cat "$sysrc.sandcast.rest"; } > "$sysrc.sandcast"`, "%s: the hook is prepended", kind)
-		assert.Contains(t, got, "replacing the shell hook block of a previous sandcast build", "%s: a previous block is replaced, not kept", kind)
+		// A previous block is removed by the cleanup at the start of the
+		// section, not by the installer, which only prepends.
+		assert.NotContains(t, got, "replacing the shell hook block", kind)
+		assert.Less(t, strings.Index(got, `sandcast_legacy_unhook "$f"`), strings.Index(got, "cat > "+plan.LoginHookPath), "%s: a previous block is removed before this build's hooks are written", kind)
 		assert.Contains(t, got, top, kind)
 	}
 	zsh, err := shellSection(shellKindPlan(t, "zsh"))
@@ -241,12 +244,14 @@ func runInstallScript(t *testing.T, script string, vars map[string]string) strin
 	return stderr.String()
 }
 
-// TestHookInstallReplacesPreviousBlock runs the bashrc hook install snippet
-// twice with different targets, as a build on a base image that sandcast
-// itself built does: the block of the previous build is replaced, not kept,
-// so only the new targets remain, the distribution's content follows once,
-// the build log says so, and the result is idempotent. A first install
-// prepends without a notice, and a missing file is created.
+// TestHookInstallReplacesPreviousBlock runs the cleanup's unhook and the
+// bashrc hook install snippet on a system bashrc that carries the block of
+// a previous build with other targets, as the 60-shell section does on a
+// base image that sandcast itself built: the previous block is removed with
+// a build log line and the new one prepended, so only the new targets
+// remain, the distribution's content follows once, and a second round is
+// idempotent. A first install prepends without a notice, and a missing file
+// is created.
 func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 	dir := t.TempDir()
 	sysrc := filepath.Join(dir, "bash.bashrc")
@@ -255,33 +260,34 @@ func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 	oldBlock := shell.BashrcHook(nil, shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher}, "")
 	newBlock := shell.BashrcHook([]shell.Export{{Name: "SHELL", Value: shell.ZshProgram}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}, "")
 	distro := "# System-wide .bashrc file for interactive bash(1) shells.\n[ -z \"$PS1\" ] && return\nshopt -s checkwinsize\n"
-	vars := map[string]string{"sysrc": sysrc, "hook": hook, "hook_begin": shell.HookBegin, "hook_end": shell.HookEnd}
+	vars := map[string]string{"sysrc": sysrc, "hook": hook}
+	round := legacyUnhookFunc + "sandcast_legacy_unhook \"$sysrc\"\n" + hookInstallScript
 	require.NoError(t, os.WriteFile(hook, []byte(newBlock), 0o644))
 
 	require.NoError(t, os.WriteFile(sysrc, []byte(oldBlock+distro), 0o644))
-	stderr := runInstallScript(t, hookInstallScript, vars)
+	stderr := runInstallScript(t, round, vars)
 	got, err := os.ReadFile(sysrc)
 	require.NoError(t, err)
 	assert.Equal(t, newBlock+distro, string(got), "the previous block is replaced by the new one")
 	assert.NotContains(t, string(got), plan.ShellLoginPath, "no old target remains")
 	assert.Equal(t, 1, strings.Count(string(got), shell.HookBegin))
-	assert.Contains(t, stderr, "replacing the shell hook block of a previous sandcast build in "+sysrc)
+	assert.Equal(t, "sandcast: removing the shell hook block of a previous sandcast build from "+sysrc+"\n", stderr)
 
-	stderr = runInstallScript(t, hookInstallScript, vars)
+	stderr = runInstallScript(t, round, vars)
 	got, err = os.ReadFile(sysrc)
 	require.NoError(t, err)
-	assert.Equal(t, newBlock+distro, string(got), "a second install is idempotent")
-	assert.Contains(t, stderr, "replacing")
+	assert.Equal(t, newBlock+distro, string(got), "a second round is idempotent")
+	assert.Contains(t, stderr, "removing the shell hook block")
 
 	require.NoError(t, os.WriteFile(sysrc, []byte(distro), 0o644))
-	stderr = runInstallScript(t, hookInstallScript, vars)
+	stderr = runInstallScript(t, round, vars)
 	got, err = os.ReadFile(sysrc)
 	require.NoError(t, err)
 	assert.Equal(t, newBlock+distro, string(got), "a first install prepends")
 	assert.Empty(t, stderr)
 
 	require.NoError(t, os.Remove(sysrc))
-	runInstallScript(t, hookInstallScript, vars)
+	runInstallScript(t, round, vars)
 	got, err = os.ReadFile(sysrc)
 	require.NoError(t, err)
 	assert.Equal(t, newBlock, string(got), "a missing file is created")
@@ -616,13 +622,14 @@ func TestLegacyCleanupStripsSpec002Layout(t *testing.T) {
 			require.NoError(t, err, "%s %s", kind, target)
 			i := strings.Index(got, "sandcast_legacy_strip() {")
 			require.GreaterOrEqual(t, i, 0, "%s %s", kind, target)
-			assert.Contains(t, got, "for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc; do\n  sandcast_legacy_unhook \"$f\"\ndone\n", "%s %s", kind, target)
-			assert.Contains(t, got, "for f in /etc/zsh/zshrc.d/sandcast.zsh /etc/profile.d/sandcast.sh /etc/profile.d/sandcast-mise.sh /etc/profile.d/zz-sandcast-shell.sh; do\n  sandcast_legacy_remove \"$f\"\ndone\n", "%s %s", kind, target)
+			assert.Contains(t, got, "for f in /etc/bash.bashrc /etc/bash/bashrc; do\n  sandcast_legacy_unhook \"$f\"\ndone\n", "%s %s: the unhook list is the hook installer's list", kind, target)
+			assert.Contains(t, got, "for f in /etc/zsh/zshrc.d/sandcast.zsh /etc/profile.d/sandcast.sh /etc/profile.d/zz-sandcast-shell.sh; do\n  sandcast_legacy_remove \"$f\"\ndone\n", "%s %s", kind, target)
+			assert.Contains(t, got, "sandcast_legacy_remove /etc/profile.d/sandcast-mise.sh '# Generated by sandcast: keep mise shims on PATH'\n", "%s %s: the first layout's profile script goes only with its header", kind, target)
 			assert.Less(t, i, strings.Index(got, "install -d /opt/sandcast"), "%s %s: the cleanup runs before this build's files are written", kind, target)
 			if target == "openshell" {
 				assert.Less(t, i, strings.Index(got, "cat > "+plan.LoginHookPath), "%s: the login hook is written after the cleanup", kind)
 			}
-			sessionRemove := "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh '# Generated by sandcast'\n"
+			sessionRemove := "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh '" + plan.SessionEnvHeader + "'\n"
 			if NeedsSessionEnv(p) {
 				assert.NotContains(t, got, sessionRemove, "%s %s: this build installs the script, which replaces a previous one", kind, target)
 			} else {
@@ -658,15 +665,51 @@ func TestLegacyCleanupRemovesHooksAndSessionScript(t *testing.T) {
 	assert.Equal(t, distro, string(got))
 
 	hook := write("zz-sandcast-shell.sh", "# Written by sandcast\n")
-	generated := write("sandcast-env.sh", "# Generated by sandcast: session environment for OpenShell sessions\nexport X=1\n")
+	generated := write("sandcast-env.sh", plan.SessionEnvScriptFor(shellKindPlan(t, "zsh")))
 	foreign := write("other-env.sh", "# an administrator's script\nexport X=1\n")
+	mentions := write("mentions.sh", "# not "+plan.SessionEnvHeader+"\nexport X=1\n")
 	stderr = runInstallScript(t, legacyRemoveFunc+
 		"sandcast_legacy_remove "+shell.Quote(hook)+"\n"+
-		"sandcast_legacy_remove "+shell.Quote(generated)+" '"+sessionEnvHeader+"'\n"+
-		"sandcast_legacy_remove "+shell.Quote(foreign)+" '"+sessionEnvHeader+"'\n"+
+		"sandcast_legacy_remove "+shell.Quote(generated)+" '"+plan.SessionEnvHeader+"'\n"+
+		"sandcast_legacy_remove "+shell.Quote(foreign)+" '"+plan.SessionEnvHeader+"'\n"+
+		"sandcast_legacy_remove "+shell.Quote(mentions)+" '"+plan.SessionEnvHeader+"'\n"+
 		"sandcast_legacy_remove "+shell.Quote(filepath.Join(dir, "absent"))+"\n", nil)
 	assert.Equal(t, "sandcast: removing "+hook+" of a previous sandcast build\nsandcast: removing "+generated+" of a previous sandcast build\n", stderr)
 	assert.NoFileExists(t, hook)
-	assert.NoFileExists(t, generated)
+	assert.NoFileExists(t, generated, "the script sandcast writes starts with its header")
 	assert.FileExists(t, foreign, "a script of another origin at the same path is kept")
+	assert.FileExists(t, mentions, "the header must start the first line, not only appear in it")
+}
+
+// TestNeedsSessionEnvForSandcastBuiltBase: a layered build over a base image
+// that sandcast built, whose mise tools the delta keeps (skip), writes the
+// session environment script again instead of removing the base's, on both
+// targets, so login shells keep the MISE_* settings and the shims; the
+// shims on the base image's PATH count the same way.
+func TestNeedsSessionEnvForSandcastBuiltBase(t *testing.T) {
+	for _, target := range []string{"container", "openshell"} {
+		p := testPlan(t)
+		p.Target = target
+		p.Policy = ""
+		p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
+		p.Image.Env = nil
+		p.ImageFacts.Path = []string{"/usr/local/bin", "/usr/bin", "/bin"}
+		p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
+		for i := range p.Components {
+			if p.Components[i].Key == "go" {
+				p.Components[i].Action = plan.ActionSkip
+			}
+		}
+		assert.False(t, usesMise(p), target)
+		assert.True(t, NeedsSessionEnv(p), "%s: a skipped mise component means the base provides mise", target)
+		got, err := Assemble(p)
+		require.NoError(t, err, target)
+		assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n", target)
+		assert.NotContains(t, got, "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh", "%s: the base's script is replaced, not removed", target)
+
+		p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "go" })
+		assert.False(t, NeedsSessionEnv(p) && target == "container", "%s: without mise and env, no script", target)
+		p.ImageFacts.Path = []string{plan.MiseShimsDir, "/usr/local/bin", "/usr/bin", "/bin"}
+		assert.True(t, NeedsSessionEnv(p), "%s: the shims on the base image's PATH", target)
+	}
 }

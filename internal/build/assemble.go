@@ -3,8 +3,10 @@ package build
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
+	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/version"
@@ -95,26 +97,41 @@ func usesMise(p *plan.Plan) bool {
 }
 
 // NeedsSessionEnv reports whether the image carries the session environment
-// script (spec 002 R-04): whenever mise tools are installed (a login shell
-// whose system profile resets PATH needs the shims back, on either target),
-// and for the OpenShell target whenever the components, harnesses or the
-// relocation set image environment variables (the image PATH the plan
-// writes does not count: the script never exports PATH) or the base image
-// has PATH directories beyond the OpenShell default PATH outside the
-// overmount home, which an OpenShell session would otherwise lose.
+// script (spec 002 R-04): whenever the image uses mise tools, installed by
+// this build or kept from a sandcast-built base (baseProvidesMise), because
+// a login shell whose system profile resets PATH needs the shims back on
+// either target, and for the OpenShell target whenever the script has
+// something to export (plan.SessionEnvExports: the components', harnesses'
+// and relocation variables; the image PATH value the plan writes is not one
+// of its exports) or the base image has PATH directories beyond the
+// OpenShell default PATH outside the overmount home, which an OpenShell
+// session would otherwise lose.
 func NeedsSessionEnv(p *plan.Plan) bool {
-	if usesMise(p) {
+	if usesMise(p) || baseProvidesMise(p) {
 		return true
 	}
 	if p.Target != manifest.TargetOpenShell {
 		return false
 	}
-	for _, e := range p.Image.Env {
-		if e.Name != "PATH" {
+	return len(plan.SessionEnvExports(p)) > 0 || len(plan.SessionPathDirsFor(p)) > 0
+}
+
+// baseProvidesMise reports whether the base image already carries mise
+// tools the plan keeps: a mise component the delta skips because the base
+// provides it at the locked version, or the shims on the base image's PATH.
+// That is a base image sandcast built; its session script is then written
+// again by this build (the cleanup would remove it otherwise), so its login
+// shells keep the MISE_* settings and the shims.
+func baseProvidesMise(p *plan.Plan) bool {
+	if slices.Contains(p.ImageFacts.Path, plan.MiseShimsDir) {
+		return true
+	}
+	for _, c := range p.Components {
+		if c.InstallerKind == component.KindMise && c.Action == plan.ActionSkip {
 			return true
 		}
 	}
-	return len(plan.SessionPathDirsFor(p)) > 0
+	return false
 }
 
 // CuratedRC is the curated rc file content: CuratedRCPrefix, then the
