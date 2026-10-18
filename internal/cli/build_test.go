@@ -228,6 +228,8 @@ func TestBuildPrintsPlanNotices(t *testing.T) {
 	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "targets:", "dotfiles:\n  - path: conf/.tmux.conf\ntargets:", 1))
 	ta.write(t, "conf/.tmux.conf", "set -g mouse on\n")
 	require.Equal(t, 0, ta.run("build"), ta.stderr.String())
+	assert.Contains(t, ta.stderr.String(), "notice: conf/.tmux.conf relocated to /etc/tmux.conf", "every plan notice is printed to stderr before the build")
+	assert.Less(t, strings.Index(ta.stderr.String(), "notice: conf/.tmux.conf relocated"), strings.Index(ta.stderr.String(), "building "), "before the build starts")
 	assert.Contains(t, ta.stdout.String(), "notice: conf/.tmux.conf relocated to /etc/tmux.conf", "the build report repeats the plan notices")
 }
 
