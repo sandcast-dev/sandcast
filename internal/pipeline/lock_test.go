@@ -159,7 +159,7 @@ func TestBuildRefusesSymlinkedBuildDirEntries(t *testing.T) {
 func TestBuildEntriesMatchBuildConstants(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		build.LockFileName, build.BuildLogName, build.ContainerfileName, build.FinalContainerfileName,
-		build.ProfilesDirName, build.ShellContextDir, build.HarnessContextDir,
+		build.ProfilesDirName, build.ShellContextDir, build.HarnessContextDir, build.DotfileContextDir,
 		plan.PlanFile, plan.PolicyFile, plan.MiseDir, verify.FileName,
 	}, fsutil.BuildEntries())
 	assert.Equal(t, plan.ShellDir, build.ShellContextDir)

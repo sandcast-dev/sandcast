@@ -19,7 +19,7 @@ sandcast skills install
 | user (default) | `sandcast skills install --scope user` | `~/.claude/skills/sandcast-capture/` and `~/.claude/skills/sandcast-build/` |
 | project | `sandcast skills install --scope project` | `.claude/skills/sandcast-capture/` and `.claude/skills/sandcast-build/` in the project |
 
-The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.2.0) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
+The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.2.1) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
 
 The binary and the installed skills must match, because the skills rely on the binary's commands and JSON output. Check them with:
 
@@ -124,7 +124,7 @@ The `match.host_tools` field is defined in the [match reference](../configuratio
 
 ## Shell curation
 
-The image gets a curated copy of your interactive shell configuration, installed under `/etc` for the final user. Host configurations carry plugin managers, macOS paths and host-only tools that break inside a Linux sandbox, so the skill applies fixed rules. They encode the failures recorded while the image build skill of cc-deck was developed. sandcast curates zsh and bash; for any other login shell, the skill asks whether to skip the shell configuration or write a minimal one with you.
+The image gets a curated copy of your interactive shell configuration, baked outside the home so it survives the OpenShell workspace mount over the home (see [the home model](build.md#the-home-model-and-shell-initialization)). Host configurations carry plugin managers, macOS paths and host-only tools that break inside a Linux sandbox, so the skill applies fixed rules. They encode the failures recorded while the image build skill of cc-deck was developed. sandcast curates zsh and bash; for any other login shell, the skill asks whether to skip the shell configuration or write a minimal one with you.
 
 ### What is removed
 
@@ -185,6 +185,12 @@ setopt HIST_IGNORE_DUPS SHARE_HISTORY
 
 The skill stores the text with `sandcast manifest set-shell --program zsh --file <file>`. Change it later the same way rather than by editing `shell.rc` in the manifest.
 
+## Dotfiles beyond the shell
+
+Besides the shell, the skill proposes a bounded set of home dotfiles found on the host: `~/.gitconfig` and `~/.config/git/config` (git), `~/.config/starship.toml` (the prompt tool), `~/.tmux.conf` and `~/.inputrc`. You confirm which to bake with a multi-select, the same flow as harness extensions. You may also add explicit paths the allowlist omits, within fixed bounds: from the home only the configuration of known tools under `~/.config` (`git/`, `starship.toml`, `nvim/`, `helix/`, `tmux/`, `alacritty/`, `kitty/`, `wezterm/`, `ghostty/`, `bat/`, `ripgrep/`), otherwise only files inside the project. The rest of `~/.config` is refused because it also holds credential stores whose contents no redactor recognizes reliably. Credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.config/gh`, `~/.config/sops`, `~/.config/op`, `~/.config/gcloud` and other `~/.config` stores), `.netrc`, history files and credential-looking names anywhere in a path are never baked, whatever their case, and only regular files up to 256 KiB are read. The bounds exist because the manifest is committed with the project; copy a file into the project to bake one from elsewhere.
+
+Each selected dotfile is read at build time, passed through the same credential redaction as everything else (a detected token becomes a `${SANDCAST_SECRET_N}` placeholder), and baked to a persistent location outside the home so it survives the overmount: git goes to `/etc/gitconfig` (when both `~/.config/git/config` and `~/.gitconfig` are selected, they are merged there in git's order, so `~/.gitconfig` values win), tmux to `/etc/tmux.conf`, starship to `/etc/xdg/starship.toml` (with `STARSHIP_CONFIG`), readline to `/opt/sandcast/inputrc` (with `INPUTRC`), and the rest under `/etc/xdg`, below the `.config/` segment of the source path when it has one (a project copy `dotfiles/.config/nvim/init.lua` lands at `/etc/xdg/nvim/init.lua`, where XDG consumers search). The manifest records only the source path under `dotfiles`, never contents. A dotfile outside the bounds, a symlink out of its root, or a path that does not exist is skipped with a notice rather than failing the plan. See the [configuration reference](../configuration.md#dotfiles) for the manifest field.
+
 ## Secrets
 
 No credential value may appear in the manifest, the plan, a stored fragment, an adapted profile, the image or a log. Credentials belong to whatever starts the sandbox, which supplies them as OpenShell provider credentials at runtime.
@@ -194,6 +200,7 @@ sandcast enforces this at several points:
 - `sandcast harness discover` replaces every value that looks like a credential with a `${SANDCAST_SECRET_N}` placeholder before printing anything, and reports where it was (`path`), what it looked like (`kind`), the placeholder, and the environment variable it was assigned to (`env_var`).
 - `sandcast manifest validate` reports every credential-shaped value in the manifest with its line, and fails.
 - `sandcast manifest set-shell`, `sandcast fragments write` and `sandcast learnings add` refuse input that contains one.
+- Baked dotfile contents are run through the redactor before they enter the image, so a credential in a captured `.gitconfig` becomes a placeholder and is never written.
 - `sandcast plan` refuses a manifest or a stored fragment that contains one.
 - Before the first build pass, sandcast scans the build context (including skill and marketplace files copied from the host, without their `.git` directories) and refuses to build on a finding; after the build it scans every output and removes the image on a finding.
 - The harness scaffold refuses an MCP server or a marketplace source that discovery would have redacted, so a hand-edited manifest meets the same rule.

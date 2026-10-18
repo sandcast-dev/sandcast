@@ -245,8 +245,10 @@ func writeFragment(t *testing.T, dir, key, body string) {
 // OpenShell gives a session (env -i with HOME, USER, TERM and the default
 // PATH, bash as the started program) and must resolve every component
 // binary in a login bash, an interactive bash and an interactive zsh, start
-// zsh without stderr output, switch to zsh only with a terminal, and fail
-// verify once its zshenv block is removed (SC-003, SC-004).
+// zsh without stderr output, hand an interactive bash to the curated zsh
+// with or without a terminal (a bash -i that stayed bash would read the
+// workspace ~/.bashrc), and fail verify once its zshenv block is removed
+// (SC-003, SC-004).
 func TestSessionEnvironment(t *testing.T) {
 	engine := requireEngine(t)
 	requireMise(t)
@@ -298,13 +300,18 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.Contains(t, out, "/opt/mise/shims/starship")
 	// I-1: the image's PATH directories beyond the OpenShell default PATH
 	// and the shims (the base image's, as the probe recorded them) follow
-	// the shims in a session, in the image's order.
+	// the shims in a session, in the image's order, except directories under
+	// the overmount home (/sandbox/.venv/bin on the community base), which
+	// never reach a session PATH (spec 003 reconciliation, P1) and are left
+	// out of the image PATH as well, which the default agent inherits (I1 of
+	// the round 2 review).
 	pathOut, err := exec.Command(engine, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", img).Output()
 	require.NoError(t, err)
 	var extra []string
 	for _, line := range strings.Split(string(pathOut), "\n") {
 		if v, ok := strings.CutPrefix(line, "PATH="); ok {
 			for _, d := range strings.Split(v, ":") {
+				assert.False(t, d == "/sandbox" || strings.HasPrefix(d, "/sandbox/"), "the image PATH %s names a directory under the overmount home", v)
 				if d != "" && d != "/opt/mise/shims" && d != "/usr/local/bin" && d != "/usr/bin" && d != "/bin" && !slices.Contains(extra, d) {
 					extra = append(extra, d)
 				}
@@ -315,6 +322,7 @@ func TestSessionEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, strings.Join(append(append([]string{"/opt/mise/shims"}, extra...), "/usr/local/bin", "/usr/bin", "/bin"), ":")+"\n", out,
 		"the session PATH carries the image's extra directories after the shims")
+	assert.NotContains(t, out, "/sandbox", "no directory under the overmount home on the session PATH")
 	// FR-010: a declared binary that does not resolve in the image
 	// environment (nft in /usr/sbin, outside this base image's PATH) is
 	// skipped with a note instead of failing the session checks.
@@ -325,11 +333,13 @@ func TestSessionEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/opt/mise\n/etc/mise\n", out, "MISE_* settings in the session")
 
-	// connect: OpenShell runs bash -i; without a terminal it must not switch.
+	// connect: OpenShell runs bash -i. The bashrc hook hands it to the curated
+	// zsh, terminal or not, before any home rc file is read; the zsh reads the
+	// commands from stdin with the session environment.
 	out, _, err = run(check.String()+"echo SHELL_IS=$0\n", false, "/bin/bash", "-i")
 	require.NoError(t, err)
-	assert.NotContains(t, out, "MISSING", "bash -i resolves every binary after ~/.bashrc reset PATH")
-	assert.Contains(t, out, "SHELL_IS=/bin/bash", "no switch without a terminal")
+	assert.NotContains(t, out, "MISSING", "the curated shell resolves every binary; no ~/.bashrc runs")
+	assert.Contains(t, out, "SHELL_IS=/bin/zsh", "the interactive bash becomes the curated zsh")
 
 	// zsh: every binary resolves and startup writes nothing to stderr.
 	out, stderr, err := run("", false, "/bin/zsh", "-il", "-c", check.String())
@@ -340,7 +350,7 @@ func TestSessionEnvironment(t *testing.T) {
 	require.NoError(t, err, "a mise tool runs in the session")
 	assert.Contains(t, out, "starship")
 
-	// With a terminal, an interactive bash switches to a zsh login shell:
+	// With a terminal, an interactive bash switches to an interactive zsh:
 	// script(1) gives bash a pseudo terminal and feeds it our commands. No
 	// new-user wizard and no command-not-found output may appear.
 	out, _, err = run("echo SWITCHED=$ZSH_VERSION\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
@@ -384,7 +394,8 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.NotContains(t, out, "MISSING", "a plain zsh -c resolves every binary through zshenv")
 
 	// US1 scenarios 3 and 5 with an empty workspace home, as OpenShell
-	// mounts it: the switch still lands in a login zsh with the curated rc,
+	// mounts it: the switch still lands in an interactive zsh that read the
+	// curated rc,
 	// and neither the new-user wizard nor stderr output appears.
 	// podman copies the image's directory content into a tmpfs unless
 	// told not to; docker never does.
@@ -398,7 +409,9 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.Equal(t, "0", strings.TrimSpace(out), "the home directory is empty")
 	out, _, err = run("echo SWITCHED=$ZSH_VERSION LOGIN=$([[ -o login ]] && echo y) RC=${SANDCAST_RC_LOADED:-no}\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
 	require.NoError(t, err)
-	assert.Regexp(t, `SWITCHED=5\.\S* LOGIN=y RC=1`, out, "the switched shell is a login zsh that read the curated rc")
+	// The terminal session is an interactive, non-login zsh, like the bash
+	// OpenShell started; it reads the curated rc through ZDOTDIR.
+	assert.Regexp(t, `SWITCHED=5\.\S* LOGIN= RC=1`, out, "the switched shell is an interactive zsh that read the curated rc")
 	assert.NotContains(t, out, "zsh-newuser-install")
 	assert.NotContains(t, out, "This is the Z Shell configuration function")
 	assert.NotContains(t, out, "command not found")

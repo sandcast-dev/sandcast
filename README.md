@@ -50,7 +50,7 @@ sandcast skills install
 
 Then, in the project directory:
 
-1. Run `/sandcast-capture` in Claude Code. The skill asks which harnesses to include, proposes components, curates your shell configuration, writes `.sandcast/manifest.yaml`, and offers to create the lockfile.
+1. Run `/sandcast-capture` in Claude Code. The skill asks which harnesses to include, proposes components, curates your shell configuration, proposes home dotfiles to bake (git, prompt, tmux), writes `.sandcast/manifest.yaml`, and offers to create the lockfile.
 2. Lock the mise tools for the platform you build for:
 
    ```sh
@@ -92,6 +92,8 @@ components:
   - key: claude-code
 shell:
   program: zsh
+dotfiles:
+  - path: ~/.gitconfig
 targets:
   openshell:
     image: localhost/demo

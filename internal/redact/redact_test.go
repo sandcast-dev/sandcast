@@ -66,6 +66,7 @@ func TestScanPositive(t *testing.T) {
 		{"notion", "ntn_" + strings.Repeat("1", 11) + strings.Repeat("xY", 18), KindNotion, "ntn_***"},
 		{"jwt", "id " + fakeJWT, KindJWT, "eyJ***"},
 		{"jwt as bearer", "Authorization: Bearer " + fakeJWT, KindJWT, "eyJ***"},
+		{"age secret key", "AGE-SECRET-KEY-1" + strings.Repeat("Q", 58) + "\n# public key: age1" + strings.Repeat("q", 58) + "\n", KindAge, "AGE-SECRET-KEY-1***"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -137,6 +138,9 @@ func TestScanNegative(t *testing.T) {
 		{"secret identifier", "secret_access_key_id_for_the_service_account"},
 		{"secret lowercase identifier", "secret_" + strings.Repeat("kubernetesconfig", 3)},
 		{"jwt header only", "eyJhbGciOiJIUzI1NiJ9"},
+		{"age public key", "# public key: age1" + strings.Repeat("q", 58)},
+		{"age secret key too short", "AGE-SECRET-KEY-1" + strings.Repeat("Q", 57)},
+		{"age secret key too long", "AGE-SECRET-KEY-1" + strings.Repeat("Q", 59)},
 		{"jwt without payload", "eyJhbGciOiJIUzI1NiJ9.abcdefghijklmnop.signature"},
 	}
 	for _, tt := range tests {

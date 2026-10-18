@@ -3,8 +3,10 @@ package build
 import (
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 
+	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
 	"github.com/rhuss/sandcast/internal/plan"
 	"github.com/rhuss/sandcast/internal/version"
@@ -55,6 +57,9 @@ func Assemble(p *plan.Plan) (string, error) {
 	if err := add(shellSection(p)); err != nil {
 		return "", err
 	}
+	if err := add(dotfilesSection(p)); err != nil {
+		return "", err
+	}
 	for _, h := range p.Harnesses {
 		sections = append(sections, h.Fragment)
 	}
@@ -66,7 +71,7 @@ func Assemble(p *plan.Plan) (string, error) {
 	if err := add(execTemplate(footerTemplate, map[string]any{
 		"WorkDir": workDir(p),
 		"User":    p.FinalUser.Name,
-		"Cmd":     cmdFor(loginShell(p)),
+		"Cmd":     loginShell(p).cmd(),
 	})); err != nil {
 		return "", err
 	}
@@ -85,49 +90,6 @@ func fromReference(ref, digest string) string {
 	return ref + "@" + digest
 }
 
-// shellSection renders 60-shell (contracts/image-shell.md), in this order:
-// the session environment script (R-04), the session environment block and
-// the zsh switch hook in the system bash rc of OpenShell images (R-04,
-// R-07), the curated rc, which therefore runs after the session environment
-// in an interactive bash, the zshenv block (R-06) and the login shell of a
-// kept final user (a created user gets it from useradd). It renders nothing
-// when none of them applies.
-func shellSection(p *plan.Plan) (string, error) {
-	zshProgram := p.Shell.Program == "zsh"
-	openshell := p.Target == manifest.TargetOpenShell
-	sessionEnv := NeedsSessionEnv(p)
-	bashRC := openshell && (sessionEnv || zshProgram)
-	zshEnv := zshProgram || hasZsh(p)
-	login := ""
-	if zshProgram && !p.FinalUser.Created {
-		login = "/bin/zsh"
-	}
-	if p.Shell.RCPath == "" && !sessionEnv && !bashRC && !zshEnv && login == "" {
-		return "", nil
-	}
-	title := "session environment"
-	if p.Shell.RCPath != "" {
-		title += " and curated " + p.Shell.Program + " configuration"
-	}
-	return execTemplate(shellTemplate, map[string]any{
-		"Title":          title,
-		"Program":        p.Shell.Program,
-		"RCPath":         p.Shell.RCPath,
-		"ContextFile":    ShellContextFile(p.Shell.Program),
-		"SessionEnv":     sessionEnv,
-		"EnvContextFile": SessionEnvContextFile,
-		"BashRC":         bashRC,
-		"Switch":         openshell && zshProgram,
-		"ZshEnv":         zshEnv,
-		"EnvMarker":      SessionEnvMarker,
-		"EnvPath":        plan.SessionEnvPath,
-		"SwitchMarker":   ShellSwitchMarker,
-		"SwitchHook":     ShellSwitchHook,
-		"LoginShell":     login,
-		"User":           p.FinalUser.Name,
-	})
-}
-
 // usesMise reports whether the plan installs anything through the 30-mise
 // layer.
 func usesMise(p *plan.Plan) bool {
@@ -135,27 +97,45 @@ func usesMise(p *plan.Plan) bool {
 }
 
 // NeedsSessionEnv reports whether the image carries the session environment
-// script: whenever mise tools are installed (a login shell whose system
-// profile resets PATH needs the shims back, on either target), and for the
-// OpenShell target whenever the components or harnesses set image
-// environment variables or the base image has PATH directories beyond the
-// OpenShell default PATH, which an OpenShell session would otherwise lose.
+// script (spec 002 R-04): whenever the image uses mise tools, installed by
+// this build or kept from a sandcast-built base (baseProvidesMise), because
+// a login shell whose system profile resets PATH needs the shims back on
+// either target, and for the OpenShell target whenever the script has
+// something to export (plan.SessionEnvExports: the components', harnesses'
+// and relocation variables; the image PATH value the plan writes is not one
+// of its exports) or the base image has PATH directories beyond the
+// OpenShell default PATH outside the overmount home, which an OpenShell
+// session would otherwise lose.
 func NeedsSessionEnv(p *plan.Plan) bool {
-	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path)) > 0))
+	if usesMise(p) || baseProvidesMise(p) {
+		return true
+	}
+	if p.Target != manifest.TargetOpenShell {
+		return false
+	}
+	return len(plan.SessionEnvExports(p)) > 0 || len(plan.SessionPathDirsFor(p)) > 0
 }
 
-// hasZsh reports whether zsh is in the base image or planned.
-func hasZsh(p *plan.Plan) bool {
-	for _, s := range p.ImageFacts.Shells {
-		if path.Base(s) == "zsh" {
+// baseProvidesMise reports whether the base image already carries mise
+// tools the plan keeps: a mise component the delta skips because the base
+// provides it at the locked version, or the shims on the base image's PATH.
+// That is a base image sandcast built; its session script is then written
+// again by this build (the cleanup would remove it otherwise), so its login
+// shells keep the MISE_* settings and the shims.
+func baseProvidesMise(p *plan.Plan) bool {
+	if slices.Contains(p.ImageFacts.Path, plan.MiseShimsDir) {
+		return true
+	}
+	for _, c := range p.Components {
+		if c.InstallerKind == component.KindMise && c.Action == plan.ActionSkip {
 			return true
 		}
 	}
-	return p.Component("zsh") != nil
+	return false
 }
 
 // CuratedRC is the curated rc file content: CuratedRCPrefix, then the
-// manifest's rc (R-06).
+// manifest's rc (spec 002 R-06).
 func CuratedRC(p *plan.Plan) string {
 	return CuratedRCPrefix + p.Shell.RC
 }
@@ -177,12 +157,13 @@ func uniqueFragment(p *plan.Plan, name string) string {
 	return ""
 }
 
-// workDir is /sandbox for the OpenShell target (R-10) and the final user's
-// home for the container target, which applies no sandbox conventions
-// (FR-040).
+// workDir is the OpenShell workspace directory for the OpenShell target, the
+// path the workspace volume is mounted over (plan.OvermountPrefix, /sandbox
+// on the shipped base images, R-10), and the final user's home for the
+// container target, which applies no sandbox conventions (FR-040).
 func workDir(p *plan.Plan) string {
-	if p.Target == manifest.TargetOpenShell {
-		return WorkDir
+	if ws := plan.OvermountPrefix(p); ws != "" {
+		return ws
 	}
 	if p.FinalUser.Home != "" {
 		return p.FinalUser.Home
@@ -192,12 +173,11 @@ func workDir(p *plan.Plan) string {
 
 func userSection(p *plan.Plan) (string, error) {
 	var userDirs, rootDirs []string
-	sandboxDir := ""
-	if p.Target == manifest.TargetOpenShell {
-		sandboxDir = WorkDir
-	}
+	// The OpenShell workspace directory is always created for the final
+	// user; a component or harness directory equal to it adds nothing.
+	sandboxDir := plan.OvermountPrefix(p)
 	for _, d := range p.Image.Dirs {
-		if d.Path == WorkDir {
+		if sandboxDir != "" && d.Path == sandboxDir {
 			continue
 		}
 		if d.Owner == "root" {
@@ -208,7 +188,7 @@ func userSection(p *plan.Plan) (string, error) {
 	}
 	return execTemplate(userTemplate, map[string]any{
 		"User":       p.FinalUser,
-		"LoginShell": loginShell(p),
+		"LoginShell": loginShell(p).Path,
 		"WorkDir":    sandboxDir,
 		"UserDirs":   userDirs,
 		"RootDirs":   rootDirs,

@@ -1,7 +1,6 @@
 package build
 
 import (
-	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/plan"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/testutil"
 )
 
@@ -104,12 +104,19 @@ func TestEnvValue(t *testing.T) {
 
 func TestLoginShell(t *testing.T) {
 	p := testPlan(t)
-	assert.Equal(t, "/bin/zsh", loginShell(p))
+	assert.Equal(t, loginShellSpec{Path: "/bin/zsh", CmdArgs: []string{"-l"}}, loginShell(p))
+	assert.Equal(t, `"/bin/zsh", "-l"`, loginShell(p).cmd(), "zsh starts as a login shell")
 	p.Shell = plan.Shell{Program: "none"}
 	p.Components = nil
-	assert.Equal(t, "/bin/bash", loginShell(p))
+	// A bash login shell uses the baked launcher, never /bin/bash directly,
+	// and the launcher is the sole CMD argument (no -l).
+	assert.Equal(t, loginShellSpec{Path: plan.ShellLoginPath}, loginShell(p))
+	assert.Equal(t, `"/opt/sandcast/shell-login"`, loginShell(p).cmd())
 	p.ImageFacts.Shells = []string{"/bin/sh"}
-	assert.Equal(t, "/bin/sh", loginShell(p))
+	// The sh fallback uses the baked launcher too, so a login shell never
+	// reads a startup file from the workspace home (spec 003 FR-002/SC-002).
+	assert.Equal(t, loginShellSpec{Path: plan.ShLoginPath}, loginShell(p))
+	assert.Equal(t, `"/opt/sandcast/sh-login"`, loginShell(p).cmd())
 }
 
 func TestAssembleContainerTargetGolden(t *testing.T) {
@@ -145,9 +152,14 @@ func TestFromReferenceReplacesPinnedDigest(t *testing.T) {
 	assert.Equal(t, "localhost:5000/y@"+testDigest, fromReference("localhost:5000/y", testDigest))
 }
 
-// TestShellSection covers the 60-shell variants of contracts/image-shell.md.
+// TestShellSection covers the 60-shell variants of the merged shell model
+// (spec 002 contracts/image-shell.md reconciled with spec 003): the session
+// environment script and the places that source it, the curated rc
+// relocated out of the home, the zshenv block, the opt-out of the switch to
+// zsh and the final user's login shell.
 func TestShellSection(t *testing.T) {
 	envLine := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh"
+	noSwitch := `if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then`
 	tests := []struct {
 		name    string
 		mutate  func(p *plan.Plan)
@@ -157,14 +169,15 @@ func TestShellSection(t *testing.T) {
 		order   []string
 	}{
 		{
-			name:    "openshell zsh with rc and created user",
-			present: []string{"COPY shell/sandcast.zsh", SessionEnvMarker, ShellSwitchMarker, ShellSwitchHook, "zsh-newuser-install() { :; }", envLine},
-			absent:  []string{"usermod -s"},
+			name: "openshell zsh with rc and created user",
+			present: []string{"COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc",
+				shell.ZshEnvBegin, "zsh-newuser-install() { :; }", envLine, noSwitch, "usermod -s /bin/zsh sandbox", "exec /bin/zsh -i\n", "exec /bin/zsh -l -i\n"},
+			absent: []string{"COPY shell/sandcast.zsh /etc/zsh/zshrc.d", "exec /bin/zsh -l\n"},
 		},
 		{
 			name:    "openshell zsh without rc and kept user",
 			mutate:  func(p *plan.Plan) { p.Shell.RC, p.Shell.RCPath = "", ""; p.FinalUser.Created = false },
-			present: []string{"# 60-shell: session environment\n", SessionEnvMarker, ShellSwitchHook, "zsh-newuser-install", "usermod -s /bin/zsh sandbox", "chsh -s /bin/zsh sandbox", `sed -i 's#^\(sandbox:.*:\)[^:]*$#\1/bin/zsh#' /etc/passwd`},
+			present: []string{"usermod -s /bin/zsh sandbox", `sed -i 's|^\(sandbox:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*$|\1/bin/zsh|' /etc/passwd`, shell.ZshEnvBegin, envLine},
 			absent:  []string{"COPY shell/sandcast.zsh"},
 			golden:  "testdata/shell-zsh-kept-user.golden",
 		},
@@ -174,50 +187,56 @@ func TestShellSection(t *testing.T) {
 				p.Shell = plan.Shell{Program: "none"}
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
 			},
-			present: []string{"COPY shell/sandcast-env.sh", SessionEnvMarker},
-			absent:  []string{ShellSwitchMarker, "zshenv"},
+			present: []string{"COPY shell/sandcast-env.sh", "cat > /opt/sandcast/shell-login", envLine},
+			absent:  []string{noSwitch, "zshenv_block=/tmp/sandcast-zshenv", "/bin/zsh"},
 		},
 		{
-			name: "openshell bash program renders no switch hook",
+			name: "openshell bash program: the launcher, nothing to switch",
 			mutate: func(p *plan.Plan) {
 				p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
 			},
-			present: []string{"COPY shell/sandcast.sh /etc/profile.d/sandcast.sh", SessionEnvMarker, envLine},
-			absent:  []string{ShellSwitchMarker, "zshenv", "usermod"},
+			present: []string{"COPY shell/sandcast.sh /opt/sandcast/bashrc", envLine, "exec /opt/sandcast/shell-login -i\n"},
+			absent:  []string{noSwitch, "zshenv_block=/tmp/sandcast-zshenv", "/bin/zsh"},
 			golden:  "testdata/shell-bash.golden",
-			// The curated bash rc runs after the session environment in an
-			// interactive bash, so its tools are on PATH.
-			order: []string{SessionEnvMarker, "/etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh"},
+			// The launcher sources the session environment before it starts
+			// bash, so a non-interactive run has it too.
+			order: []string{"cat > /opt/sandcast/shell-login", envLine, "exec bash --noprofile --rcfile /opt/sandcast/bashrc"},
 		},
 		{
 			name: "zsh in the base image gets the zshenv block",
 			mutate: func(p *plan.Plan) {
 				p.Shell = plan.Shell{Program: "none"}
 				p.ImageFacts.Shells = []string{"/bin/bash", "/usr/bin/zsh"}
+				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
 			},
-			present: []string{"zsh-newuser-install", SessionEnvMarker},
-			absent:  []string{ShellSwitchMarker, "usermod"},
+			present: []string{"zsh-newuser-install", shell.ZshEnvBegin, "export ZDOTDIR=/opt/sandcast/zdotdir", "cat > /opt/sandcast/shell-login"},
+			absent:  []string{noSwitch, "exec /bin/zsh", "SHELL=/bin/zsh"},
 		},
 		{
-			name: "container target has no bash rc block",
+			name: "container target gets no hooks; a kept user of a zsh plan gets zsh as login shell",
 			mutate: func(p *plan.Plan) {
 				p.Target = "container"
 				p.Policy = ""
 				p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
 			},
-			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", "usermod -s /bin/zsh root"},
-			absent:  []string{"/etc/bash.bashrc", ShellSwitchMarker},
+			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", shell.ZshEnvBegin, "usermod -s /bin/zsh root", "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh",
+				// The hooks of an OpenShell base image are removed, not written.
+				"sandcast_legacy_unhook \"$f\"", "sandcast_legacy_remove \"$f\""},
+			absent: []string{"cat > " + plan.LoginHookPath, "hook=/tmp/sandcast-bashrc-hook"},
 		},
 		{
-			name: "nothing to do renders no section",
+			name: "container bash without mise: the launcher, no session script",
 			mutate: func(p *plan.Plan) {
 				p.Target = "container"
 				p.Policy = ""
 				p.Shell = plan.Shell{Program: "none"}
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
 			},
-			absent: []string{"# 60-shell"},
+			present: []string{"# 60-shell: curated bash configuration", "cat > /opt/sandcast/shell-login",
+				// A script of a previous build is removed when this build installs none.
+				"sandcast_legacy_remove /etc/profile.d/sandcast-env.sh '" + plan.SessionEnvHeader + "'\n"},
+			absent: []string{"COPY shell/sandcast-env.sh", envLine, "zshenv_block=/tmp/sandcast-zshenv"},
 		},
 	}
 	for _, tt := range tests {
@@ -250,24 +269,45 @@ func TestShellSection(t *testing.T) {
 	}
 }
 
-// TestShellSwitchHookBehavior runs the hook in bash: without a terminal it
-// must not switch shells (FR-008, acceptance scenario 4).
-func TestShellSwitchHookBehavior(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("no bash")
-	}
-	out, err := exec.Command(bash, "--norc", "-i", "-c", ShellSwitchHook+"\necho stayed-in-bash").CombinedOutput()
-	require.NoError(t, err, "%s", out)
-	assert.Contains(t, string(out), "stayed-in-bash")
-	out, err = exec.Command(bash, "-c", ShellSwitchHook+"\necho non-interactive").CombinedOutput()
-	require.NoError(t, err, "%s", out)
-	assert.Contains(t, string(out), "non-interactive")
-	assert.Contains(t, ShellSwitchHook, "SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l",
-		"the switched zsh marks its environment, so a nested interactive bash stays bash")
-}
-
 func TestCuratedRC(t *testing.T) {
 	p := testPlan(t)
 	assert.Equal(t, "_sandcast_path 2>/dev/null || true\nSANDCAST_RC_LOADED=1\nautoload -Uz compinit && compinit -C\n", CuratedRC(p))
+}
+
+// TestNeedsSessionEnvIgnoresOvermountDirs pins when an OpenShell image
+// carries the session environment script (spec 002 R-04 under P1 of the
+// reconciliation review): a base image PATH directory under the overmount
+// home never reaches a session PATH, so it is no reason for the script
+// either. An image with nothing else to export (no mise tools, no image
+// env, no extra directory outside the home) has no script, and its
+// sessions keep OpenShell's default PATH; image env or an extra directory
+// outside the home brings the script back.
+func TestNeedsSessionEnvIgnoresOvermountDirs(t *testing.T) {
+	p := testPlan(t)
+	p.Shell = plan.Shell{Program: "bash", RCPath: plan.BashRCPath, RC: "alias ll='ls -l'\n"}
+	p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
+	p.Image.Env = nil
+	p.ImageFacts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin"}
+	assert.False(t, NeedsSessionEnv(p), "a directory under the overmount home is no reason for the script")
+	// Nor is the image PATH the plan writes for such a base image (I1 of
+	// the round 2 review): the script never exports PATH.
+	p.Image.Env = []plan.EnvVar{{Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin"}}
+	assert.False(t, NeedsSessionEnv(p), "the image PATH is no reason for the script")
+	got, err := Assemble(p)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "COPY shell/sandcast-env.sh")
+	assert.NotContains(t, got, "[ -r /etc/profile.d/sandcast-env.sh ]")
+	assert.Contains(t, got, "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh '"+plan.SessionEnvHeader+"'\n", "a script of a previous build is removed")
+	p.Image.Env = nil
+
+	p.ImageFacts.Path = append(p.ImageFacts.Path, "/usr/sbin")
+	assert.True(t, NeedsSessionEnv(p), "an extra directory outside the home")
+	p.ImageFacts.Path = p.ImageFacts.Path[:4]
+	p.Image.Env = []plan.EnvVar{{Name: "INPUTRC", Value: plan.InputRCPath}}
+	assert.True(t, NeedsSessionEnv(p), "image env")
+	got, err = Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n")
+	assert.NotContains(t, got, "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh", "the COPY replaces a previous script")
+	assert.NotContains(t, plan.SessionEnvScriptFor(p), "/sandbox/.venv/bin")
 }

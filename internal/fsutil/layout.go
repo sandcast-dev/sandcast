@@ -28,7 +28,7 @@ const (
 // constants of internal/build, internal/plan and internal/verify.
 var buildEntries = []string{
 	".lock", "build.log", "plan.yaml", "policy.yaml", "verify.yaml",
-	"Containerfile", "Containerfile.final", "profiles", "mise", "shell", "harness",
+	"Containerfile", "Containerfile.final", "profiles", "mise", "shell", "harness", "dotfiles",
 }
 
 // BuildEntries returns a copy of the names sandcast writes directly inside
@@ -127,8 +127,8 @@ func (l Layout) BuildDir(target string) string { return filepath.Join(l.BuildRoo
 // RelToRoot returns path relative to the project root with forward slashes,
 // or path unchanged when it is outside the root.
 func (l Layout) RelToRoot(path string) string {
-	rel, err := filepath.Rel(l.Root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, ok := relWithin(l.Root, path)
+	if !ok {
 		return filepath.ToSlash(path)
 	}
 	return filepath.ToSlash(rel)
@@ -231,8 +231,8 @@ func (l Layout) EnsureGitignore() error {
 // delete and write files outside the project and send them as build
 // context.
 func (l Layout) CheckNoSymlinks(path string) error {
-	rel, err := filepath.Rel(l.Root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, ok := relWithin(l.Root, path)
+	if !ok {
 		return fmt.Errorf("%s is outside the project %s", path, l.Root)
 	}
 	cur := l.Root

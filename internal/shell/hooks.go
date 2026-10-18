@@ -1,0 +1,335 @@
+package shell
+
+import "strings"
+
+// The shell hooks close the startup-file vector for shells that a runtime
+// starts directly. OpenShell v0.1.x runs /bin/bash (or /bin/sh when the image
+// has no bash) with -i under a pty, with -lc or -c for a command, and as -l
+// for its default agent. It never uses the image CMD or the passwd shell, so
+// the launcher does not reach these shells. Exec and terminal sessions start
+// with a cleared environment, while the default agent inherits the image ENV;
+// the hooks source the session environment script (spec 002,
+// /etc/profile.d/sandcast-env.sh), which carries the relocation variables,
+// so both cases agree. bash reads two kinds of startup files before any
+// file in the home: the system bashrc (/etc/bash.bashrc on Debian and
+// Ubuntu) for interactive non-login shells, and /etc/profile, which sources
+// /etc/profile.d/*.sh, for login shells. The hooks live there and replace
+// the shell before bash reaches the workspace ~/.bashrc, ~/.bash_profile,
+// ~/.profile or ~/.bash_logout (spec 003 FR-001, FR-002, SC-002).
+
+// HookBegin and HookEnd delimit the block sandcast prepends to the system
+// bashrc, so a build on an image that already carries one (a base image
+// sandcast built, or a rebuild) can replace that block with the current one.
+const (
+	HookBegin = "# >>> sandcast shell hook >>>"
+	HookEnd   = "# <<< sandcast shell hook <<<"
+)
+
+// Export is one variable the hooks export beyond the session environment
+// script, which carries the relocation variables: today SHELL in zsh images.
+// It is exported on the path that starts the curated shell only, so a bash
+// kept by NoSwitchVar or a nested bash does not inherit it.
+type Export struct {
+	Name, Value string
+}
+
+// HookTarget is one command an interactive bash is replaced with: the
+// program as a shell word (an absolute path, or "$BASH" for the running
+// bash) and the options the hook passes before its own.
+type HookTarget struct {
+	Program string
+	Args    string
+}
+
+// String renders the target as shell words.
+func (t HookTarget) String() string {
+	if t.Args == "" {
+		return t.Program
+	}
+	return t.Program + " " + t.Args
+}
+
+// PlainBash is the running bash without any startup file: the fallback when
+// a curated target cannot be executed, and the nested target of images
+// whose curated shell is not bash.
+var PlainBash = HookTarget{Program: `"$BASH"`, Args: "--noprofile --norc"}
+
+// HookTargets are the commands an interactive bash is replaced with.
+type HookTargets struct {
+	// Top is the curated interactive shell for an interactive non-login bash
+	// that does not run inside a curated session: the shell OpenShell opens.
+	Top HookTarget
+	// TopLogin is the curated shell for an interactive login bash outside a
+	// curated session (the OpenShell default agent under a pty).
+	TopLogin HookTarget
+	// Nested is the shell for an interactive bash that the user starts inside
+	// a curated session (SANDCAST_SESSION is set). It keeps bash, but never
+	// reads a startup file from the home.
+	Nested HookTarget
+	// NoSwitch, when set, replaces Top and TopLogin while NoSwitchVar is in
+	// the environment (spec 002: the user asked to stay in bash although
+	// the curated shell is zsh). It is bash without startup files, with the
+	// session environment; it reads no workspace file either.
+	NoSwitch HookTarget
+}
+
+// NoSwitchVar is the documented opt-out of the switch to the curated zsh
+// (spec 002 FR-008): with it set in the sandbox environment, an interactive
+// bash stays bash, as HookTargets.NoSwitch describes.
+const NoSwitchVar = "SANDCAST_NO_SHELL_SWITCH"
+
+// SessionVar marks a process tree that runs inside a curated shell session.
+// The launchers, the global zshenv and the hooks export it; OpenShell clears
+// it, which is how the hooks tell its top-level shell from a nested one.
+const SessionVar = "SANDCAST_SESSION"
+
+// GuardVar holds the pid of the bash the launcher started. That bash reads
+// the system bashrc too; the hook recognizes it by the pid, unsets the guard
+// so no child inherits it, and lets it continue to the baked rcfile.
+const GuardVar = "SANDCAST_SHELL_PID"
+
+func exportLines(exports []Export, indent string) string {
+	var b strings.Builder
+	for _, e := range exports {
+		b.WriteString(indent + "export " + e.Name + "=" + QuoteIfNeeded(e.Value) + "\n")
+	}
+	return b.String()
+}
+
+// interactiveExec renders the branch that replaces an interactive bash with
+// target, keeping a -c command string and its arguments ($0 "$@"), or the
+// positional parameters of a bash that reads its commands from stdin
+// (bash -i -s a b, as verify's session checks run): they are passed after
+// -s so the target reads stdin too. The target may be missing (a layered
+// image removed it) or denied (a runtime policy stricter than the image
+// policy; a test with [ -x ] cannot see a landlock denial), and a failed
+// exec in a startup file would otherwise end the session with status 126
+// and bash's one-line error. With execfail the exec returns instead: one
+// sandcast: line names the target and the policy grant, and PlainBash takes
+// over, so the session stays usable and still reads no workspace file.
+// PlainBash itself needs no fallback.
+func interactiveExec(t HookTarget, indent string) string {
+	withCmd := func(t HookTarget) string {
+		return "exec " + t.String() + ` -i -c "$BASH_EXECUTION_STRING" "$0" "$@"`
+	}
+	// "--" keeps a positional parameter that starts with "-" out of the
+	// target's option parsing: bash -i -s -l would be a login shell that
+	// reads the workspace ~/.bash_logout on exit. bash, zsh and the
+	// launcher's option filter all stop at "--".
+	withArgs := func(t HookTarget) string { return "exec " + t.String() + ` -i -s -- "$@"` }
+	bare := func(t HookTarget) string { return "exec " + t.String() + " -i" }
+	if t == PlainBash {
+		return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then ` + withCmd(t) + "; fi\n" +
+			indent + `if [ $# -gt 0 ]; then ` + withArgs(t) + "; fi\n" +
+			indent + bare(t) + "\n"
+	}
+	msg := `echo "sandcast: cannot execute ` + t.Program + `, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2`
+	return indent + "shopt -s execfail\n" +
+		indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		indent + "  " + withCmd(t) + "\n" +
+		indent + "  " + msg + "\n" +
+		indent + "  " + withCmd(PlainBash) + "\n" +
+		indent + "fi\n" +
+		indent + `if [ $# -gt 0 ]; then` + "\n" +
+		indent + "  " + withArgs(t) + "\n" +
+		indent + "  " + msg + "\n" +
+		indent + "  " + withArgs(PlainBash) + "\n" +
+		indent + "fi\n" +
+		indent + bare(t) + "\n" +
+		indent + msg + "\n" +
+		indent + bare(PlainBash) + "\n"
+}
+
+// redirect renders the interactive branch: a bash inside a curated session
+// goes to nested, any other to top, which marks the new session first, or
+// to noSwitch when it is set and NoSwitchVar is in the environment. The
+// exports (SHELL in zsh images) are made right before the top exec only, so
+// neither the nested bash nor the one kept by NoSwitchVar inherits them.
+// When nested and top are the same command the session check is left out.
+func redirect(top, nested, noSwitch HookTarget, exports []Export, indent string) string {
+	var b strings.Builder
+	if nested != top {
+		b.WriteString(indent + `if [ -n "${` + SessionVar + `-}" ]; then` + "\n")
+		b.WriteString(interactiveExec(nested, indent+"  "))
+		b.WriteString(indent + "fi\n")
+	}
+	b.WriteString(indent + SessionVar + "=1\n")
+	b.WriteString(indent + "export " + SessionVar + "\n")
+	if noSwitch != (HookTarget{}) && noSwitch != top {
+		b.WriteString(indent + `if [ -n "${` + NoSwitchVar + `-}" ]; then` + "\n")
+		b.WriteString(interactiveExec(noSwitch, indent+"  "))
+		b.WriteString(indent + "fi\n")
+	}
+	b.WriteString(exportLines(exports, indent))
+	b.WriteString(interactiveExec(top, indent))
+	return b.String()
+}
+
+// plainBashOptions rebuilds, as positional parameters, the options of the
+// running bash for a replacement bash: every set -o option in SHELLOPTS as
+// -o name (posix included; bash takes no long option after a short one, so
+// --posix could not follow them) and every shopt option in BASHOPTS as -O
+// name, so -e, -u, -x, -o pipefail and the like survive the replacement.
+// Left out are the options bash sets on its own for the kind of shell it
+// is, which the replacement is not or sets itself: interactive, login_shell,
+// monitor, history, emacs, vi and interactive-comments. The original
+// positional parameters are kept behind the options; the caller appends the
+// command form, then rotates them back behind it (plainBashExec). Word
+// splitting is never used, so a name cannot be split or globbed.
+func plainBashOptions(indent string) string {
+	return indent + "_sandcast_argc=$#\n" +
+		indent + "_sandcast_rest=${SHELLOPTS-}\n" +
+		indent + `while [ -n "$_sandcast_rest" ]; do` + "\n" +
+		indent + "  case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac\n" +
+		indent + "  case $_sandcast_opt in\n" +
+		indent + "  interactive | login_shell | monitor | history | emacs | vi | interactive-comments) ;;\n" +
+		indent + `  *) set -- "$@" -o "$_sandcast_opt" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "done\n" +
+		indent + "_sandcast_rest=${BASHOPTS-}\n" +
+		indent + `while [ -n "$_sandcast_rest" ]; do` + "\n" +
+		indent + "  case $_sandcast_rest in *:*) _sandcast_opt=${_sandcast_rest%%:*} _sandcast_rest=${_sandcast_rest#*:} ;; *) _sandcast_opt=$_sandcast_rest _sandcast_rest= ;; esac\n" +
+		indent + "  case $_sandcast_opt in\n" +
+		indent + "  login_shell | interactive_comments) ;;\n" +
+		indent + `  *) set -- "$@" -O "$_sandcast_opt" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "done\n"
+}
+
+// plainBashExec rotates the original arguments behind the options and the
+// command form that the caller appended, and execs the replacement bash with
+// no startup files. The options follow --noprofile --norc; bash accepts
+// them in that order.
+func plainBashExec(indent string) string {
+	return indent + `while [ "$_sandcast_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _sandcast_argc=$((_sandcast_argc - 1)); done` + "\n" +
+		indent + `exec "$BASH" --noprofile --norc "$@"` + "\n"
+}
+
+// plainBashCommand replaces a non-interactive bash that runs a -c command
+// string with one that reads no startup file at all, keeping the command,
+// its arguments and $0, the options, the pid and the exit status. Without a
+// command string it does nothing.
+func plainBashCommand(indent string) string {
+	return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		plainBashOptions(indent+"  ") +
+		indent + `  set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"` + "\n" +
+		plainBashExec(indent+"  ") +
+		indent + "fi\n"
+}
+
+// plainBashLogin replaces a non-interactive login bash the same way, for all
+// three forms: a -c command string, a script (passed after "--", so a script
+// named like an option is not read as one), and the standard input. bash
+// reads its input when $0 is the name it was invoked by: the path in $BASH,
+// its base name, that with a login "-" prefix, or sh. A script literally
+// named like the shell (bash -l ./sh) is the one case this cannot tell
+// apart; it is read as input.
+func plainBashLogin(indent string) string {
+	return plainBashOptions(indent) +
+		indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then` + "\n" +
+		indent + `  set -- "$@" -c "$BASH_EXECUTION_STRING" "$0"` + "\n" +
+		indent + "else\n" +
+		indent + "  case $0 in\n" +
+		indent + `  "$BASH" | "-$BASH" | "${BASH##*/}" | "-${BASH##*/}" | sh | -sh) set -- "$@" -s ;;` + "\n" +
+		indent + `  *) set -- "$@" -- "$0" ;;` + "\n" +
+		indent + "  esac\n" +
+		indent + "fi\n" +
+		plainBashExec(indent)
+}
+
+// BashrcHook returns the block sandcast prepends to the system bashrc. It
+// sources the session environment script first (sessionEnv, "" for none;
+// spec 002: the MISE_* settings, the component and relocation environment
+// and the shims first on PATH, which an interactive bash started with a
+// cleared environment reads no profile for), then for an interactive
+// non-login bash execs the curated shell, exporting the extra variables on
+// that path only (see redirect), so ~/.bashrc is never read; the bash the
+// launcher starts is recognized by GuardVar and continues normally. A
+// non-interactive bash reads the system
+// bashrc only when sshd or rshd starts it with -c; that one is replaced by
+// a bash without startup files. Login shells are left to the profile hook,
+// because /etc/profile sources the system bashrc before /etc/profile.d. The
+// block is prepended rather than appended because the Debian file returns
+// early for non-interactive shells.
+func BashrcHook(exports []Export, t HookTargets, sessionEnv string) string {
+	return HookBegin + "\n" +
+		"# Written by sandcast: the home is the mounted workspace, so an\n" +
+		"# interactive bash must never read a .bashrc there. Replace it with the\n" +
+		"# curated shell before bash gets to the home file.\n" +
+		SessionEnvSource(sessionEnv) +
+		`if [ -n "${BASH_VERSION-}" ]; then` + "\n" +
+		`  if [ "${` + GuardVar + `-}" = "$$" ]; then` + "\n" +
+		"    unset " + GuardVar + "\n" +
+		"  elif ! shopt -q login_shell; then\n" +
+		"    case $- in\n" +
+		"    *i*)\n" +
+		redirect(t.Top, t.Nested, t.NoSwitch, exports, "      ") +
+		"      ;;\n" +
+		"    *)\n" +
+		plainBashCommand("      ") +
+		"      ;;\n" +
+		"    esac\n" +
+		"  fi\n" +
+		"fi\n" +
+		HookEnd + "\n"
+}
+
+// LoginHook returns /etc/profile.d/zz-sandcast-shell.sh. /etc/profile sources
+// it last (the zz- prefix) for every login shell, before the shell reads a
+// profile file from the home. It sources the session environment script
+// (sessionEnv, "" for none; /etc/profile already did when it sources
+// /etc/profile.d, and the script is idempotent) and then acts per case; the
+// extra variables (SHELL in zsh images) are exported only on the interactive
+// path that execs the curated shell (see redirect):
+//
+//   - bash, interactive: execs the curated shell (TopLogin, or Nested inside a
+//     curated session), which is not a login shell, so neither ~/.bash_profile
+//     nor ~/.bash_logout is read.
+//   - bash, not interactive (bash -lc 'cmd', bash -l script, bash -l reading
+//     stdin): execs a bash with no startup files that runs the same command,
+//     script or input with the same arguments, options (-e, -u, -x, -o
+//     pipefail and every other set -o and shopt option), pid and exit
+//     status. Returning instead would let bash read ~/.bash_profile next and
+//     ~/.bash_logout on exit.
+//   - other POSIX shells (dash, busybox ash, ksh): they read $HOME/.profile
+//     next and expand $HOME at that moment, and they have no logout file, so
+//     HOME points at redirectHome until the baked .profile there restores it.
+//   - zsh (sourcing /etc/profile in sh emulation) only gets the session
+//     environment; its startup files follow ZDOTDIR.
+//
+// A bash that sources /etc/profile by hand is not a login shell and is left
+// alone.
+func LoginHook(exports []Export, t HookTargets, redirectHome, sessionEnv string) string {
+	return "# Written by sandcast: the home is the mounted workspace, so a login\n" +
+		"# shell must never read a profile or logout file there. See\n" +
+		"# docs/guides/build.md, the home model and shell initialization.\n" +
+		SessionEnvSource(sessionEnv) +
+		`if [ -n "${BASH_VERSION-}" ]; then` + "\n" +
+		"  if shopt -q login_shell 2>/dev/null; then\n" +
+		"    case $- in\n" +
+		"    *i*)\n" +
+		redirect(t.TopLogin, t.Nested, t.NoSwitch, exports, "      ") +
+		"      ;;\n" +
+		"    *)\n" +
+		plainBashLogin("      ") +
+		"      ;;\n" +
+		"    esac\n" +
+		"  fi\n" +
+		`elif [ -z "${ZSH_VERSION-}" ] && [ -n "${HOME-}" ] && [ "$HOME" != ` + QuoteIfNeeded(redirectHome) + ` ]; then` + "\n" +
+		"  SANDCAST_HOME=$HOME\n" +
+		"  HOME=" + QuoteIfNeeded(redirectHome) + "\n" +
+		"fi\n"
+}
+
+// RedirectHomeProfile returns the .profile baked in the redirect home. A
+// POSIX login shell reads it in place of the workspace ~/.profile and it
+// restores HOME, so the session sees its real home again.
+func RedirectHomeProfile() string {
+	return "# Written by sandcast: the login hook pointed HOME here so the shell\n" +
+		"# reads this file instead of a .profile in the mounted workspace.\n" +
+		"# Restore the real home.\n" +
+		`if [ -n "${SANDCAST_HOME-}" ]; then` + "\n" +
+		"  HOME=$SANDCAST_HOME\n" +
+		"  unset SANDCAST_HOME\n" +
+		"fi\n"
+}

@@ -14,6 +14,7 @@ base_image:
   digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   notes:
     - Ubuntu 24.04
+  overmount_home: /sandbox
 image_facts:
   os:
     id: ubuntu
@@ -44,6 +45,8 @@ image:
   env:
     - name: GOPATH
       value: /opt/go
+    - name: ZDOTDIR
+      value: /opt/sandcast/zdotdir
   dirs:
     - path: /opt/go
       owner: user
@@ -315,6 +318,7 @@ policy: |
       - /etc
       - /lib
       - /opt/mise
+      - /opt/sandcast
       - /proc
       - /usr
       - /var/log
@@ -330,7 +334,7 @@ policy: |
   network_policies: {}
 shell:
   program: zsh
-  rc_path: /etc/zsh/zshrc.d/sandcast.zsh
+  rc_path: /opt/sandcast/zdotdir/.zshrc
   rc: |
     autoload -Uz compinit && compinit -C
     [[ "$TERM" != "dumb" ]] && eval "$(starship init zsh)"
@@ -345,6 +349,10 @@ notices:
   - "added nftables implicitly: required by OpenShell sandbox images"
   - "added curl implicitly: needed by the mise installer"
   - "added ca-certificates implicitly: needed by the mise installer"
-  - "home-rc-path: image: /sandbox/.bashrc resets PATH; sandcast re-applies the mise shims after it"
+  - component go was found only under /sandbox/go/bin/go (hidden once the workspace is mounted over the home); it is provisioned to /opt/mise instead
   - "lockfile-shadow: starship: base image has 1.20.0, mise.lock pins 1.24.0 for linux/arm64; installing 1.24.0"
-  - "workspace-path: go: found only under /sandbox (workspace path): /sandbox/go/bin/go; installing it"
+relocations:
+  - kind: reprovisioned
+    subject: go
+    from: /sandbox/go/bin/go
+    to: /opt/mise

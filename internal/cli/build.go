@@ -83,8 +83,12 @@ is never retried. --verify runs every component check afterwards.`,
 				runtimeNotices = append(runtimeNotices, w)
 			}
 			// Shown before the build as well, so an emulation or gateway
-			// pitfall is visible before a long build starts; the report
-			// repeats them.
+			// pitfall, a relocated or re-provisioned tool, a skipped dotfile
+			// or a non-default overmount home is visible before a long
+			// build starts (spec 003 FR-010); the report repeats them all.
+			for _, n := range planned.Plan.Notices {
+				a.logf("notice: %s", n)
+			}
 			for _, n := range runtimeNotices {
 				a.logf("notice: %s", n)
 			}

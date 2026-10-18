@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"testing/fstest"
 
@@ -99,6 +100,45 @@ func TestParse(t *testing.T) {
 			name:    "empty name",
 			data:    "schema_version: 1\ntargets:\n  container:\n    - ref: r\n",
 			wantErr: "target container, entry 1: name is empty",
+		},
+		{
+			name: "overmount home of an openshell entry",
+			data: "schema_version: 1\ntargets:\n  openshell:\n    - name: ws\n      ref: example.com/ws:1\n      overmount_home: /workspace\n",
+			check: func(t *testing.T, r *Registry) {
+				assert.Equal(t, []Entry{{Name: "ws", Ref: "example.com/ws:1", OvermountHome: "/workspace"}}, r.Targets[TargetOpenShell])
+			},
+		},
+		{
+			name:    "overmount home on a container entry",
+			data:    "schema_version: 1\ntargets:\n  container:\n    - name: a\n      ref: r\n      overmount_home: /workspace\n",
+			wantErr: "target container, entry 1 (a): overmount_home applies to openshell entries only",
+		},
+		{
+			name:    "relative overmount home",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: workspace\n",
+			wantErr: `overmount_home "workspace" must be an absolute path`,
+		},
+		{
+			name:    "overmount home with a dot segment",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: /work/../etc\n",
+			wantErr: `overmount_home "/work/../etc" must be an absolute path`,
+		},
+		{
+			name:    "overmount home with shell syntax",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: \"/w; id\"\n",
+			wantErr: "overmount_home",
+		},
+		{
+			name:    "root as overmount home",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: /\n",
+			wantErr: "overmount_home",
+		},
+		{
+			// The build chowns the workspace directory to the final user, and
+			// install -d applies the owner to an existing directory too.
+			name:    "system directory as overmount home",
+			data:    "schema_version: 1\ntargets:\n  openshell:\n    - name: a\n      ref: r\n      overmount_home: /etc\n",
+			wantErr: `target openshell, entry 1 (a): overmount_home "/etc" is a system directory`,
 		},
 		{
 			name:    "two defaults",
@@ -339,6 +379,33 @@ func TestDefaultAndList(t *testing.T) {
 	assert.Equal(t, []string{"mid", "alpha", "zeta"}, names)
 	assert.Equal(t, "zeta", r.Targets[TargetContainer][0].Name, "List does not reorder the registry")
 	assert.Empty(t, r.List(TargetOpenShell))
+}
+
+// TestCheckOvermountHome checks the one rule for the field: a safe absolute
+// path that is not a well-known system directory.
+func TestCheckOvermountHome(t *testing.T) {
+	for _, ok := range []string{"/sandbox", "/workspace", "/home/dev", "/home/dev/work", "/tmp2", "/srv/work", "/mnt/work", "/data"} {
+		assert.NoError(t, CheckOvermountHome(ok), ok)
+	}
+	for _, root := range append(slices.Clone(systemRoots), "/") {
+		err := CheckOvermountHome(root)
+		require.Error(t, err, root)
+		if root != "/" {
+			assert.Contains(t, err.Error(), "is a system directory", root)
+		}
+	}
+	// A path below a system root is refused too (install -d -o would hand
+	// the existing directory to the final user); below /home it is a home.
+	for _, under := range []string{"/usr/local", "/usr/local/work", "/var/lib/work", "/opt/work", "/etc/sandbox", "/tmp/ws", "/root/ws"} {
+		err := CheckOvermountHome(under)
+		require.Error(t, err, under)
+		assert.Contains(t, err.Error(), "lies under the system directory", under)
+	}
+	for _, bad := range []string{"", "work", "/work/", "/work/../etc", "/w; id", "/a b"} {
+		err := CheckOvermountHome(bad)
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "must be an absolute path", bad)
+	}
 }
 
 func TestResolve(t *testing.T) {

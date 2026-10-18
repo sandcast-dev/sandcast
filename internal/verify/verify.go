@@ -115,28 +115,33 @@ func checkHash(c plan.Check) string {
 }
 
 // SessionRequests returns the session-condition checks of an OpenShell plan
-// (R-08, FR-010), sorted by key; none for the container target. Each
-// component check runs again, unchanged and with the same expectations, in
-// a login bash (bash -lc, as openshell sandbox exec runs) and in an
-// interactive bash that reads it from stdin (as openshell sandbox connect
-// runs, so the home rc files and PROMPT_COMMAND run first), both started
-// with OpenShell's cleared environment. A component's binary therefore has
-// to resolve through the session PATH and run with the session's MISE_*
-// settings. Before the check, every binary of the component that resolves
-// in the image environment must resolve through the session PATH too
-// (binsPrelude). With shell.program zsh, the checks also run in an
-// interactive login zsh (zsh -il), as the switch hook starts it. The
-// selected shell program's startup check (session.zsh.startup or
-// session.bash.startup, an interactive shell in both cases) fails when the
-// startup writes to stderr (apart from the notes a shell prints only
-// because verify runs it without a terminal) or does not read the curated
-// rc.
+// (spec 002 R-08, FR-010), sorted by key; none for the container target.
+// Each component check runs again, unchanged and with the same
+// expectations, in a login bash (bash -lc, as openshell sandbox exec runs)
+// and in an interactive bash that reads it from stdin (as openshell sandbox
+// connect runs), both started with OpenShell's cleared environment. The
+// shell hooks of the image replace both before any file in the home is
+// read (spec 003): the login bash by a bash without startup files that
+// keeps the session environment, the interactive bash by the curated shell
+// (zsh, the bash launcher, or bash without startup files), which reads the
+// check from stdin with its binaries as positional parameters. A
+// component's binary therefore has to resolve through the session PATH and
+// run with the session's MISE_* settings. Before the check, every binary
+// of the component that resolves in the image environment must resolve
+// through the session PATH too (binsPrelude). In a zsh image
+// (shell.program zsh, or a zsh component without a shell section; the
+// shell kind the hooks use), the checks also run in an interactive login
+// zsh (zsh -il), as the login hook starts it. The selected shell program's startup check
+// (session.zsh.startup or session.bash.startup, an interactive shell in
+// both cases) fails when the startup writes to stderr (apart from the notes
+// a shell prints only because verify runs it without a terminal) or does
+// not read the curated rc.
 func SessionRequests(p *plan.Plan) []probe.Request {
 	if p.Target != manifest.TargetOpenShell {
 		return nil
 	}
 	env := sessionEnv(p.FinalUser)
-	zsh := p.Shell.Program == "zsh"
+	zsh := plan.ShellKind(p) == "zsh"
 	var reqs []probe.Request
 	add := func(key, command string, c plan.Check, bin string) {
 		c.Command = command
@@ -174,7 +179,7 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	if p.Shell.RCPath != "" {
 		probeRC = `[ -n "${` + plan.CuratedRCLoadedVar + `-}" ] || echo "sandcast: the curated rc ` + p.Shell.RCPath + ` was not read" >&2`
 	}
-	switch p.Shell.Program {
+	switch plan.ShellKind(p) {
 	case "zsh":
 		add(sessionStartupKey,
 			`_err=$(`+env+` zsh -il -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+zshNoTTYNoise+`); `+

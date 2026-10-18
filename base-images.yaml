@@ -4,6 +4,10 @@
 # the default. A user file at ~/.config/sandcast/base-images.yaml has the same
 # shape and merges over this one by entry name; a user entry marked as default
 # replaces the shipped default for its target type.
+#
+# An openshell entry may set overmount_home, the path the OpenShell runtime
+# mounts the workspace volume over (also the image WORKDIR). It defaults to
+# /sandbox, the path of the entries below.
 schema_version: 1
 targets:
   openshell:

@@ -219,6 +219,20 @@ func TestReadLineHonoursCancel(t *testing.T) {
 	assert.Empty(t, line)
 }
 
+// TestBuildPrintsPlanNotices checks sandcast build reports the plan notices,
+// including each relocated dotfile, so a user who only runs build sees what
+// was relocated or re-provisioned (spec 003 FR-010).
+func TestBuildPrintsPlanNotices(t *testing.T) {
+	ta := newTestApp(t)
+	ta.project(t)
+	ta.write(t, ".sandcast/manifest.yaml", strings.Replace(testManifest, "targets:", "dotfiles:\n  - path: conf/.tmux.conf\ntargets:", 1))
+	ta.write(t, "conf/.tmux.conf", "set -g mouse on\n")
+	require.Equal(t, 0, ta.run("build"), ta.stderr.String())
+	assert.Contains(t, ta.stderr.String(), "notice: conf/.tmux.conf relocated to /etc/tmux.conf", "every plan notice is printed to stderr before the build")
+	assert.Less(t, strings.Index(ta.stderr.String(), "notice: conf/.tmux.conf relocated"), strings.Index(ta.stderr.String(), "building "), "before the build starts")
+	assert.Contains(t, ta.stdout.String(), "notice: conf/.tmux.conf relocated to /etc/tmux.conf", "the build report repeats the plan notices")
+}
+
 // TestBuildReportRepeatsPlanNotices checks that plan notices reach the JSON
 // report and the console as notice: lines (FR-002).
 func TestBuildReportRepeatsPlanNotices(t *testing.T) {

@@ -38,6 +38,18 @@ func TestUserSectionRefusesInjection(t *testing.T) {
 		"relative dir": {func(p *plan.Plan) {
 			p.Image.Dirs = []plan.Dir{{Path: "opt/x", Owner: "user"}}
 		}, "directory"},
+		// plan.Validate does not check dotfiles, and a hand-edited plan can
+		// carry any relocated_to: the dotfiles section quotes the target
+		// with dirArg, which refuses a line break.
+		"dotfile target with newline": {func(p *plan.Plan) {
+			p.Dotfiles = []plan.DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: "/etc/gitconfig\nRUN id", Content: "x\n"}}
+		}, "directory"},
+		"relative dotfile target": {func(p *plan.Plan) {
+			p.Dotfiles = []plan.DotfileSelection{{HostPath: "~/.gitconfig", RelocatedTo: "etc/gitconfig", Content: "x\n"}}
+		}, "directory"},
+		"workspace dir with newline": {func(p *plan.Plan) {
+			p.BaseImage.OvermountHome = "/w\nRUN id"
+		}, "directory"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
