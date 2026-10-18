@@ -140,7 +140,7 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 		return nil
 	}
 	env := sessionEnv(p.FinalUser)
-	zsh := p.Shell.Program == "zsh"
+	zsh := plan.ShellKind(p) == "zsh"
 	var reqs []probe.Request
 	add := func(key, command string, c plan.Check, bin string) {
 		c.Command = command
@@ -178,7 +178,7 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	if p.Shell.RCPath != "" {
 		probeRC = `[ -n "${` + plan.CuratedRCLoadedVar + `-}" ] || echo "sandcast: the curated rc ` + p.Shell.RCPath + ` was not read" >&2`
 	}
-	switch p.Shell.Program {
+	switch plan.ShellKind(p) {
 	case "zsh":
 		add(sessionStartupKey,
 			`_err=$(`+env+` zsh -il -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+zshNoTTYNoise+`); `+

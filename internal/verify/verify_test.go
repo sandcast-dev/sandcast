@@ -164,7 +164,7 @@ func TestSessionRequests(t *testing.T) {
 	assert.Len(t, zsh, 10)
 	for _, r := range zsh {
 		if r.Key == "session.zsh.go" {
-			assert.Contains(t, r.Command, "zsh -il -c", "a login zsh, as the switch hook starts it")
+			assert.Contains(t, r.Command, "zsh -il -c", "a login zsh, as the login hook starts it")
 		}
 		if r.Key == "session.zsh.startup" {
 			assert.Contains(t, r.Command, "zsh -il -c")
