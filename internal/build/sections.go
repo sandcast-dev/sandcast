@@ -93,41 +93,87 @@ RUN chmod 0644 {{.EnvPath}}
 // --noprofile --rcfile so it never reads any workspace startup file; any other
 // login shell gets /bin/sh with a minimal baked default.
 var shellZshTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
-USER root` + sessionEnvInstall + `
+USER root` + legacyCleanupRun + sessionEnvInstall + `
 {{- if .RCPath}}
 COPY {{.ContextFile}} {{.RCPath}}
 RUN chmod 0644 {{.RCPath}}
 {{- end}}
+` + zshEnvRun))
+
+// zshEnvTemplate is zshEnvRun on its own, for an image whose curated shell
+// is not zsh but which has zsh: a zsh the user starts then gets the session
+// environment and no new-user wizard, and on the OpenShell target reads its
+// startup files from the ZDOTDIR tree, which holds no .zshrc, never a
+// workspace ~/.zshrc or ~/.zshenv (plan.WritesZshEnv, plan.ZshEnvRelocates).
+var zshEnvTemplate = template.Must(template.New("60-shell-zshenv").Parse(zshEnvRun))
+
+// zshEnvRun installs the global zshenv block (shell.ZshEnvBlock) in both
+// zshenv files (plan.ZshEnvPaths), for the zsh kind and for an image whose
+// curated shell is not zsh but which has zsh (plan.WritesZshEnv).
+const zshEnvRun = `RUN <<'SANDCAST_EOF'
+set -eu
+install -d {{.ZDotDir}} /etc/zsh
+zshenv_block=/tmp/sandcast-zshenv zshenv_begin='{{.ZshEnvBegin}}' zshenv_end='{{.ZshEnvEnd}}'
+cat > "$zshenv_block" <<'SANDCAST_ZSHENV'
+{{.ZshEnvBlock}}
+SANDCAST_ZSHENV
+for f in{{range .ZshEnvPaths}} {{.}}{{end}}; do
+{{.ZshEnvInstall}}done
+rm -f "$zshenv_block"
+SANDCAST_EOF
+`
+
+// legacyCleanupRun starts every 60-shell section: it removes the shell
+// configuration of a base image that a sandcast build before this release
+// wrote (the spec 002 layout), so a layered image never keeps the shell
+// mechanism of its base (legacyStripFunc, legacyCleanupScript). Spec 003's
+// own blocks are replaced by the installers that write them.
+const legacyCleanupRun = `
 RUN <<'SANDCAST_EOF'
 set -eu
-install -d {{.ZDotDir}} /etc/zsh
-zshenv_block=/tmp/sandcast-zshenv zshenv_begin='{{.ZshEnvBegin}}' zshenv_end='{{.ZshEnvEnd}}'
-cat > "$zshenv_block" <<'SANDCAST_ZSHENV'
-{{.ZshEnvBlock}}
-SANDCAST_ZSHENV
-for f in{{range .ZshEnvPaths}} {{.}}{{end}}; do
-{{.ZshEnvInstall}}done
-rm -f "$zshenv_block"
-SANDCAST_EOF
-`))
+` + legacyStripFunc + legacyCleanupScript + `SANDCAST_EOF`
 
-// zshEnvTemplate installs the global zshenv block in an image whose curated
-// shell is not zsh but which has zsh (in the base image or as a component):
-// a zsh the user starts then reads its startup files from the ZDOTDIR tree,
-// which holds no .zshrc, and never a workspace ~/.zshrc or ~/.zshenv, and it
-// gets the session environment and no new-user wizard (plan.HasZsh).
-var zshEnvTemplate = template.Must(template.New("60-shell-zshenv").Parse(`RUN <<'SANDCAST_EOF'
-set -eu
-install -d {{.ZDotDir}} /etc/zsh
-zshenv_block=/tmp/sandcast-zshenv zshenv_begin='{{.ZshEnvBegin}}' zshenv_end='{{.ZshEnvEnd}}'
-cat > "$zshenv_block" <<'SANDCAST_ZSHENV'
-{{.ZshEnvBlock}}
-SANDCAST_ZSHENV
-for f in{{range .ZshEnvPaths}} {{.}}{{end}}; do
-{{.ZshEnvInstall}}done
-rm -f "$zshenv_block"
-SANDCAST_EOF
-`))
+// legacyStripFunc defines sandcast_legacy_strip, which removes from one file
+// the lines a build before this release appended to a system startup file:
+// the "# sandcast: session environment" marker with the source line after
+// it (system bashrc and zshenv), the "# sandcast: switch interactive terminal
+// sessions to zsh" marker with the case line after it (system bashrc), the
+// zsh-newuser-install no-op of that zshenv block, and the lines that sourced
+// the curated rc of that layout from the system zshrc and bashrc. The build
+// log says which file was cleaned.
+const legacyStripFunc = `sandcast_legacy_strip() {
+  [ -f "$1" ] || return 0
+  if grep -qsF -e '# sandcast: session environment' -e '# sandcast: switch interactive terminal sessions to zsh' \
+       -e '[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh' -e '[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh' "$1"; then
+    echo "sandcast: removing the shell configuration of a previous sandcast build from $1" >&2
+    awk '
+      $0 == "# sandcast: session environment" { skip = 1; next }
+      $0 == "# sandcast: switch interactive terminal sessions to zsh" { skip = 1; next }
+      skip > 0 { skip--; next }
+      $0 == "zsh-newuser-install() { :; }" { next }
+      $0 == "[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh" { next }
+      $0 == "[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh" { next }
+      { print }
+    ' "$1" > "$1.sandcast" && mv "$1.sandcast" "$1"
+  fi
+}
+`
+
+// legacyCleanupScript cleans the startup files of that layout and removes
+// its curated rc files: /etc/zsh/zshrc.d/sandcast.zsh, and
+// /etc/profile.d/sandcast.sh, which /etc/profile sources for every login
+// shell and which only the sh kind writes again (as its launcher's profile,
+// in the RUN that follows).
+const legacyCleanupScript = `for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc /etc/zsh/zshrc /etc/zshrc /etc/zsh/zshenv /etc/zshenv; do
+  sandcast_legacy_strip "$f"
+done
+for f in /etc/zsh/zshrc.d/sandcast.zsh /etc/profile.d/sandcast.sh; do
+  if [ -f "$f" ]; then
+    echo "sandcast: removing the curated rc of a previous sandcast build $f" >&2
+    rm -f "$f"
+  fi
+done
+`
 
 // zshEnvInstallScript appends the block in the file $zshenv_block to the
 // global zshenv $f. The block of a previous sandcast build between
@@ -152,7 +198,7 @@ const zshEnvInstallScript = `  if grep -qsF "$zshenv_begin" "$f" || grep -qs '^e
 // and a curated rc commonly prepends $HOME/bin to the PATH, so a PATH lookup
 // at run time could pick a bash wrapper committed into the workspace.
 var shellBashTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: curated bash configuration with a baked login launcher (no $HOME startup files)
-USER root` + sessionEnvInstall + `
+USER root` + legacyCleanupRun + sessionEnvInstall + `
 RUN install -d {{.Prefix}}
 {{- if .HasRC}}
 COPY {{.ContextFile}} {{.RCPath}}
@@ -173,7 +219,7 @@ SANDCAST_EOF
 `))
 
 var shellShTemplate = template.Must(template.New("60-shell").Parse(`# 60-shell: minimal default environment (the login shell is neither zsh nor bash)
-USER root` + sessionEnvInstall + `
+USER root` + legacyCleanupRun + sessionEnvInstall + `
 RUN <<'SANDCAST_EOF'
 set -eu
 install -d {{.Prefix}}
@@ -420,42 +466,43 @@ func loginShell(p *plan.Plan) loginShellSpec {
 	}
 }
 
-// shellSection renders the 60-shell section for the plan's shell kind. For
-// the OpenShell target it also makes that shell the final user's passwd
-// login shell (loginShellTemplate) and bakes the hooks for shells the
-// runtime starts directly; the container target keeps the base image user
-// untouched.
+// shellSection renders the 60-shell section for the plan's shell kind: the
+// kind section, the zshenv block for an image whose curated shell is not
+// zsh but which has zsh, the final user's passwd login shell
+// (loginShellTemplate: every kind on the OpenShell target; on the container
+// target a kept user of a zsh plan, spec 002 FR-008, since a created user
+// gets its shell from useradd and the other kinds leave the base image user
+// untouched, FR-040) and, for the OpenShell target, the hooks for shells the
+// runtime starts directly.
 func shellSection(p *plan.Plan) (string, error) {
 	body, err := shellKindSection(p)
 	if err != nil {
 		return "", err
 	}
-	if plan.ShellKind(p) != "zsh" && plan.HasZsh(p) {
+	kind := plan.ShellKind(p)
+	if kind != "zsh" && plan.WritesZshEnv(p) {
 		zshenv, err := execTemplate(zshEnvTemplate, zshEnvData(p))
 		if err != nil {
 			return "", err
 		}
 		body += zshenv
 	}
-	if p.Target != manifest.TargetOpenShell {
+	openshell := p.Target == manifest.TargetOpenShell
+	if openshell || (kind == "zsh" && !p.FinalUser.Created) {
+		login, err := execTemplate(loginShellTemplate, map[string]any{
+			"Shell":  loginShell(p).Path,
+			"User":   p.FinalUser.Name,
+			"UserRe": strings.ReplaceAll(p.FinalUser.Name, ".", `\.`),
+		})
+		if err != nil {
+			return "", err
+		}
+		body += login
+	}
+	if !openshell {
 		return body, nil
 	}
-	login, err := execTemplate(loginShellTemplate, map[string]any{
-		"Shell":  loginShell(p).Path,
-		"User":   p.FinalUser.Name,
-		"UserRe": strings.ReplaceAll(p.FinalUser.Name, ".", `\.`),
-	})
-	if err != nil {
-		return "", err
-	}
 	exports := hookExports(p)
-	for _, e := range exports {
-		// The 20-user section renders the image env through envInstruction
-		// first; this guards a hand-built plan with the same rule.
-		if err := checkEnvVar(e.Name, e.Value); err != nil {
-			return "", fmt.Errorf("shell hook export: %w", err)
-		}
-	}
 	targets := hookTargets(p)
 	env := sessionEnvPath(p)
 	hooks, err := execTemplate(hookTemplate, map[string]any{
@@ -472,7 +519,7 @@ func shellSection(p *plan.Plan) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return body + login + hooks, nil
+	return body + hooks, nil
 }
 
 // zshEnvData is the template data of the global zshenv block.
@@ -480,7 +527,7 @@ func zshEnvData(p *plan.Plan) map[string]any {
 	return map[string]any{
 		"ZDotDir":       plan.ZDotDir,
 		"ZshEnvPaths":   plan.ZshEnvPaths,
-		"ZshEnvBlock":   strings.TrimRight(shell.ZshEnvBlock(plan.ZDotDir, sessionEnvPath(p)), "\n"),
+		"ZshEnvBlock":   strings.TrimRight(shell.ZshEnvBlock(plan.ZDotDir, sessionEnvPath(p), plan.ZshEnvRelocates(p), plan.ShellKind(p) == "zsh"), "\n"),
 		"ZshEnvBegin":   shell.ZshEnvBegin,
 		"ZshEnvEnd":     shell.ZshEnvEnd,
 		"ZshEnvInstall": zshEnvInstallScript,

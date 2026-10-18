@@ -64,7 +64,7 @@ func TestShellSectionZshRelocates(t *testing.T) {
 	assert.Contains(t, got, "install -d /opt/sandcast/zdotdir /etc/zsh")
 	assert.Contains(t, got, "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc")
 	assert.Contains(t, got, `CMD ["/bin/zsh", "-l"]`)
-	assert.NotContains(t, got, "/etc/zsh/zshrc.d", "the old in-home-chained location is gone")
+	assert.NotContains(t, got, "COPY shell/sandcast.zsh /etc/zsh/zshrc.d", "the old in-home-chained location is gone")
 }
 
 // TestShellSectionBashLauncher checks bash is launched with no profile files
@@ -251,7 +251,7 @@ func TestHookInstallReplacesPreviousBlock(t *testing.T) {
 	hook := filepath.Join(dir, "hook")
 	launcher := shell.HookTarget{Program: plan.ShellLoginPath}
 	oldBlock := shell.BashrcHook(nil, shell.HookTargets{Top: launcher, TopLogin: launcher, Nested: launcher}, "")
-	newBlock := shell.BashrcHook([]shell.Export{{Name: "ZDOTDIR", Value: plan.ZDotDir}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}, "")
+	newBlock := shell.BashrcHook([]shell.Export{{Name: "SHELL", Value: shell.ZshProgram}}, shell.HookTargets{Top: shell.HookTarget{Program: "/bin/zsh"}, TopLogin: shell.HookTarget{Program: "/bin/zsh", Args: "-l"}, Nested: shell.PlainBash}, "")
 	distro := "# System-wide .bashrc file for interactive bash(1) shells.\n[ -z \"$PS1\" ] && return\nshopt -s checkwinsize\n"
 	vars := map[string]string{"sysrc": sysrc, "hook": hook, "hook_begin": shell.HookBegin, "hook_end": shell.HookEnd}
 	require.NoError(t, os.WriteFile(hook, []byte(newBlock), 0o644))
@@ -296,8 +296,8 @@ func TestZshEnvInstallReplacesPreviousBlock(t *testing.T) {
 	f := filepath.Join(dir, "zshenv")
 	blockFile := filepath.Join(dir, "block")
 	oldLine := "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"
-	oldBlock := shell.ZshEnvBlock(plan.ZDotDir, "")
-	newBlock := shell.ZshEnvBlock(plan.ZDotDir, plan.SessionEnvPath)
+	oldBlock := shell.ZshEnvBlock(plan.ZDotDir, "", true, true)
+	newBlock := shell.ZshEnvBlock(plan.ZDotDir, plan.SessionEnvPath, true, true)
 	require.NoError(t, os.WriteFile(blockFile, []byte(newBlock), 0o644))
 	distro := "# /etc/zsh/zshenv: system-wide .zshenv file for zsh(1).\nskip_global_compinit=1\n"
 	vars := map[string]string{"f": f, "zshenv_block": blockFile, "zshenv_begin": shell.ZshEnvBegin, "zshenv_end": shell.ZshEnvEnd}
@@ -371,7 +371,7 @@ func TestDotfilesSectionBakesToRelocationTargets(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, plan.SessionEnvScriptFor(k), "export STARSHIP_CONFIG='/etc/xdg/starship.toml'\n", kind)
 		assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n", kind)
-		assert.GreaterOrEqual(t, strings.Count(got, "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"), 2, "%s: both hooks source the session environment", kind)
+		assert.Equal(t, 3, strings.Count(got, "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"), "%s: the zshenv block or the launcher, the login hook and the bashrc hook each source the session environment once", kind)
 		assert.NotContains(t, got, "export STARSHIP_CONFIG=", kind)
 	}
 }
@@ -474,4 +474,144 @@ func TestWorkDirFollowsOvermountHome(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, got, "WORKDIR /root\n")
 	assert.Contains(t, got, "RUN install -d /sandbox\n", "the container target has no workspace dir to skip")
+}
+
+// TestZshEnvBlockPerKindAndTarget checks the global zshenv block of an image
+// whose curated shell is not zsh but which has zsh (spec 002 kept, spec 003
+// reconciled): on the OpenShell target it relocates zsh's startup files to
+// the ZDOTDIR tree and marks the session, but leaves SHELL alone (the
+// launcher is the passwd shell); on the container target, where the home is
+// never overmounted, it only sources the session environment and disables
+// the new-user wizard, so a zsh keeps the image home's own startup files.
+// The zsh kind exports all three on both targets.
+func TestZshEnvBlockPerKindAndTarget(t *testing.T) {
+	withZsh := func(kind, target string) *plan.Plan {
+		p := shellKindPlan(t, kind)
+		p.Target = target
+		p.ImageFacts.Shells = append(p.ImageFacts.Shells, "/usr/bin/zsh")
+		if target == "container" {
+			p.FinalUser.Created = false
+		}
+		return p
+	}
+	block := func(p *plan.Plan) string {
+		t.Helper()
+		got, err := shellSection(p)
+		require.NoError(t, err)
+		const open, close = "<<'SANDCAST_ZSHENV'\n", "\nSANDCAST_ZSHENV\n"
+		i := strings.Index(got, open)
+		require.GreaterOrEqual(t, i, 0, "a zshenv block:\n%s", got)
+		i += len(open)
+		j := strings.Index(got[i:], close)
+		require.GreaterOrEqual(t, j, 0, got)
+		return got[i : i+j]
+	}
+	envLine := "[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"
+
+	bashOpenShell := withZsh("bash", "openshell")
+	bashOpenShell.Image.Env = []plan.EnvVar{{Name: "GOPATH", Value: "/opt/go"}}
+	assert.True(t, plan.WritesZshEnv(bashOpenShell))
+	assert.True(t, plan.ZshEnvRelocates(bashOpenShell))
+	assert.Equal(t, shell.ZshEnvBegin+"\nexport ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1\n"+envLine+"zsh-newuser-install() { :; }\n"+shell.ZshEnvEnd, block(bashOpenShell))
+
+	bashContainer := withZsh("bash", "container")
+	assert.True(t, plan.WritesZshEnv(bashContainer))
+	assert.False(t, plan.ZshEnvRelocates(bashContainer))
+	assert.Equal(t, shell.ZshEnvBegin+"\nzsh-newuser-install() { :; }\n"+shell.ZshEnvEnd, block(bashContainer), "no session script without mise, env or extra PATH directories on the container target")
+
+	zshContainer := withZsh("zsh", "container")
+	assert.True(t, plan.ZshEnvRelocates(zshContainer))
+	assert.Contains(t, block(zshContainer), "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh\n")
+
+	noZsh := shellKindPlan(t, "bash")
+	assert.False(t, plan.WritesZshEnv(noZsh))
+	got, err := shellSection(noZsh)
+	require.NoError(t, err)
+	assert.NotContains(t, got, shell.ZshEnvBegin)
+}
+
+// TestShellSectionContainerKeptUserZshLoginShell checks the container target
+// sets a kept final user's passwd shell to zsh for a zsh plan (spec 002
+// FR-008), with the passwd fallback, and leaves the user alone otherwise
+// (FR-040): the OpenShell target sets it for every kind.
+func TestShellSectionContainerKeptUserZshLoginShell(t *testing.T) {
+	p := shellKindPlan(t, "zsh")
+	p.Target = "container"
+	p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
+	got, err := shellSection(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "usermod -s /bin/zsh root")
+	assert.Contains(t, got, `sed -i 's|^\(root:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\).*$|\1/bin/zsh|' /etc/passwd`)
+	assert.NotContains(t, got, plan.LoginHookPath, "no hooks on the container target")
+
+	for _, kind := range []string{"bash", "sh"} {
+		p := shellKindPlan(t, kind)
+		p.Target = "container"
+		p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
+		got, err := shellSection(p)
+		require.NoError(t, err)
+		assert.NotContains(t, got, "usermod", kind)
+	}
+}
+
+// TestLegacyCleanupStripsSpec002Layout runs the cleanup function of the
+// 60-shell section on startup files that carry the blocks a build before
+// this release appended (the spec 002 layout): the session environment
+// block of the system bashrc and zshenv, the zsh switch hook, and the lines
+// that sourced the curated rc from the system zshrc and bashrc. Each is
+// removed, the rest of the file is kept, the build log names the file, and
+// a file without them is left alone.
+func TestLegacyCleanupStripsSpec002Layout(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+		return p
+	}
+	distroBashrc := "# System-wide .bashrc file for interactive bash(1) shells.\n[ -z \"$PS1\" ] && return\nshopt -s checkwinsize\n"
+	bashrc := write("bash.bashrc", distroBashrc+
+		"\n# sandcast: session environment\n[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\n"+
+		"# sandcast: switch interactive terminal sessions to zsh\ncase $- in *i*) [ -t 0 ] && [ -t 1 ] && [ -z \"$ZSH_VERSION\" ] && [ -z \"$SANDCAST_NO_SHELL_SWITCH\" ] && [ -x /bin/zsh ] && SANDCAST_NO_SHELL_SWITCH=1 exec /bin/zsh -l ;; esac\n"+
+		"\n[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh\n")
+	distroZshenv := "# /etc/zsh/zshenv: system-wide .zshenv file for zsh(1).\nskip_global_compinit=1\n"
+	zshenv := write("zshenv", distroZshenv+"\n# sandcast: session environment\n[ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh\nzsh-newuser-install() { :; }\n")
+	distroZshrc := "# /etc/zsh/zshrc: system-wide .zshrc file for zsh(1).\nREPORTTIME=10\n"
+	zshrc := write("zshrc", distroZshrc+"\n[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh\n")
+	clean := write("clean", distroBashrc)
+
+	for _, f := range []string{bashrc, zshenv, zshrc} {
+		stderr := runInstallScript(t, legacyStripFunc+"sandcast_legacy_strip "+shell.Quote(f)+"\n", nil)
+		assert.Contains(t, stderr, "removing the shell configuration of a previous sandcast build from "+f)
+	}
+	got, err := os.ReadFile(bashrc)
+	require.NoError(t, err)
+	assert.Equal(t, distroBashrc+"\n\n", string(got), "the bashrc keeps the distribution's content only")
+	got, err = os.ReadFile(zshenv)
+	require.NoError(t, err)
+	assert.Equal(t, distroZshenv+"\n", string(got))
+	got, err = os.ReadFile(zshrc)
+	require.NoError(t, err)
+	assert.Equal(t, distroZshrc+"\n", string(got))
+
+	stderr := runInstallScript(t, legacyStripFunc+"sandcast_legacy_strip "+shell.Quote(clean)+"\nsandcast_legacy_strip "+shell.Quote(filepath.Join(dir, "absent"))+"\n", nil)
+	assert.Empty(t, stderr, "a file without the old layout, or no file, is left alone")
+	got, err = os.ReadFile(clean)
+	require.NoError(t, err)
+	assert.Equal(t, distroBashrc, string(got))
+
+	// Every kind of 60-shell section runs the cleanup, on both targets,
+	// before anything of this build is written.
+	for _, kind := range []string{"zsh", "bash", "sh"} {
+		for _, target := range []string{"openshell", "container"} {
+			p := shellKindPlan(t, kind)
+			p.Target = target
+			got, err := shellSection(p)
+			require.NoError(t, err, "%s %s", kind, target)
+			i := strings.Index(got, "sandcast_legacy_strip() {")
+			require.GreaterOrEqual(t, i, 0, "%s %s", kind, target)
+			assert.Contains(t, got, "for f in /etc/zsh/zshrc.d/sandcast.zsh /etc/profile.d/sandcast.sh; do\n")
+			assert.Less(t, i, strings.Index(got, "install -d /opt/sandcast"), "%s %s: the cleanup runs before this build's files are written", kind, target)
+		}
+	}
 }

@@ -8,13 +8,14 @@ import "strings"
 // for its default agent. It never uses the image CMD or the passwd shell, so
 // the launcher does not reach these shells. Exec and terminal sessions start
 // with a cleared environment, while the default agent inherits the image ENV;
-// the hooks export the relocation variables again so both cases agree. bash
-// reads two kinds of startup files before any file in the home: the system
-// bashrc (/etc/bash.bashrc on Debian and Ubuntu) for interactive non-login
-// shells, and /etc/profile, which sources /etc/profile.d/*.sh, for login
-// shells. The hooks live there and replace the shell before bash reaches the
-// workspace ~/.bashrc, ~/.bash_profile, ~/.profile or ~/.bash_logout (spec
-// 003 FR-001, FR-002, SC-002).
+// the hooks source the session environment script (spec 002,
+// /etc/profile.d/sandcast-env.sh), which carries the relocation variables,
+// so both cases agree. bash reads two kinds of startup files before any
+// file in the home: the system bashrc (/etc/bash.bashrc on Debian and
+// Ubuntu) for interactive non-login shells, and /etc/profile, which sources
+// /etc/profile.d/*.sh, for login shells. The hooks live there and replace
+// the shell before bash reaches the workspace ~/.bashrc, ~/.bash_profile,
+// ~/.profile or ~/.bash_logout (spec 003 FR-001, FR-002, SC-002).
 
 // HookBegin and HookEnd delimit the block sandcast prepends to the system
 // bashrc, so a build on an image that already carries one (a base image
@@ -24,8 +25,10 @@ const (
 	HookEnd   = "# <<< sandcast shell hook <<<"
 )
 
-// Export is one relocation variable the hooks export. The runtime cleared the
-// image ENV, so the hooks restore the variables the plan relocates.
+// Export is one variable the hooks export beyond the session environment
+// script, which carries the relocation variables: today SHELL in zsh images.
+// It is exported on the path that starts the curated shell only, so a bash
+// kept by NoSwitchVar or a nested bash does not inherit it.
 type Export struct {
 	Name, Value string
 }
@@ -109,7 +112,11 @@ func interactiveExec(t HookTarget, indent string) string {
 	withCmd := func(t HookTarget) string {
 		return "exec " + t.String() + ` -i -c "$BASH_EXECUTION_STRING" "$0" "$@"`
 	}
-	withArgs := func(t HookTarget) string { return "exec " + t.String() + ` -i -s "$@"` }
+	// "--" keeps a positional parameter that starts with "-" out of the
+	// target's option parsing: bash -i -s -l would be a login shell that
+	// reads the workspace ~/.bash_logout on exit. bash, zsh and the
+	// launcher's option filter all stop at "--".
+	withArgs := func(t HookTarget) string { return "exec " + t.String() + ` -i -s -- "$@"` }
 	bare := func(t HookTarget) string { return "exec " + t.String() + " -i" }
 	if t == PlainBash {
 		return indent + `if [ -n "${BASH_EXECUTION_STRING+x}" ]; then ` + withCmd(t) + "; fi\n" +
@@ -135,9 +142,11 @@ func interactiveExec(t HookTarget, indent string) string {
 
 // redirect renders the interactive branch: a bash inside a curated session
 // goes to nested, any other to top, which marks the new session first, or
-// to noSwitch when it is set and NoSwitchVar is in the environment. When
-// nested and top are the same command the session check is left out.
-func redirect(top, nested, noSwitch HookTarget, indent string) string {
+// to noSwitch when it is set and NoSwitchVar is in the environment. The
+// exports (SHELL in zsh images) are made right before the top exec only, so
+// neither the nested bash nor the one kept by NoSwitchVar inherits them.
+// When nested and top are the same command the session check is left out.
+func redirect(top, nested, noSwitch HookTarget, exports []Export, indent string) string {
 	var b strings.Builder
 	if nested != top {
 		b.WriteString(indent + `if [ -n "${` + SessionVar + `-}" ]; then` + "\n")
@@ -151,6 +160,7 @@ func redirect(top, nested, noSwitch HookTarget, indent string) string {
 		b.WriteString(interactiveExec(noSwitch, indent+"  "))
 		b.WriteString(indent + "fi\n")
 	}
+	b.WriteString(exportLines(exports, indent))
 	b.WriteString(interactiveExec(top, indent))
 	return b.String()
 }
@@ -232,8 +242,8 @@ func plainBashLogin(indent string) string {
 // spec 002: the MISE_* settings, the component and relocation environment
 // and the shims first on PATH, which an interactive bash started with a
 // cleared environment reads no profile for), then for an interactive
-// non-login bash exports the extra variables and execs the curated shell,
-// so ~/.bashrc is never read; the bash the launcher starts is recognized by
+// non-login bash execs the curated shell (exporting the extra variables on
+// that path only), so ~/.bashrc is never read; the bash the launcher starts is recognized by
 // GuardVar and continues normally. A non-interactive bash reads the system
 // bashrc only when sshd or rshd starts it with -c; that one is replaced by
 // a bash without startup files. Login shells are left to the profile hook,
@@ -252,8 +262,7 @@ func BashrcHook(exports []Export, t HookTargets, sessionEnv string) string {
 		"  elif ! shopt -q login_shell; then\n" +
 		"    case $- in\n" +
 		"    *i*)\n" +
-		exportLines(exports, "      ") +
-		redirect(t.Top, t.Nested, t.NoSwitch, "      ") +
+		redirect(t.Top, t.Nested, t.NoSwitch, exports, "      ") +
 		"      ;;\n" +
 		"    *)\n" +
 		plainBashCommand("      ") +
@@ -283,8 +292,8 @@ func BashrcHook(exports []Export, t HookTargets, sessionEnv string) string {
 //   - other POSIX shells (dash, busybox ash, ksh): they read $HOME/.profile
 //     next and expand $HOME at that moment, and they have no logout file, so
 //     HOME points at redirectHome until the baked .profile there restores it.
-//   - zsh (sourcing /etc/profile in sh emulation) only gets the exports; its
-//     startup files follow ZDOTDIR.
+//   - zsh (sourcing /etc/profile in sh emulation) only gets the session
+//     environment; its startup files follow ZDOTDIR.
 //
 // A bash that sources /etc/profile by hand is not a login shell and is left
 // alone.
@@ -293,12 +302,11 @@ func LoginHook(exports []Export, t HookTargets, redirectHome, sessionEnv string)
 		"# shell must never read a profile or logout file there. See\n" +
 		"# docs/guides/build.md, the home model and shell initialization.\n" +
 		SessionEnvSource(sessionEnv) +
-		exportLines(exports, "") +
 		`if [ -n "${BASH_VERSION-}" ]; then` + "\n" +
 		"  if shopt -q login_shell 2>/dev/null; then\n" +
 		"    case $- in\n" +
 		"    *i*)\n" +
-		redirect(t.TopLogin, t.Nested, t.NoSwitch, "      ") +
+		redirect(t.TopLogin, t.Nested, t.NoSwitch, exports, "      ") +
 		"      ;;\n" +
 		"    *)\n" +
 		plainBashLogin("      ") +

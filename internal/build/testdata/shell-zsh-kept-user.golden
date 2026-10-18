@@ -1,5 +1,33 @@
 # 60-shell: curated zsh configuration relocated out of the overmounted home (ZDOTDIR)
 USER root
+RUN <<'SANDCAST_EOF'
+set -eu
+sandcast_legacy_strip() {
+  [ -f "$1" ] || return 0
+  if grep -qsF -e '# sandcast: session environment' -e '# sandcast: switch interactive terminal sessions to zsh' \
+       -e '[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh' -e '[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh' "$1"; then
+    echo "sandcast: removing the shell configuration of a previous sandcast build from $1" >&2
+    awk '
+      $0 == "# sandcast: session environment" { skip = 1; next }
+      $0 == "# sandcast: switch interactive terminal sessions to zsh" { skip = 1; next }
+      skip > 0 { skip--; next }
+      $0 == "zsh-newuser-install() { :; }" { next }
+      $0 == "[ -r /etc/zsh/zshrc.d/sandcast.zsh ] && . /etc/zsh/zshrc.d/sandcast.zsh" { next }
+      $0 == "[ -r /etc/profile.d/sandcast.sh ] && . /etc/profile.d/sandcast.sh" { next }
+      { print }
+    ' "$1" > "$1.sandcast" && mv "$1.sandcast" "$1"
+  fi
+}
+for f in /etc/bash.bashrc /etc/bashrc /etc/bash/bashrc /etc/zsh/zshrc /etc/zshrc /etc/zsh/zshenv /etc/zshenv; do
+  sandcast_legacy_strip "$f"
+done
+for f in /etc/zsh/zshrc.d/sandcast.zsh /etc/profile.d/sandcast.sh; do
+  if [ -f "$f" ]; then
+    echo "sandcast: removing the curated rc of a previous sandcast build $f" >&2
+    rm -f "$f"
+  fi
+done
+SANDCAST_EOF
 COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh
 RUN chmod 0644 /etc/profile.d/sandcast-env.sh
 RUN <<'SANDCAST_EOF'
@@ -46,23 +74,23 @@ cat > /etc/profile.d/zz-sandcast-shell.sh <<'SANDCAST_HOOK'
 # shell must never read a profile or logout file there. See
 # docs/guides/build.md, the home model and shell initialization.
 [ -r /etc/profile.d/sandcast-env.sh ] && . /etc/profile.d/sandcast-env.sh
-export SHELL=/bin/zsh
 if [ -n "${BASH_VERSION-}" ]; then
   if shopt -q login_shell 2>/dev/null; then
     case $- in
     *i*)
       if [ -n "${SANDCAST_SESSION-}" ]; then
         if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
-        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s "$@"; fi
+        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s -- "$@"; fi
         exec "$BASH" --noprofile --norc -i
       fi
       SANDCAST_SESSION=1
       export SANDCAST_SESSION
       if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then
         if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
-        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s "$@"; fi
+        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s -- "$@"; fi
         exec "$BASH" --noprofile --norc -i
       fi
+      export SHELL=/bin/zsh
       shopt -s execfail
       if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
         exec /bin/zsh -l -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
@@ -70,9 +98,9 @@ if [ -n "${BASH_VERSION-}" ]; then
         exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
       fi
       if [ $# -gt 0 ]; then
-        exec /bin/zsh -l -i -s "$@"
+        exec /bin/zsh -l -i -s -- "$@"
         echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
-        exec "$BASH" --noprofile --norc -i -s "$@"
+        exec "$BASH" --noprofile --norc -i -s -- "$@"
       fi
       exec /bin/zsh -l -i
       echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
@@ -137,19 +165,19 @@ if [ -n "${BASH_VERSION-}" ]; then
   elif ! shopt -q login_shell; then
     case $- in
     *i*)
-      export SHELL=/bin/zsh
       if [ -n "${SANDCAST_SESSION-}" ]; then
         if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
-        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s "$@"; fi
+        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s -- "$@"; fi
         exec "$BASH" --noprofile --norc -i
       fi
       SANDCAST_SESSION=1
       export SANDCAST_SESSION
       if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then
         if [ -n "${BASH_EXECUTION_STRING+x}" ]; then exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"; fi
-        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s "$@"; fi
+        if [ $# -gt 0 ]; then exec "$BASH" --noprofile --norc -i -s -- "$@"; fi
         exec "$BASH" --noprofile --norc -i
       fi
+      export SHELL=/bin/zsh
       shopt -s execfail
       if [ -n "${BASH_EXECUTION_STRING+x}" ]; then
         exec /bin/zsh -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
@@ -157,9 +185,9 @@ if [ -n "${BASH_VERSION-}" ]; then
         exec "$BASH" --noprofile --norc -i -c "$BASH_EXECUTION_STRING" "$0" "$@"
       fi
       if [ $# -gt 0 ]; then
-        exec /bin/zsh -i -s "$@"
+        exec /bin/zsh -i -s -- "$@"
         echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2
-        exec "$BASH" --noprofile --norc -i -s "$@"
+        exec "$BASH" --noprofile --norc -i -s -- "$@"
       fi
       exec /bin/zsh -i
       echo "sandcast: cannot execute /bin/zsh, the curated shell; it is missing from the image or the sandbox policy does not grant it (sandcast grants /opt/sandcast read-only in /etc/openshell/policy.yaml); starting bash without startup files instead" >&2

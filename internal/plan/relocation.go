@@ -53,10 +53,7 @@ func ShellKind(p *Plan) string {
 }
 
 // HasZsh reports whether the image has zsh: in the base image or planned as
-// a component. Such an image gets the global zshenv block even when zsh is
-// not the curated shell, so a zsh the user starts reads its startup files
-// from the ZDOTDIR tree, never from the workspace home (spec 003 FR-002),
-// and never starts its new-user wizard (spec 002).
+// a component.
 func HasZsh(p *Plan) bool {
 	for _, s := range p.ImageFacts.Shells {
 		if path.Base(s) == "zsh" {
@@ -64,6 +61,24 @@ func HasZsh(p *Plan) bool {
 		}
 	}
 	return p.Component("zsh") != nil
+}
+
+// WritesZshEnv reports whether the build writes the sandcast block to the
+// global zshenv files (ZshEnvPaths): for the zsh kind, and for any other
+// kind when the image has zsh, so a zsh the user starts gets the session
+// environment and never its new-user wizard (spec 002). The build and the
+// overmount guard (bakedPaths) read this one predicate.
+func WritesZshEnv(p *Plan) bool {
+	return ShellKind(p) == "zsh" || HasZsh(p)
+}
+
+// ZshEnvRelocates reports whether that block also moves zsh's startup files
+// to ZDotDir: always for the zsh kind, and for another kind on the OpenShell
+// target, where the home is the mounted workspace and a zsh the user starts
+// must never read a .zshrc there (spec 003 FR-002). On the container target
+// such a zsh keeps the image home's own startup files (FR-040).
+func ZshEnvRelocates(p *Plan) bool {
+	return WritesZshEnv(p) && (ShellKind(p) == "zsh" || p.Target == manifest.TargetOpenShell)
 }
 
 // RelocationEnv returns the relocation environment variables the image sets so
@@ -304,10 +319,14 @@ type bakedPath struct {
 // fragment trees, /opt/sandcast and /opt/mise).
 func bakedPaths(p *Plan, policyPaths []string) []bakedPath {
 	var shellFiles []string
+	if WritesZshEnv(p) {
+		shellFiles = append(shellFiles, ZshEnvPaths...)
+	}
+	if ZshEnvRelocates(p) {
+		shellFiles = append(shellFiles, ZDotDir)
+	}
 	switch ShellKind(p) {
 	case "zsh":
-		shellFiles = append(shellFiles, ZshEnvPaths...)
-		shellFiles = append(shellFiles, ZDotDir)
 		if p.Shell.RCPath != "" {
 			shellFiles = append(shellFiles, p.Shell.RCPath)
 		}
@@ -318,12 +337,6 @@ func bakedPaths(p *Plan, policyPaths []string) []bakedPath {
 		shellFiles = append(shellFiles, ShellLoginPath, BashRCPath)
 	default:
 		shellFiles = append(shellFiles, ProfileScriptPath, ShLoginPath)
-	}
-	if ShellKind(p) != "zsh" && HasZsh(p) {
-		// The zshenv block that keeps a zsh the user starts out of the
-		// workspace home (sections.go, zshEnvTemplate).
-		shellFiles = append(shellFiles, ZshEnvPaths...)
-		shellFiles = append(shellFiles, ZDotDir)
 	}
 	if p.Target == manifest.TargetOpenShell {
 		// The shell hooks for shells OpenShell starts directly.

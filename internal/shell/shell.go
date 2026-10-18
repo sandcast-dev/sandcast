@@ -61,7 +61,19 @@ const ZshProgram = "/bin/zsh"
 // otherwise get a login bash that the hooks turn into the nested bare bash.
 // The curated zsh owns SHELL instead.
 func ZshEnvExport(zdotdir string) string {
-	return "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1 SHELL=" + ZshProgram
+	return zshEnvExport(zdotdir, true)
+}
+
+// zshEnvExport is ZshEnvExport with or without SHELL: an image whose
+// curated shell is not zsh keeps the launcher as $SHELL, so a zsh the user
+// starts there relocates its startup files and marks the session, nothing
+// more.
+func zshEnvExport(zdotdir string, ownShell bool) string {
+	line := "export ZDOTDIR=" + zdotdir + " " + SessionVar + "=1"
+	if ownShell {
+		line += " SHELL=" + ZshProgram
+	}
+	return line
 }
 
 // ZshEnvBegin and ZshEnvEnd delimit the block sandcast writes to the global
@@ -72,15 +84,23 @@ const (
 	ZshEnvEnd   = "# <<< sandcast zshenv <<<"
 )
 
-// ZshEnvBlock returns the block sandcast appends to the global zshenv: the
-// ZshEnvExport line, the session environment (spec 002: every zsh gets the
+// ZshEnvBlock returns the block sandcast appends to the global zshenv: with
+// relocate, the export line that moves zsh's startup files to zdotdir and
+// marks the session (and, with ownShell, makes zsh own $SHELL; see
+// ZshEnvExport); then the session environment (spec 002: every zsh gets the
 // MISE_* settings, the component environment and the shims first on PATH,
 // also when the runtime cleared the environment; sessionEnv is the script
 // path, "" for none) and a no-op zsh-newuser-install, so zsh never starts
 // its new-user wizard in a home without .zshrc (an empty workspace volume).
-func ZshEnvBlock(zdotdir, sessionEnv string) string {
-	return ZshEnvBegin + "\n" +
-		ZshEnvExport(zdotdir) + "\n" +
+// Without relocate (a container image whose curated shell is not zsh, where
+// the home is never overmounted) a zsh keeps reading the image home's own
+// startup files.
+func ZshEnvBlock(zdotdir, sessionEnv string, relocate, ownShell bool) string {
+	b := ZshEnvBegin + "\n"
+	if relocate {
+		b += zshEnvExport(zdotdir, ownShell) + "\n"
+	}
+	return b +
 		SessionEnvSource(sessionEnv) +
 		"zsh-newuser-install() { :; }\n" +
 		ZshEnvEnd + "\n"

@@ -172,7 +172,7 @@ func TestShellSection(t *testing.T) {
 			name: "openshell zsh with rc and created user",
 			present: []string{"COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", "COPY shell/sandcast.zsh /opt/sandcast/zdotdir/.zshrc",
 				shell.ZshEnvBegin, "zsh-newuser-install() { :; }", envLine, noSwitch, "usermod -s /bin/zsh sandbox", "exec /bin/zsh -i\n", "exec /bin/zsh -l -i\n"},
-			absent: []string{"/etc/zsh/zshrc.d", "exec /bin/zsh -l\n"},
+			absent: []string{"COPY shell/sandcast.zsh /etc/zsh/zshrc.d", "exec /bin/zsh -l\n"},
 		},
 		{
 			name:    "openshell zsh without rc and kept user",
@@ -188,7 +188,7 @@ func TestShellSection(t *testing.T) {
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
 			},
 			present: []string{"COPY shell/sandcast-env.sh", "cat > /opt/sandcast/shell-login", envLine},
-			absent:  []string{noSwitch, "zshenv", "/bin/zsh"},
+			absent:  []string{noSwitch, "zshenv_block=/tmp/sandcast-zshenv", "/bin/zsh"},
 		},
 		{
 			name: "openshell bash program: the launcher, nothing to switch",
@@ -197,7 +197,7 @@ func TestShellSection(t *testing.T) {
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
 			},
 			present: []string{"COPY shell/sandcast.sh /opt/sandcast/bashrc", envLine, "exec /opt/sandcast/shell-login -i\n"},
-			absent:  []string{noSwitch, "zshenv", "/bin/zsh"},
+			absent:  []string{noSwitch, "zshenv_block=/tmp/sandcast-zshenv", "/bin/zsh"},
 			golden:  "testdata/shell-bash.golden",
 			// The launcher sources the session environment before it starts
 			// bash, so a non-interactive run has it too.
@@ -211,17 +211,17 @@ func TestShellSection(t *testing.T) {
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" })
 			},
 			present: []string{"zsh-newuser-install", shell.ZshEnvBegin, "export ZDOTDIR=/opt/sandcast/zdotdir", "cat > /opt/sandcast/shell-login"},
-			absent:  []string{noSwitch, "exec /bin/zsh"},
+			absent:  []string{noSwitch, "exec /bin/zsh", "SHELL=/bin/zsh"},
 		},
 		{
-			name: "container target gets no hooks and keeps the user",
+			name: "container target gets no hooks; a kept user of a zsh plan gets zsh as login shell",
 			mutate: func(p *plan.Plan) {
 				p.Target = "container"
 				p.Policy = ""
 				p.FinalUser = plan.FinalUser{Name: "root", Group: "root", Home: "/root"}
 			},
-			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", shell.ZshEnvBegin},
-			absent:  []string{"/etc/bash.bashrc", "zz-sandcast-shell.sh", "usermod"},
+			present: []string{"zsh-newuser-install", "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh", shell.ZshEnvBegin, "usermod -s /bin/zsh root", "export ZDOTDIR=/opt/sandcast/zdotdir SANDCAST_SESSION=1 SHELL=/bin/zsh"},
+			absent:  []string{"for f in /etc/bash.bashrc /etc/bash/bashrc; do", "zz-sandcast-shell.sh"},
 		},
 		{
 			name: "container bash without mise: the launcher, no session script",
@@ -232,7 +232,7 @@ func TestShellSection(t *testing.T) {
 				p.Components = slices.DeleteFunc(p.Components, func(c plan.Component) bool { return c.Key == "zsh" || c.Key == "go" })
 			},
 			present: []string{"# 60-shell: curated bash configuration", "cat > /opt/sandcast/shell-login"},
-			absent:  []string{"sandcast-env.sh", "zshenv"},
+			absent:  []string{"sandcast-env.sh", "zshenv_block=/tmp/sandcast-zshenv"},
 		},
 	}
 	for _, tt := range tests {

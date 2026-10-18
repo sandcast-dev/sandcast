@@ -139,7 +139,8 @@ func newHookFixture(t *testing.T) *hookFixture {
 	stub := func(name string) HookTarget {
 		p := filepath.Join(f.dir, name)
 		require.NoError(t, os.WriteFile(p, []byte(`#!/bin/sh
-echo "STUB-`+name+` ARGV=[$*] ZDOTDIR=[${ZDOTDIR-}] SESSION=[${SANDCAST_SESSION-}]"
+printf 'STUB-`+name+` ARGV=['; for a; do printf '<%s>' "$a"; done
+echo "] ZDOTDIR=[${ZDOTDIR-}] SESSION=[${SANDCAST_SESSION-}] SHELL=[${SHELL-}]"
 exit 5
 `), 0o755))
 		return HookTarget{Program: p}
@@ -274,14 +275,14 @@ func TestLoginHookRunsInteractive(t *testing.T) {
 	cmd.Env = f.env()
 	out, code := run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-toplogin ARGV=[-l -i -c echo CMD zero a] ZDOTDIR=[/opt/sandcast/zdotdir] SESSION=[1]", out)
+	assert.Contains(t, out, "STUB-toplogin ARGV=[<-l><-i><-c><echo CMD><zero><a>] ZDOTDIR=[/opt/sandcast/zdotdir] SESSION=[1]", out)
 	assert.NotContains(t, out, "PWNED", out)
 
 	cmd = exec.Command(f.bash, "-l", "-i", "-c", "echo CMD")
 	cmd.Env = f.env("SANDCAST_SESSION=1")
 	out, code = run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-nested ARGV=[-i -c echo CMD ", out)
+	assert.Contains(t, out, "STUB-nested ARGV=[<-i><-c><echo CMD>", out)
 	assert.NotContains(t, out, "PWNED", out)
 
 	write(HookTargets{Top: f.targets.Top, TopLogin: f.unexecutable(t), Nested: f.targets.Nested})
@@ -305,11 +306,11 @@ func TestLoginHookRedirectsPOSIXHome(t *testing.T) {
 	}
 	hook := filepath.Join(t.TempDir(), "hook.sh")
 	require.NoError(t, os.WriteFile(hook, []byte(LoginHook(testExports, testTargets, "/opt/sandcast/home", "")), 0o644))
-	cmd := exec.Command(dash, "-c", ". "+hook+`; echo "HOME=$HOME REAL=$SANDCAST_HOME ZDOTDIR=$ZDOTDIR"`)
+	cmd := exec.Command(dash, "-c", ". "+hook+`; echo "HOME=$HOME REAL=$SANDCAST_HOME"`)
 	cmd.Env = []string{"HOME=/real", "PATH=/usr/bin:/bin"}
 	out, code := run(t, cmd)
 	assert.Equal(t, 0, code, out)
-	assert.Equal(t, "HOME=/opt/sandcast/home REAL=/real ZDOTDIR=/opt/sandcast/zdotdir\n", out)
+	assert.Equal(t, "HOME=/opt/sandcast/home REAL=/real\n", out, "the relocation variables come from the session environment script, not from the hook")
 }
 
 // TestBashrcHookRuns runs the bashrc hook as the rcfile of an interactive
@@ -329,13 +330,13 @@ func TestBashrcHookRuns(t *testing.T) {
 	cmd.Env = f.env()
 	out, code := run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-top ARGV=[-i -c echo CMD; exit 9 zero a] ZDOTDIR=[/opt/sandcast/zdotdir] SESSION=[1]", out)
+	assert.Contains(t, out, "STUB-top ARGV=[<-i><-c><echo CMD; exit 9><zero><a>] ZDOTDIR=[/opt/sandcast/zdotdir] SESSION=[1]", out)
 
 	cmd = exec.Command(f.bash, "--rcfile", hook, "-i", "-c", "echo CMD")
 	cmd.Env = f.env("SANDCAST_SESSION=1")
 	out, code = run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-nested ARGV=[-i -c echo CMD ", out)
+	assert.Contains(t, out, "STUB-nested ARGV=[<-i><-c><echo CMD>", out)
 
 	// The guard: an outer bash exports its pid and execs the hooked bash, so
 	// both share the pid, as the launcher and its bash do.
@@ -447,80 +448,125 @@ func TestHooksSourceSessionEnv(t *testing.T) {
 	assert.NotContains(t, out, "PWNED", out)
 }
 
+// bashMajor returns the major version of bash at path.
+func bashMajor(t *testing.T, path string) string {
+	t.Helper()
+	out, err := exec.Command(path, "-c", "echo ${BASH_VERSINFO[0]}").Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
+}
+
 // TestHooksNoSwitchKeepsBash checks the documented opt-out of the switch to
 // the curated zsh (spec 002 FR-008): with SANDCAST_NO_SHELL_SWITCH set and
 // a NoSwitch target, an interactive bash is replaced by bash without startup
 // files, with the session environment, instead of the curated shell, in the
-// bashrc hook and in the login hook alike; without the variable the curated
-// shell runs, and a hook without a NoSwitch target ignores the variable.
+// bashrc hook and in the login hook alike, and the extra exports (SHELL in
+// zsh images) stay off that path, so the kept bash owns $SHELL as the
+// runtime set it; without the variable the curated shell runs with SHELL
+// exported; a hook without a NoSwitch target ignores the variable.
 func TestHooksNoSwitchKeepsBash(t *testing.T) {
 	f := newHookFixture(t)
 	env := filepath.Join(f.dir, "sandcast-env.sh")
 	require.NoError(t, os.WriteFile(env, []byte(fakeSessionEnv), 0o644))
 	targets := HookTargets{Top: f.targets.Top, TopLogin: f.targets.TopLogin, Nested: f.targets.Nested, NoSwitch: PlainBash}
-	bashrc := BashrcHook(nil, targets, env)
+	exports := []Export{{Name: "SHELL", Value: "/bin/zsh"}}
+	bashrc := BashrcHook(exports, targets, env)
 	assert.Contains(t, bashrc, `if [ -n "${SANDCAST_NO_SHELL_SWITCH-}" ]; then`)
 	assert.NotContains(t, BashrcHook(nil, f.targets, env), "SANDCAST_NO_SHELL_SWITCH")
+	assert.Greater(t, strings.Index(bashrc, "export SHELL=/bin/zsh"), strings.Index(bashrc, "SANDCAST_NO_SHELL_SWITCH"), "SHELL is exported after the opt-out branch, on the switch path only")
 	hook := filepath.Join(f.dir, "bashrc-hook")
 	require.NoError(t, os.WriteFile(hook, []byte(bashrc), 0o644))
-	probe := `echo "KEPT=${BASH_VERSION%%.*} MISE=[$MISE_DATA_DIR] SESSION=[$SANDCAST_SESSION]"; exit 4`
+	major := bashMajor(t, f.bash)
+	probe := `echo "KEPT=${BASH_VERSION%%.*} MISE=[$MISE_DATA_DIR] SESSION=[$SANDCAST_SESSION] SHELL=[$SHELL]"; exit 4`
 
 	cmd := exec.Command(f.bash, "--rcfile", hook, "-i", "-c", probe)
-	cmd.Env = f.env("PATH=/usr/bin:/bin", "SANDCAST_NO_SHELL_SWITCH=1")
+	cmd.Env = f.env("PATH=/usr/bin:/bin", "SANDCAST_NO_SHELL_SWITCH=1", "SHELL=/bin/bash")
 	out, code := run(t, cmd)
 	assert.Equal(t, 4, code, out)
-	assert.Contains(t, out, "KEPT=5 MISE=[/opt/mise] SESSION=[1]", "bash stays bash, with the session environment: %s", out)
+	assert.Contains(t, out, "KEPT="+major+" MISE=[/opt/mise] SESSION=[1] SHELL=[/bin/bash]", "bash stays bash, with the session environment and the runtime's SHELL: %s", out)
 	assert.NotContains(t, out, "STUB-", out)
 	assert.NotContains(t, out, "PWNED", out)
 
 	cmd = exec.Command(f.bash, "--rcfile", hook, "-i", "-c", probe)
-	cmd.Env = f.env("PATH=/usr/bin:/bin")
+	cmd.Env = f.env("PATH=/usr/bin:/bin", "SHELL=/bin/bash")
 	out, code = run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-top", "without the variable the curated shell runs: %s", out)
+	assert.Contains(t, out, "STUB-top ARGV=[<-i><-c><"+probe+"><"+f.bash+">] ZDOTDIR=[] SESSION=[1] SHELL=[/bin/zsh]", "without the variable the curated shell runs and owns SHELL: %s", out)
 
-	login := LoginHook(nil, targets, "/opt/sandcast/home", env)
+	login := LoginHook(exports, targets, "/opt/sandcast/home", env)
 	hook = filepath.Join(f.dir, "zz-sandcast-shell.sh")
 	require.NoError(t, os.WriteFile(hook, []byte(login), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(f.home, ".bash_profile"), []byte(". "+hook+"\necho PWNED-.bash_profile\n"), 0o644))
 	cmd = exec.Command(f.bash, "-l", "-i", "-c", probe)
-	cmd.Env = f.env("PATH=/usr/bin:/bin", "SANDCAST_NO_SHELL_SWITCH=1")
+	cmd.Env = f.env("PATH=/usr/bin:/bin", "SANDCAST_NO_SHELL_SWITCH=1", "SHELL=/bin/bash")
 	out, code = run(t, cmd)
 	assert.Equal(t, 4, code, out)
-	assert.Contains(t, out, "KEPT=5 MISE=[/opt/mise] SESSION=[1]", out)
+	assert.Contains(t, out, "KEPT="+major+" MISE=[/opt/mise] SESSION=[1] SHELL=[/bin/bash]", out)
 	assert.NotContains(t, out, "STUB-", out)
 	assert.NotContains(t, out, "PWNED", out)
+	cmd = exec.Command(f.bash, "-l", "-i", "-c", probe)
+	cmd.Env = f.env("PATH=/usr/bin:/bin", "SHELL=/bin/bash")
+	out, code = run(t, cmd)
+	assert.Equal(t, 5, code, out)
+	assert.Contains(t, out, "STUB-toplogin ARGV=[<-l><-i><-c><"+probe+"><"+f.bash+">] ZDOTDIR=[] SESSION=[1] SHELL=[/bin/zsh]", out)
 }
 
 // TestBashrcHookForwardsStdinArguments checks a bash that reads its commands
-// from stdin with positional parameters (bash -i -s a b, as verify's session
-// checks run) hands them to the curated shell after -s, so the target reads
-// stdin too and sees the same "$@".
+// from stdin with positional parameters (bash -i -s -- a b, as verify's
+// session checks run) hands them to the curated shell after -s and "--", so
+// the target reads stdin too and sees exactly the same "$@": a parameter
+// that starts with "-" stays a parameter (bash -i -s -l would be a login
+// shell that reads the workspace ~/.bash_logout on exit), and a word with
+// a space stays one word. The target is a stub printing its argv, a real
+// zsh when the host has one, and bash itself for the nested and plain
+// targets, which must not become a login shell.
 func TestBashrcHookForwardsStdinArguments(t *testing.T) {
 	f := newHookFixture(t)
 	hook := filepath.Join(f.dir, "bashrc-hook")
 	require.NoError(t, os.WriteFile(hook, []byte(BashrcHook(nil, f.targets, "")), 0o644))
-	cmd := exec.Command(f.bash, "--rcfile", hook, "-i", "-s", "--", "a", "b c")
+	args := []string{"-x", "b c", "-c", "-l", "plain"}
+	cmd := exec.Command(f.bash, append([]string{"--rcfile", hook, "-i", "-s", "--"}, args...)...)
 	cmd.Env = f.env()
 	cmd.Stdin = strings.NewReader("echo never\n")
 	out, code := run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-top ARGV=[-i -s a b c]", out)
+	assert.Contains(t, out, "STUB-top ARGV=[<-i><-s><--><-x><b c><-c><-l><plain>]", out)
 
-	// The same with the nested target, a bash: it reads stdin with "$@".
-	cmd = exec.Command(f.bash, "--rcfile", hook, "-i", "-s", "--", "a", "b")
+	// The nested target (a stub here) gets the same argv.
+	cmd = exec.Command(f.bash, append([]string{"--rcfile", hook, "-i", "-s", "--"}, args...)...)
 	cmd.Env = f.env("SANDCAST_SESSION=1")
-	cmd.Stdin = strings.NewReader(`echo "NESTED 1=$1 2=$2"; exit 6` + "\n")
 	out, code = run(t, cmd)
 	assert.Equal(t, 5, code, out)
-	assert.Contains(t, out, "STUB-nested ARGV=[-i -s a b]", out)
+	assert.Contains(t, out, "STUB-nested ARGV=[<-i><-s><--><-x><b c><-c><-l><plain>]", out)
+
+	// bash as the target (the plain fallback and the nested bash of zsh
+	// images): it reads stdin, sees the parameters, and is not a login
+	// shell, so no workspace logout file runs on exit.
 	plain := HookTargets{Top: PlainBash, TopLogin: PlainBash, Nested: PlainBash}
 	require.NoError(t, os.WriteFile(hook, []byte(BashrcHook(nil, plain, "")), 0o644))
-	cmd = exec.Command(f.bash, "--rcfile", hook, "-i", "-s", "--", "a", "b")
+	script := `echo "PLAIN n=$# 1=[$1] 2=[$2] 3=[$3] 4=[$4] login=[$(shopt -q login_shell && echo yes || echo no)]"; exit 6` + "\n"
+	cmd = exec.Command(f.bash, append([]string{"--rcfile", hook, "-i", "-s", "--"}, args...)...)
 	cmd.Env = f.env()
-	cmd.Stdin = strings.NewReader(`echo "PLAIN 1=$1 2=$2"; exit 6` + "\n")
+	cmd.Stdin = strings.NewReader(script)
 	out, code = run(t, cmd)
 	assert.Equal(t, 6, code, out)
-	assert.Contains(t, out, "PLAIN 1=a 2=b", out)
+	assert.Contains(t, out, "PLAIN n=5 1=[-x] 2=[b c] 3=[-c] 4=[-l] login=[no]", out)
+	assert.NotContains(t, out, "PWNED", out)
+
+	// A real zsh as the target, with an empty ZDOTDIR tree so it reads no
+	// rc from the fixture home.
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("no zsh on the PATH")
+	}
+	zdotdir := filepath.Join(f.dir, "zdotdir")
+	require.NoError(t, os.MkdirAll(zdotdir, 0o755))
+	require.NoError(t, os.WriteFile(hook, []byte(BashrcHook(nil, HookTargets{Top: HookTarget{Program: zsh}, TopLogin: HookTarget{Program: zsh, Args: "-l"}, Nested: PlainBash}, "")), 0o644))
+	cmd = exec.Command(f.bash, append([]string{"--rcfile", hook, "-i", "-s", "--"}, args...)...)
+	cmd.Env = f.env("ZDOTDIR=" + zdotdir)
+	cmd.Stdin = strings.NewReader(`echo "ZSH n=$# 1=[$1] 2=[$2] 4=[$4] login=[$([[ -o login ]] && echo yes || echo no)]"; exit 7` + "\n")
+	out, code = run(t, cmd)
+	assert.Equal(t, 7, code, out)
+	assert.Contains(t, out, "ZSH n=5 1=[-x] 2=[b c] 4=[-l] login=[no]", out)
 	assert.NotContains(t, out, "PWNED", out)
 }
