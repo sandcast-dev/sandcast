@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -198,6 +199,9 @@ if [ -x /opt/sandcast/shell-login ]; then
 fi
 `
 
+// ansiEscapeRe matches a CSI escape sequence in captured pty output.
+var ansiEscapeRe = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
+
 // childReportScript is sourced by a shell of openShellSpawnScript with a
 // label: it prints the shell's PATH, where git and the workspace mytool
 // resolve, the mise data directory of the session environment and the
@@ -236,6 +240,10 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	results := map[string]string{}
 	lines := map[string][]string{}
 	for _, l := range strings.Split(out, "\n") {
+		// Under a pty with TERM set, bash's readline brackets every line
+		// with paste-mode escapes (ESC[?2004h, ESC[?2004l), which would
+		// start a report line and hide its label; zsh prints none.
+		l = ansiEscapeRe.ReplaceAllString(l, "")
 		f := strings.Fields(l)
 		switch {
 		case len(f) >= 3 && f[0] == "RESULT":
