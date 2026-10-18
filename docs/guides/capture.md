@@ -19,7 +19,7 @@ sandcast skills install
 | user (default) | `sandcast skills install --scope user` | `~/.claude/skills/sandcast-capture/` and `~/.claude/skills/sandcast-build/` |
 | project | `sandcast skills install --scope project` | `.claude/skills/sandcast-capture/` and `.claude/skills/sandcast-build/` in the project |
 
-The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.2.0) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
+The skills are then available as `/sandcast-capture` and `/sandcast-build`. The command prints one line per skill, for example `installed sandcast-capture (0.2.1) at <path>`. Each skill carries the version of the bundle it came from. Running `sandcast skills install` again leaves skills of the same version alone, replaces older ones, and skips newer ones with a hint. `--force` overwrites in every case.
 
 The binary and the installed skills must match, because the skills rely on the binary's commands and JSON output. Check them with:
 

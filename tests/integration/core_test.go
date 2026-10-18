@@ -245,8 +245,10 @@ func writeFragment(t *testing.T, dir, key, body string) {
 // OpenShell gives a session (env -i with HOME, USER, TERM and the default
 // PATH, bash as the started program) and must resolve every component
 // binary in a login bash, an interactive bash and an interactive zsh, start
-// zsh without stderr output, switch to zsh only with a terminal, and fail
-// verify once its zshenv block is removed (SC-003, SC-004).
+// zsh without stderr output, hand an interactive bash to the curated zsh
+// with or without a terminal (a bash -i that stayed bash would read the
+// workspace ~/.bashrc), and fail verify once its zshenv block is removed
+// (SC-003, SC-004).
 func TestSessionEnvironment(t *testing.T) {
 	engine := requireEngine(t)
 	requireMise(t)
@@ -342,7 +344,7 @@ func TestSessionEnvironment(t *testing.T) {
 	require.NoError(t, err, "a mise tool runs in the session")
 	assert.Contains(t, out, "starship")
 
-	// With a terminal, an interactive bash switches to a zsh login shell:
+	// With a terminal, an interactive bash switches to an interactive zsh:
 	// script(1) gives bash a pseudo terminal and feeds it our commands. No
 	// new-user wizard and no command-not-found output may appear.
 	out, _, err = run("echo SWITCHED=$ZSH_VERSION\nexit\n", false, "/usr/bin/script", "-qec", "/bin/bash -i", "/dev/null")
@@ -386,7 +388,8 @@ func TestSessionEnvironment(t *testing.T) {
 	assert.NotContains(t, out, "MISSING", "a plain zsh -c resolves every binary through zshenv")
 
 	// US1 scenarios 3 and 5 with an empty workspace home, as OpenShell
-	// mounts it: the switch still lands in a login zsh with the curated rc,
+	// mounts it: the switch still lands in an interactive zsh that read the
+	// curated rc,
 	// and neither the new-user wizard nor stderr output appears.
 	// podman copies the image's directory content into a tmpfs unless
 	// told not to; docker never does.
