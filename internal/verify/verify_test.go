@@ -171,6 +171,18 @@ func TestSessionRequests(t *testing.T) {
 			assert.Contains(t, r.Command, plan.CuratedRCLoadedVar)
 		}
 	}
+
+	// The zsh checks key on the shell kind the hooks use, not on
+	// shell.program alone: a zsh component without a shell section (testPlan
+	// has one) is a zsh image, whose interactive sessions the hooks hand to
+	// zsh, so it gets the zsh checks and the zsh startup check.
+	zshComponent := openshellPlan("")
+	require.Equal(t, "zsh", plan.ShellKind(zshComponent))
+	component := SessionRequests(zshComponent)
+	assert.Contains(t, keys(component), "session.zsh.go")
+	assert.Contains(t, keys(component), "session.zsh.startup")
+	assert.NotContains(t, keys(component), "session.bash.startup")
+	assert.Len(t, component, 10)
 }
 
 // TestSessionRequestsRunLocally runs the generated session commands with

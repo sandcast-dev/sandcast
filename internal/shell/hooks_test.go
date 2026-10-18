@@ -66,10 +66,11 @@ func TestBashrcHook(t *testing.T) {
 }
 
 // TestLoginHook checks the profile.d hook: bash login shells are replaced
-// (interactive ones by the curated shell, others by a bash without startup
-// files that keeps the command, script or stdin), other POSIX shells get
-// HOME redirected, and zsh only gets the exports. It must parse as POSIX sh
-// because dash and busybox ash source it too.
+// (interactive ones by the curated shell, with the exports on that path
+// only; others by a bash without startup files that keeps the command,
+// script or stdin), other POSIX shells get HOME redirected, and a zsh that
+// sources it gets nothing beyond the session environment. It must parse as
+// POSIX sh because dash and busybox ash source it too.
 func TestLoginHook(t *testing.T) {
 	got := LoginHook(testExports, testTargets, "/opt/sandcast/home", "")
 	assert.Contains(t, got, "export ZDOTDIR=/opt/sandcast/zdotdir\n")
@@ -298,7 +299,9 @@ func TestLoginHookRunsInteractive(t *testing.T) {
 
 // TestLoginHookRedirectsPOSIXHome checks a POSIX shell that is not bash gets
 // HOME pointed at the redirect home, with the real home kept for the baked
-// .profile to restore.
+// .profile to restore, and none of the exports: those are exported only on
+// the path that execs the curated shell, and a POSIX shell gets the
+// relocation variables from the session environment script instead.
 func TestLoginHookRedirectsPOSIXHome(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
@@ -306,11 +309,11 @@ func TestLoginHookRedirectsPOSIXHome(t *testing.T) {
 	}
 	hook := filepath.Join(t.TempDir(), "hook.sh")
 	require.NoError(t, os.WriteFile(hook, []byte(LoginHook(testExports, testTargets, "/opt/sandcast/home", "")), 0o644))
-	cmd := exec.Command(dash, "-c", ". "+hook+`; echo "HOME=$HOME REAL=$SANDCAST_HOME"`)
+	cmd := exec.Command(dash, "-c", ". "+hook+`; echo "HOME=$HOME REAL=$SANDCAST_HOME ZDOTDIR=[${ZDOTDIR-}]"`)
 	cmd.Env = []string{"HOME=/real", "PATH=/usr/bin:/bin"}
 	out, code := run(t, cmd)
 	assert.Equal(t, 0, code, out)
-	assert.Equal(t, "HOME=/opt/sandcast/home REAL=/real\n", out, "the relocation variables come from the session environment script, not from the hook")
+	assert.Equal(t, "HOME=/opt/sandcast/home REAL=/real ZDOTDIR=[]\n", out, "HOME is redirected; the exports do not reach a POSIX shell")
 }
 
 // TestBashrcHookRuns runs the bashrc hook as the rcfile of an interactive

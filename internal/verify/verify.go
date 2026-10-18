@@ -128,9 +128,10 @@ func checkHash(c plan.Check) string {
 // component's binary therefore has to resolve through the session PATH and
 // run with the session's MISE_* settings. Before the check, every binary
 // of the component that resolves in the image environment must resolve
-// through the session PATH too (binsPrelude). With shell.program zsh, the
-// checks also run in an interactive login zsh (zsh -il), as the login hook
-// starts it. The selected shell program's startup check
+// through the session PATH too (binsPrelude). In a zsh image
+// (shell.program zsh, or a zsh component without a shell section; the
+// shell kind the hooks use), the checks also run in an interactive login
+// zsh (zsh -il), as the login hook starts it. The selected shell program's startup check
 // (session.zsh.startup or session.bash.startup, an interactive shell in
 // both cases) fails when the startup writes to stderr (apart from the notes
 // a shell prints only because verify runs it without a terminal) or does

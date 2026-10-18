@@ -242,9 +242,10 @@ func plainBashLogin(indent string) string {
 // spec 002: the MISE_* settings, the component and relocation environment
 // and the shims first on PATH, which an interactive bash started with a
 // cleared environment reads no profile for), then for an interactive
-// non-login bash execs the curated shell (exporting the extra variables on
-// that path only), so ~/.bashrc is never read; the bash the launcher starts is recognized by
-// GuardVar and continues normally. A non-interactive bash reads the system
+// non-login bash execs the curated shell, exporting the extra variables on
+// that path only (see redirect), so ~/.bashrc is never read; the bash the
+// launcher starts is recognized by GuardVar and continues normally. A
+// non-interactive bash reads the system
 // bashrc only when sshd or rshd starts it with -c; that one is replaced by
 // a bash without startup files. Login shells are left to the profile hook,
 // because /etc/profile sources the system bashrc before /etc/profile.d. The
@@ -277,8 +278,9 @@ func BashrcHook(exports []Export, t HookTargets, sessionEnv string) string {
 // it last (the zz- prefix) for every login shell, before the shell reads a
 // profile file from the home. It sources the session environment script
 // (sessionEnv, "" for none; /etc/profile already did when it sources
-// /etc/profile.d, and the script is idempotent), exports the extra
-// variables and then:
+// /etc/profile.d, and the script is idempotent) and then acts per case; the
+// extra variables (SHELL in zsh images) are exported only on the interactive
+// path that execs the curated shell (see redirect):
 //
 //   - bash, interactive: execs the curated shell (TopLogin, or Nested inside a
 //     curated session), which is not a login shell, so neither ~/.bash_profile

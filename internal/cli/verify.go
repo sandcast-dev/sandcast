@@ -30,7 +30,8 @@ For the OpenShell target it always adds session checks: every component
 check runs again, after every binary of the component that resolves in the
 image environment must resolve through the session PATH too, in a login
 bash and an interactive bash started with OpenShell's cleared environment (only HOME, USER, TERM and the default
-PATH), and with shell.program zsh also in an interactive login zsh. The
+PATH), and in a zsh image (shell.program zsh, or a zsh component without a
+shell section) also in an interactive login zsh. The
 startup check of the selected shell program (session.zsh.startup or
 session.bash.startup) fails when the interactive shell does not read the
 curated rc or writes to stderr.`,
