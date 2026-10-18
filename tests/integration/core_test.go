@@ -302,14 +302,17 @@ func TestSessionEnvironment(t *testing.T) {
 	// and the shims (the base image's, as the probe recorded them) follow
 	// the shims in a session, in the image's order, except directories under
 	// the overmount home (/sandbox/.venv/bin on the community base), which
-	// never reach a session PATH (spec 003 reconciliation, P1).
+	// never reach a session PATH (spec 003 reconciliation, P1) and are left
+	// out of the image PATH as well, which the default agent inherits (I1 of
+	// the round 2 review).
 	pathOut, err := exec.Command(engine, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", img).Output()
 	require.NoError(t, err)
 	var extra []string
 	for _, line := range strings.Split(string(pathOut), "\n") {
 		if v, ok := strings.CutPrefix(line, "PATH="); ok {
 			for _, d := range strings.Split(v, ":") {
-				if d != "" && d != "/opt/mise/shims" && d != "/usr/local/bin" && d != "/usr/bin" && d != "/bin" && !strings.HasPrefix(d, "/sandbox/") && !slices.Contains(extra, d) {
+				assert.False(t, d == "/sandbox" || strings.HasPrefix(d, "/sandbox/"), "the image PATH %s names a directory under the overmount home", v)
+				if d != "" && d != "/opt/mise/shims" && d != "/usr/local/bin" && d != "/usr/bin" && d != "/bin" && !slices.Contains(extra, d) {
 					extra = append(extra, d)
 				}
 			}

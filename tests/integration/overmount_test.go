@@ -75,12 +75,12 @@ func runEngine(t *testing.T, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// workspaceWithPlantedRC creates a host directory to mount over the home that
-// contains hostile startup files; each writes a sentinel when sourced. It
-// also plants bin/bash, a wrapper that leaves a sentinel and runs the real
-// bash: the curated rc puts $HOME/bin first on the PATH, so any bash that
-// a hook or launcher resolved through the PATH would run it.
-func workspaceWithPlantedRC(t *testing.T) string {
+// workspaceWithPlantedRC creates a host directory to mount over the home of
+// image that contains hostile startup files; each writes a sentinel when
+// sourced. It also plants bin/bash, a wrapper that leaves a sentinel and
+// runs the real bash: the curated rc puts $HOME/bin first on the PATH, so
+// any bash that a hook or launcher resolved through the PATH would run it.
+func workspaceWithPlantedRC(t *testing.T, engine, image string) string {
 	t.Helper()
 	ws := t.TempDir()
 	// OpenShell gives the sandbox user a writable workspace volume. Rootless
@@ -88,6 +88,20 @@ func workspaceWithPlantedRC(t *testing.T) string {
 	// host directory (t.TempDir creates it with mode 0700), so the test opens
 	// it to every uid; otherwise writes into the home fail on Linux CI.
 	require.NoError(t, os.Chmod(ws, 0o777))
+	// What the image user then creates in the workspace (the XDG write
+	// check below makes .config/gh/config.yml, with 0755 directories) is
+	// owned by that subordinate uid, so the runner's os.RemoveAll of the
+	// TempDir fails with EACCES on rootless Linux after every assertion
+	// passed. Cleanups run last registered first, so this one runs before
+	// the TempDir's removal: as root of the container's user namespace, the
+	// host user with the subordinate uids mapped, it opens everything in
+	// the workspace to every uid.
+	t.Cleanup(func() {
+		out, err := runEngine(t, engine, "run", "--rm", "--user", "root", "-v", ws+":/w", "--entrypoint", "/bin/sh", image, "-c", "chmod -R a+rwX /w")
+		if err != nil {
+			t.Logf("workspace cleanup: %v: %s", err, out)
+		}
+	})
 	for _, rc := range []string{".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, rc), []byte("touch /tmp/pwned-"+strings.TrimPrefix(rc, ".")+"\n"), 0o644))
 	}
@@ -97,31 +111,40 @@ func workspaceWithPlantedRC(t *testing.T) string {
 	// directory the workspace hides. Ubuntu's system bashrc calls groups and
 	// /etc/profile calls id by name during startup, so a project that commits
 	// them there would run at every session start if that directory ever
-	// reached the session PATH.
+	// reached a session PATH or stayed on the image PATH that the default
+	// agent inherits; a planted git would run for every bare git call.
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, ".venv", "bin"), 0o755))
-	for _, name := range []string{"groups", "id"} {
+	for _, name := range []string{"git", "groups", "id"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, ".venv", "bin", name), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-"+name+"\nexec /usr/bin/"+name+" \"$@\"\n"), 0o755))
 	}
 	return ws
 }
 
 // openShellSpawnScript simulates how OpenShell v0.1.x starts shells in a
-// sandbox (boundary_exec.rs and the default agent): it runs /bin/bash after
-// clearing the environment, with -i under a pty for a terminal session, with
-// -lc or -c for a command, and as -l for the default agent. None of these
-// uses the image CMD, the passwd shell or the image ENV; SHELL is set to the
-// bash it found, as the runtime does. script(1) provides the pty. Every case
-// prints RESULT <case> pwned=[...] with the sentinels the planted workspace
-// files left behind, then clears them; the first case is a positive control
-// that sources the workspace .bashrc on purpose.
+// sandbox (boundary_exec.rs and the default agent): it runs /bin/bash, with
+// -i under a pty for a terminal session, with -lc or -c for a command, and
+// as -l for the default agent. None of these uses the image CMD or the
+// passwd shell. Exec and terminal sessions start with a cleared environment
+// ($E: HOME, USER, TERM, the default PATH, and SHELL set to the bash it
+// found, as the runtime does); the default agent keeps the image ENV, so the
+// agent cases run without $E, with the environment podman gave this script.
+// script(1) provides the pty. Every case prints RESULT <case> pwned=[...]
+// with the sentinels the planted workspace files left behind, then clears
+// them; the first cases are positive controls that source the workspace
+// .bashrc and run the planted .venv/bin binaries by path on purpose.
 const openShellSpawnScript = `#!/bin/sh
 E="env -i HOME=/sandbox USER=sandbox SHELL=/bin/bash PATH=/usr/local/bin:/usr/bin:/bin TERM=xterm-256color"
 report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; rm -f /tmp/pwned-*; }
 rm -f /tmp/pwned-*
+echo "OUT image-env PATH=[$PATH]"
 $E /bin/bash -c '. /sandbox/.bashrc'
 report control
-/sandbox/.venv/bin/groups >/dev/null; /sandbox/.venv/bin/id >/dev/null
+/sandbox/.venv/bin/groups >/dev/null; /sandbox/.venv/bin/id >/dev/null; /sandbox/.venv/bin/git --version >/dev/null
 report control-venv
+printf 'echo "AGENT PATH=[$PATH] git=[$(command -v git)]"; exit\n' | script -qec "/bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT agent-pty /'
+report agent-pty
+/bin/bash -lc 'echo "AGENT PATH=[$PATH] git=[$(command -v git)]"' | sed 's/^/OUT agent-lc /'
+report agent-lc
 printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
 report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
@@ -205,8 +228,8 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
-	assert.Equal(t, "[pwned-planted-groups pwned-planted-id ]", results["control-venv"], "positive control: the planted .venv/bin binaries run when called by path")
-	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
+	assert.Equal(t, "[pwned-planted-git pwned-planted-groups pwned-planted-id ]", results["control-venv"], "positive control: the planted .venv/bin binaries run when called by path")
+	cases := []string{"agent-pty", "agent-lc", "pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
@@ -214,6 +237,17 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 		require.Contains(t, results, c, "case %s ran", c)
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
 	}
+	// The default agent keeps the image ENV (I1 of the round 2 review): the
+	// image PATH leaves out the base image's /sandbox/.venv/bin, and the
+	// session script drops any inherited entry under the overmount home, so
+	// neither the login shell's startup (groups, id) nor a bare git in the
+	// agent's shell reaches the planted binaries. In the curated shell of
+	// the pty case the rc's own $HOME/bin comes first, the user's choice.
+	has("image-env", "PATH=[")
+	assert.NotContains(t, strings.Join(lines["image-env"], "\n"), "/sandbox", "the image PATH names no directory under the overmount home")
+	has("agent-lc", "AGENT PATH=[/opt/mise/shims:/usr/local/bin:/usr/bin:/bin] git=[/usr/bin/git]")
+	has("agent-pty", "git=[/usr/bin/git]")
+	assert.NotContains(t, strings.Join(lines["agent-pty"], "\n"), "/sandbox/.venv/bin")
 	// A bare "bash" inside the curated session resolves through the curated
 	// PATH, which starts with the workspace $HOME/bin, so the planted wrapper
 	// runs: that is the user's own PATH choice and the positive control that
@@ -318,7 +352,7 @@ func TestOvermountZshSurvives(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".inputrc"), []byte("set editing-mode vi\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
-	ws := workspaceWithPlantedRC(t)
+	ws := workspaceWithPlantedRC(t, engine, image)
 
 	// Positive control: sourcing the planted files on purpose leaves their
 	// sentinels, so the checks below can fire under this mount (the files
@@ -376,13 +410,16 @@ func TestOvermountZshSurvives(t *testing.T) {
 
 	// The tmux dotfile is baked to /etc/tmux.conf, which tmux reads natively,
 	// and no image-wide XDG_CONFIG_HOME points tools at a root-owned tree:
-	// the sandbox user can still write its own XDG configuration.
+	// the sandbox user can still write its own XDG configuration. The check
+	// removes what it wrote (owned by the image user, see
+	// workspaceWithPlantedRC).
 	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox", "--entrypoint", "/bin/sh", image, "-c",
-		`cat /etc/tmux.conf; echo "XDG=[${XDG_CONFIG_HOME-unset}]"; mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/gh" && touch "${XDG_CONFIG_HOME:-$HOME/.config}/gh/config.yml" && echo XDG-WRITE-OK`)
+		`cat /etc/tmux.conf; echo "XDG=[${XDG_CONFIG_HOME-unset}]"; d="${XDG_CONFIG_HOME:-$HOME/.config}"; mkdir -p "$d/gh" && touch "$d/gh/config.yml" && echo XDG-WRITE-OK; rm -rf "$d"`)
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "set -g history-limit 99999")
 	assert.Contains(t, out, "XDG=[unset]")
 	assert.Contains(t, out, "XDG-WRITE-OK")
+	assert.NoDirExists(t, filepath.Join(ws, ".config"), "the write check cleans up after itself")
 
 	// Edge case: the home is mounted read-only; the baked config still loads.
 	out, err = runEngine(t, engine, "run", "--rm", "-v", ws+":/sandbox:ro", "--entrypoint", "/bin/zsh", image, "-ic", `echo "ZDOTDIR=$ZDOTDIR"; alias myll`)
@@ -429,7 +466,7 @@ func TestOvermountBashSurvives(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "dotfiles-src", ".inputrc"), []byte("set editing-mode vi\n"), 0o644))
 	require.Zero(t, sandcast(t, dir, nil, "build").code, "image builds")
 
-	ws := workspaceWithPlantedRC(t)
+	ws := workspaceWithPlantedRC(t, engine, image)
 	script := `test -f /tmp/pwned-bashrc && echo PWNED || echo SAFE; alias myll`
 	// The launcher is the image CMD; with --entrypoint it receives -i -c as
 	// arguments and forwards them to bash --noprofile --rcfile. Without
