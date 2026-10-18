@@ -286,12 +286,14 @@ func Build(in Inputs) (*Plan, error) {
 		return nil, err
 	}
 	deltaNotices := slices.Clone(in.KindedNotices)
-	// A base image PATH directory under the overmount home never reaches a
-	// session's PATH (SessionPathDirs): the workspace mounted there may come
-	// from an untrusted project. The plan says so once per directory.
-	for _, d := range HiddenSessionPathDirs(p.ImageFacts.Path, overmount) {
+	// A base image PATH directory under the overmount home never reaches the
+	// image PATH (imagePath) or a session's PATH (sessionPathDirs): the
+	// workspace mounted there may come from an untrusted project. The plan
+	// says so once per directory.
+	_, hiddenDirs := sessionPathDirs(p.ImageFacts.Path, overmount)
+	for _, d := range hiddenDirs {
 		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
-			"base image PATH directory %s lies under the overmount home %s and is not put on the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated",
+			"base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated",
 			d, overmount)))
 	}
 
@@ -343,13 +345,14 @@ func Build(in Inputs) (*Plan, error) {
 		entry, reason := DeltaFor(w.Def, w.Selector(), check, opts)
 		deltaNotices = append(deltaNotices, entry.Notices...)
 		p.ProbeDelta = append(p.ProbeDelta, entry)
-		// hidden reports the tool as re-provisioned once its destination is
-		// known: the persistent location of its installer, the /opt tree of
-		// a stored fragment, or nothing when no definition can provision it.
-		hidden := func(to string) {
+		// reportHidden records what happens to a tool found only under the
+		// overmount home once its outcome is known: re-provisioned to the
+		// persistent location of its installer or the /opt tree of a stored
+		// fragment, or hidden and unresolved when nothing can provision it.
+		reportHidden := func(kind, to string) {
 			if entry.Hidden() {
 				reprovisioned = append(reprovisioned, RelocationNotice{
-					Kind: NoticeReprovisioned, Subject: w.Key, From: strings.Join(entry.IgnoredPaths, ", "), To: to,
+					Kind: kind, Subject: w.Key, From: strings.Join(entry.IgnoredPaths, ", "), To: to,
 				})
 			}
 		}
@@ -360,14 +363,14 @@ func Build(in Inputs) (*Plan, error) {
 				p.Components = append(p.Components, c)
 				installed = append(installed, w.Def)
 				fragmentDirs = append(fragmentDirs, OptDir(w.Key))
-				hidden(OptDir(w.Key))
+				reportHidden(NoticeReprovisioned, OptDir(w.Key))
 				continue
 			}
 			p.Unresolved = append(p.Unresolved, Unresolved{Key: w.Key, Reason: reason, Optional: w.Ref.Optional})
-			hidden("")
+			reportHidden(NoticeHidden, "")
 			continue
 		}
-		hidden(reprovisionTarget(w.Def))
+		reportHidden(NoticeReprovisioned, reprovisionTarget(w.Def))
 		if anyStored {
 			state := "stale"
 			if stored.Superseded {
@@ -454,6 +457,7 @@ func Build(in Inputs) (*Plan, error) {
 	// baked configuration too (research R3). They win over component and
 	// harness env, and each replaced value is reported.
 	envNotices := mergeRelocationEnv(&p.Image, RelocationEnv(p))
+	envNotices = append(envNotices, setImagePath(&p.Image, p.ImageFacts.Path, overmount)...)
 
 	// Every overmount decision is reported in plan.yaml and in the output of
 	// sandcast plan and sandcast build, sorted by subject so rebuilds are
@@ -525,6 +529,51 @@ func Build(in Inputs) (*Plan, error) {
 	sort.Slice(p.Components, func(i, j int) bool { return p.Components[i].Key < p.Components[j].Key })
 	sort.Slice(p.Unresolved, func(i, j int) bool { return p.Unresolved[i].Key < p.Unresolved[j].Key })
 	return p, nil
+}
+
+// setImagePath sets the image PATH when the base image's PATH names a
+// directory under the overmount home: the OpenShell default agent inherits
+// the image ENV, and the community base image's PATH starts with
+// /sandbox/.venv/bin, which would put the mounted workspace ahead of
+// /usr/bin for every command the agent runs and for Ubuntu's system bashrc,
+// which calls groups by name (spec 003 FR-002, SC-002). The value is the
+// base image's PATH without those directories, in its order, or the
+// OpenShell default PATH when nothing is left; the 30-mise layer prepends
+// the shims to it. A component or harness PATH is replaced, with a notice,
+// as a relocation value would be. Without an overmount home, or when the
+// base PATH is clean, the image keeps the base image's PATH.
+func setImagePath(setup *ImageSetup, basePath []string, overmount string) []string {
+	if overmount == "" {
+		return nil
+	}
+	var kept []string
+	hidden := false
+	for _, d := range basePath {
+		d = path.Clean(d)
+		switch {
+		case UnderOvermount(overmount, d):
+			hidden = true
+		case !slices.Contains(kept, d):
+			kept = append(kept, d)
+		}
+	}
+	if !hidden {
+		return nil
+	}
+	if len(kept) == 0 {
+		kept = slices.Clone(OpenShellDefaultPath)
+	}
+	value := strings.Join(kept, ":")
+	env := envMap(setup.Env)
+	var notices []string
+	if prev, ok := env["PATH"]; ok && prev != value {
+		notices = append(notices, fmt.Sprintf(
+			"component or harness env PATH=%s is replaced by the image PATH %s, which leaves out the directories under the overmount home %s",
+			prev, value, overmount))
+	}
+	env["PATH"] = value
+	setup.Env = sortedEnv(env)
+	return notices
 }
 
 // homeRCNotices reports the home-directory rc files of the base image that

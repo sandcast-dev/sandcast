@@ -126,17 +126,76 @@ func TestSessionEnvScriptForPlan(t *testing.T) {
 // once each; a directory the script would have to quote is left out (I-1),
 // and so is a directory under the overmount home (the workspace mounted
 // there may come from an untrusted project; a command looked up in it during
-// shell startup would run project code), which HiddenSessionPathDirs names.
+// shell startup would run project code), which the second result names.
+// SessionPathDirsFor applies the plan's own target and overmount home, so no
+// caller can leave the prefix out.
 func TestSessionPathDirs(t *testing.T) {
 	base := []string{"/opt/mise/shims", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/opt/x/bin/", "/usr/bin",
 		"/sbin", "/bin", "/usr/sbin", "/opt/has space", "relative/bin", "/opt/$HOME", "/sandbox/.local/bin", "/sandbox/.venv/bin", "/sandbox/.local/bin"}
-	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}, SessionPathDirs(base, ""), "no overmount: every plain extra directory")
-	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, SessionPathDirs(base, "/sandbox"))
-	assert.Equal(t, []string{"/sandbox/.local/bin", "/sandbox/.venv/bin"}, HiddenSessionPathDirs(base, "/sandbox"), "the hidden directories, once each, in order")
-	assert.Empty(t, HiddenSessionPathDirs(base, ""))
-	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}, SessionPathDirs(base, "/sandboxes"), "the overmount home is matched as a path prefix, not a string prefix")
-	assert.Empty(t, SessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox"))
-	assert.Empty(t, SessionPathDirs(nil, "/sandbox"))
+	all := []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}
+	kept, hidden := sessionPathDirs(base, "")
+	assert.Equal(t, all, kept, "no overmount: every plain extra directory")
+	assert.Empty(t, hidden)
+	kept, hidden = sessionPathDirs(base, "/sandbox")
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, kept)
+	assert.Equal(t, []string{"/sandbox/.local/bin", "/sandbox/.venv/bin"}, hidden, "the hidden directories, once each, in order")
+	kept, hidden = sessionPathDirs(base, "/sandboxes")
+	assert.Equal(t, all, kept, "the overmount home is matched as a path prefix, not a string prefix")
+	assert.Empty(t, hidden)
+	kept, _ = sessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox")
+	assert.Empty(t, kept)
+	kept, _ = sessionPathDirs(nil, "/sandbox")
+	assert.Empty(t, kept)
+
+	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: base}}
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, SessionPathDirsFor(p), "the default overmount home applies")
+	p.BaseImage.OvermountHome = "/home/dev"
+	assert.Equal(t, all, SessionPathDirsFor(p), "a base image with another overmount home keeps /sandbox directories")
+	p.ImageFacts.Path = append(p.ImageFacts.Path, "/home/dev/.local/bin")
+	assert.Equal(t, all, SessionPathDirsFor(p), "and drops its own")
+	assert.Nil(t, SessionPathDirsFor(&Plan{Target: "container", ImageFacts: ImageFacts{Path: base}}), "the container target gets no extra directories")
+}
+
+// TestSessionEnvScriptStripsOvermountPath: a session that keeps the image
+// environment (the OpenShell default agent) or a runtime that set PATH
+// itself inherits a PATH; the OpenShell script drops every entry equal to
+// or under the overmount home from it once, in the script body, before
+// _sandcast_path puts the shims and the base image directories first (I1 of
+// the round 2 review). The strip is not part of _sandcast_path, so the bash
+// prompt repair leaves a directory under the home that a curated rc or the
+// user put on PATH later. The container target's script has no strip.
+func TestSessionEnvScriptStripsOvermountPath(t *testing.T) {
+	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/bin", "/sandbox/.venv/bin", "/bin"}}}
+	text := SessionEnvScriptFor(p)
+	i := strings.Index(text, "case $_sandcast_pd in \"\" | /sandbox | /sandbox/*) ;;")
+	require.GreaterOrEqual(t, i, 0, text)
+	assert.Less(t, i, strings.Index(text, "_sandcast_path() {"), "the strip runs once, before the function is defined and called")
+	assert.NotContains(t, strings.SplitN(text, "_sandcast_path() {", 2)[1], "_sandcast_pd", "the strip is not part of _sandcast_path")
+	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", ImageFacts: p.ImageFacts}), "_sandcast_pd", "no strip on the container target")
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "sandcast-env.sh")
+	require.NoError(t, os.WriteFile(script, []byte(text), 0o644))
+	ran := 0
+	for _, sh := range []string{"sh", "dash", "bash", "zsh"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			continue
+		}
+		ran++
+		// The inherited PATH as the community base image sets it, plus the
+		// home itself, a directory whose name only starts like the home, and
+		// an empty entry (the current directory, the workspace in a session).
+		cmd := exec.Command(path, "-c", `. "$1"; printf '%s\n' "$PATH"; PATH=/sandbox/bin:$PATH; _sandcast_path; printf '%s\n' "$PATH"; printf '%s\n' "${_sandcast_pd-unset}${_sandcast_prest-unset}${_sandcast_pnew-unset}"`, sh, script)
+		cmd.Env = []string{"PATH=/sandbox/.venv/bin:/usr/local/bin:/sandbox:/usr/bin::/sandboxes/bin:/bin:/sandbox/.local/bin", "HOME=/sandbox"}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", sh, out)
+		assert.Equal(t, MiseShimsDir+":/usr/local/sbin:/usr/local/bin:/usr/bin:/sandboxes/bin:/bin\n"+
+			MiseShimsDir+":/sandbox/bin:"+MiseShimsDir+":/usr/local/sbin:/usr/local/bin:/usr/bin:/sandboxes/bin:/bin\n"+
+			"unsetunsetunset\n", string(out),
+			"%s: the inherited entries under the overmount home are gone; a later one survives the repair, which only puts the shims first again; the loop variables are unset", sh)
+	}
+	assert.Positive(t, ran)
 }
 
 // TestSessionEnvScriptBasePath sources the OpenShell script with the
@@ -146,7 +205,7 @@ func TestSessionPathDirs(t *testing.T) {
 func TestSessionEnvScriptBasePath(t *testing.T) {
 	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/opt/x/bin", "/sandbox/.venv/bin", "/bin"}}}
 	text := SessionEnvScriptFor(p)
-	assert.NotContains(t, text, "/sandbox", "a base image PATH directory under the overmount home never reaches a session PATH")
+	assert.NotContains(t, text, "/sandbox/.venv/bin", "a base image PATH directory under the overmount home never reaches a session PATH")
 	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", ImageFacts: p.ImageFacts}), "/opt/x/bin")
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sandcast-env.sh")

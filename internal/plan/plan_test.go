@@ -1122,6 +1122,8 @@ func TestRelocationNoticeString(t *testing.T) {
 		RelocationNotice{Kind: NoticeRelocated, Subject: "~/.gitconfig", To: GitConfigPath}.String())
 	assert.Equal(t, "component rg was found only under /sandbox/bin/rg (hidden once the workspace is mounted over the home); it is provisioned to /usr instead",
 		RelocationNotice{Kind: NoticeReprovisioned, Subject: "rg", From: "/sandbox/bin/rg", To: "/usr"}.String())
+	assert.Equal(t, "component rg was found only under /sandbox/bin/rg (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved",
+		RelocationNotice{Kind: NoticeHidden, Subject: "rg", From: "/sandbox/bin/rg"}.String())
 }
 
 // TestBuildShFallbackNotice checks a login shell that is neither zsh nor
@@ -1238,18 +1240,22 @@ func TestDeclaredBins(t *testing.T) {
 // under the overmount home never reaches the session environment script
 // (P1 of the reconciliation review: the workspace mounted there may come
 // from an untrusted project, and Ubuntu's system bashrc calls groups by
-// name) and that the plan says so once per directory; a directory outside
-// the home is kept, and the container target reports nothing.
+// name) nor the image PATH that the OpenShell default agent inherits (I1 of
+// the round 2 review), and that the plan says so once per directory; a
+// directory outside the home is kept, in the base image's order, and the
+// container target reports nothing and keeps the base image's PATH.
 func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	in := testInputs(t, testManifest(), nil)
 	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is not put on the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated")
 	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
 	script := SessionEnvScriptFor(p)
-	assert.NotContains(t, script, "/sandbox")
+	assert.NotContains(t, script, "/sandbox/.venv/bin")
+	assert.NotContains(t, script, "/sandbox/.local/bin")
 	assert.Contains(t, script, "/usr/local/go/bin")
+	assert.Contains(t, p.Image.Env, EnvVar{Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"}, "the image PATH without the hidden directories")
 
 	m := testManifest()
 	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
@@ -1258,7 +1264,35 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	cin.Probe.Facts.Path = in.Probe.Facts.Path
 	cp, err := Build(cin)
 	require.NoError(t, err)
-	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "is not put on the session PATH", "no overmount on the container target")
+	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "is left out of the image PATH", "no overmount on the container target")
+	for _, e := range cp.Image.Env {
+		assert.NotEqual(t, "PATH", e.Name, "the container target keeps the base image's PATH")
+	}
+}
+
+// TestSetImagePath pins the image PATH rule: nothing without an overmount
+// home or when no base PATH directory lies under it (the image keeps the
+// base image's PATH); otherwise the base PATH without those directories, in
+// order and without duplicates, the OpenShell default PATH when nothing is
+// left, and a component or harness PATH replaced with a notice.
+func TestSetImagePath(t *testing.T) {
+	setup := ImageSetup{Env: []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}}
+	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/bin"}, ""))
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "no overmount home: untouched")
+	assert.Empty(t, setImagePath(&setup, []string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}}, setup.Env, "a clean base PATH: untouched")
+
+	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin/", "/usr/local/bin", "/sandbox", "/bin", "/sandboxes/bin"}, "/sandbox"))
+	assert.Equal(t, []EnvVar{{Name: "GOPATH", Value: "/opt/go"}, {Name: "PATH", Value: "/usr/local/bin:/usr/bin:/bin:/sandboxes/bin"}}, setup.Env)
+
+	setup = ImageSetup{}
+	assert.Empty(t, setImagePath(&setup, []string{"/sandbox/.venv/bin", "/sandbox/bin"}, "/sandbox"))
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: strings.Join(OpenShellDefaultPath, ":")}}, setup.Env, "nothing left: the OpenShell default PATH")
+
+	setup = ImageSetup{Env: []EnvVar{{Name: "PATH", Value: "/opt/tool/bin:/usr/bin"}}}
+	assert.Equal(t, []string{"component or harness env PATH=/opt/tool/bin:/usr/bin is replaced by the image PATH /usr/bin:/bin, which leaves out the directories under the overmount home /sandbox"},
+		setImagePath(&setup, []string{"/sandbox/.venv/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	assert.Equal(t, []EnvVar{{Name: "PATH", Value: "/usr/bin:/bin"}}, setup.Env)
 }
 
 // TestBuildWorkspaceRuleMixedAndMultiHit covers the workspace rule at the
@@ -1296,10 +1330,11 @@ func TestBuildWorkspaceRuleMixedAndMultiHit(t *testing.T) {
 	assert.NotContains(t, strings.Join(p.Notices, "\n"), "workspace-path: go:")
 }
 
-// TestBuildHiddenToolUnresolvedOrFragment checks the re-provision notice
-// says what happens to a hidden tool that no definition can install: it is
-// unresolved, and the notice says so instead of naming a location; with a
-// stored fragment the destination is the fragment's /opt tree.
+// TestBuildHiddenToolUnresolvedOrFragment checks what the plan reports for
+// a hidden tool that no definition can install: it is unresolved, and the
+// relocation notice has the hidden kind, no destination, and says so
+// (contracts/relocation-notice.md); with a stored fragment the tool is
+// re-provisioned and the destination is the fragment's /opt tree.
 func TestBuildHiddenToolUnresolvedOrFragment(t *testing.T) {
 	m := testManifest()
 	m.Components = append(m.Components, manifest.ComponentRef{Key: "git"})
@@ -1310,6 +1345,9 @@ func TestBuildHiddenToolUnresolvedOrFragment(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, slices.ContainsFunc(p.Unresolved, func(u Unresolved) bool { return u.Key == "git" }), "git is unresolved: %+v", p.Unresolved)
 	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved")
+	i := slices.IndexFunc(p.Relocations, func(r RelocationNotice) bool { return r.Subject == "git" })
+	require.GreaterOrEqual(t, i, 0, "a relocation notice for git: %+v", p.Relocations)
+	assert.Equal(t, RelocationNotice{Kind: NoticeHidden, Subject: "git", From: "/sandbox/bin/git"}, p.Relocations[i], "the hidden kind, without a destination")
 
 	in = testInputs(t, m, map[string]StoredFragment{"git": {Key: "git", Source: ".sandcast/fragments/git.containerfile", Body: "USER root\nRUN echo git\n"}})
 	in.Probe.Facts.PackageManager = PackageManagerNone
@@ -1317,4 +1355,7 @@ func TestBuildHiddenToolUnresolvedOrFragment(t *testing.T) {
 	p, err = Build(in)
 	require.NoError(t, err)
 	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); it is provisioned to /opt/git instead")
+	i = slices.IndexFunc(p.Relocations, func(r RelocationNotice) bool { return r.Subject == "git" })
+	require.GreaterOrEqual(t, i, 0)
+	assert.Equal(t, RelocationNotice{Kind: NoticeReprovisioned, Subject: "git", From: "/sandbox/bin/git", To: "/opt/git"}, p.Relocations[i])
 }

@@ -95,30 +95,35 @@ const (
 // RelocationNotice is one decision sandcast reported because of the home
 // overmount (spec 003 contracts/relocation-notice.md).
 type RelocationNotice struct {
-	// Kind is NoticeRelocated or NoticeReprovisioned.
+	// Kind is NoticeRelocated, NoticeReprovisioned or NoticeHidden.
 	Kind string `yaml:"kind" json:"kind"`
 	// Subject is the component key or dotfile path the decision is about.
 	Subject string `yaml:"subject" json:"subject"`
 	// From is the overmount-shadowed location a reprovisioned tool was
 	// probed at. It is empty for a relocation, whose source is the Subject.
 	From string `yaml:"from,omitempty" json:"from,omitempty"`
-	// To is the persistent location chosen outside the home. It is empty
-	// for a hidden tool that nothing can provision (an unresolved
-	// component without a stored fragment).
+	// To is the persistent location chosen outside the home. A hidden
+	// notice (NoticeHidden) has none.
 	To string `yaml:"to,omitempty" json:"to,omitempty"`
 }
 
 // Hidden reports whether the workspace rule found every copy of the tool
 // under the overmount home: the tool counts as missing and its hits are the
-// ignored paths. plan.Build reports such a tool as re-provisioned.
+// ignored paths. plan.Build reports such a tool as re-provisioned when its
+// installer, or a stored fragment, provisions it, and as hidden when
+// nothing can.
 func (e DeltaEntry) Hidden() bool {
 	return e.Status == string(probe.StatusMissing) && len(e.IgnoredPaths) > 0
 }
 
-// Relocation notice kinds.
+// Relocation notice kinds (contracts/relocation-notice.md).
 const (
 	NoticeRelocated     = "relocated"
 	NoticeReprovisioned = "reprovisioned"
+	// NoticeHidden is a tool found only under the overmount home that no
+	// definition or fragment can provision: it stays unresolved, and the
+	// notice carries no destination.
+	NoticeHidden = "hidden"
 )
 
 // String renders the notice as the one human-readable line that appears in
@@ -127,12 +132,11 @@ const (
 func (n RelocationNotice) String() string {
 	switch n.Kind {
 	case NoticeReprovisioned:
-		if n.To == "" {
-			return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved",
-				n.Subject, n.From)
-		}
 		return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); it is provisioned to %s instead",
 			n.Subject, n.From, n.To)
+	case NoticeHidden:
+		return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved",
+			n.Subject, n.From)
 	default:
 		return fmt.Sprintf("%s relocated to %s so it survives the workspace mount over the home", n.Subject, n.To)
 	}

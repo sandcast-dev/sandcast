@@ -61,7 +61,7 @@ var MiseEnv = []EnvVar{
 // PROMPT_COMMAND only puts the shims first again after a curated rc that
 // changed PATH. The bash-only part sits in eval, so dash and zsh never parse
 // bash array syntax.
-var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil)
+var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil, "")
 
 // SessionEnvScriptFor is the session environment script of p: the MISE_*
 // variables of MiseEnv followed by the image environment of the plan (the
@@ -85,11 +85,20 @@ func SessionEnvScriptFor(p *Plan) string {
 		}
 		env = append(env, e)
 	}
-	var dirs []string
-	if p.Target == manifest.TargetOpenShell {
-		dirs = SessionPathDirs(p.ImageFacts.Path, OvermountPrefix(p))
+	return sessionEnvScript(env, SessionPathDirsFor(p), OvermountPrefix(p))
+}
+
+// SessionPathDirsFor returns the base image PATH directories the session
+// script of p puts back on PATH (sessionPathDirs): none off the OpenShell
+// target, and never a directory under the plan's overmount home. It is the
+// one entry point for the build and the script, so no caller can leave the
+// overmount prefix out.
+func SessionPathDirsFor(p *Plan) []string {
+	if p.Target != manifest.TargetOpenShell {
+		return nil
 	}
-	return sessionEnvScript(env, dirs)
+	kept, _ := sessionPathDirs(p.ImageFacts.Path, OvermountPrefix(p))
+	return kept
 }
 
 // OpenShellDefaultPath is the PATH OpenShell v0.1.3 gives a session.
@@ -99,31 +108,20 @@ var OpenShellDefaultPath = []string{"/usr/local/bin", "/usr/bin", "/bin"}
 // quoting: an absolute path of plain characters.
 var plainDirRe = regexp.MustCompile(`^/[A-Za-z0-9._+@/-]*$`)
 
-// SessionPathDirs returns the directories of the base image's PATH that a
-// session needs beyond the OpenShell default PATH and the mise shims, in the
-// base image's order and without duplicates. Left out are a directory with
-// characters beyond [A-Za-z0-9._+@/-], so the generated script never quotes
-// a probed value, and a directory under the overmount home (overmount, the
-// plan's OvermountPrefix, "" for none): the workspace mounted there may come
-// from an untrusted project, and a command looked up in it during shell
-// startup (Ubuntu's system bashrc calls groups) would run project code, so
-// no session PATH ever names it (spec 003 FR-002, SC-002). A tool the base
-// image installed there is hidden once the workspace is mounted and is
-// re-provisioned by the workspace rule instead; HiddenSessionPathDirs names
-// such directories for the plan notice.
-func SessionPathDirs(basePath []string, overmount string) []string {
-	kept, _ := sessionPathDirs(basePath, overmount)
-	return kept
-}
-
-// HiddenSessionPathDirs returns the base image PATH directories that
-// SessionPathDirs leaves out because they lie under the overmount home, in
-// the base image's order.
-func HiddenSessionPathDirs(basePath []string, overmount string) []string {
-	_, hidden := sessionPathDirs(basePath, overmount)
-	return hidden
-}
-
+// sessionPathDirs returns the directories of the base image's PATH that a
+// session needs beyond the OpenShell default PATH and the mise shims (kept),
+// in the base image's order and without duplicates, and the ones left out
+// because they lie under the overmount home (hidden; overmount is the plan's
+// OvermountPrefix, "" for none). Also left out, and not reported, is a
+// directory with characters beyond [A-Za-z0-9._+@/-], so the generated
+// script never quotes a probed value. The workspace mounted over the home
+// may come from an untrusted project, and a command looked up in it during
+// shell startup (Ubuntu's system bashrc calls groups) would run project
+// code, so no session PATH and no image PATH ever names such a directory
+// (spec 003 FR-002, SC-002); a tool the base image installed there is
+// re-provisioned by the workspace rule instead, and the plan reports each
+// hidden directory once. Callers go through SessionPathDirsFor and
+// imagePath, which supply the prefix.
 func sessionPathDirs(basePath []string, overmount string) (kept, hidden []string) {
 	for _, d := range basePath {
 		d = path.Clean(d)
@@ -139,13 +137,35 @@ func sessionPathDirs(basePath []string, overmount string) (kept, hidden []string
 	return kept, hidden
 }
 
-func sessionEnvScript(env []EnvVar, dirs []string) string {
+// sessionEnvScript renders the script: the exports, _sandcast_path, which
+// puts dirs and the shims first on PATH, and the call. With an overmount
+// home, the script first drops every inherited PATH entry equal to or under
+// it, once, in the body: a session that keeps the image environment (the
+// OpenShell default agent) or a runtime that sets PATH itself must not look
+// commands up in the mounted workspace either. That step stays out of
+// _sandcast_path, so the bash PROMPT_COMMAND repair never strips a directory
+// a curated rc or the user put on PATH later (a venv activated by hand).
+func sessionEnvScript(env []EnvVar, dirs []string, overmount string) string {
 	var b strings.Builder
-	b.WriteString(`# Generated by sandcast: session environment for shells that OpenShell
-# starts with a cleared environment. Safe to source more than once.
+	b.WriteString(`# Generated by sandcast: session environment for OpenShell sessions, whether
+# started with a cleared environment or with the image environment. Safe to
+# source more than once.
 `)
 	for _, e := range env {
 		fmt.Fprintf(&b, "export %s=%s\n", e.Name, shell.Quote(e.Value))
+	}
+	if overmount != "" {
+		fmt.Fprintf(&b, `# Drop inherited PATH entries under the overmount home %[1]s: the workspace
+# mounted there must never be searched for commands.
+_sandcast_prest=${PATH:-} _sandcast_pnew=
+while [ -n "$_sandcast_prest" ]; do
+	case $_sandcast_prest in *:*) _sandcast_pd=${_sandcast_prest%%%%:*} _sandcast_prest=${_sandcast_prest#*:} ;; *) _sandcast_pd=$_sandcast_prest _sandcast_prest= ;; esac
+	case $_sandcast_pd in "" | %[1]s | %[1]s/*) ;; *) _sandcast_pnew="${_sandcast_pnew:+$_sandcast_pnew:}$_sandcast_pd" ;; esac
+done
+PATH=$_sandcast_pnew
+export PATH
+unset _sandcast_prest _sandcast_pnew _sandcast_pd
+`, overmount)
 	}
 	b.WriteString("_sandcast_path() {\n")
 	// Each missing base image directory is prepended, last first, so they

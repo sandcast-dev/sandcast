@@ -98,11 +98,23 @@ func usesMise(p *plan.Plan) bool {
 // script (spec 002 R-04): whenever mise tools are installed (a login shell
 // whose system profile resets PATH needs the shims back, on either target),
 // and for the OpenShell target whenever the components, harnesses or the
-// relocation set image environment variables or the base image has PATH
-// directories beyond the OpenShell default PATH outside the overmount home,
-// which an OpenShell session would otherwise lose.
+// relocation set image environment variables (the image PATH the plan
+// writes does not count: the script never exports PATH) or the base image
+// has PATH directories beyond the OpenShell default PATH outside the
+// overmount home, which an OpenShell session would otherwise lose.
 func NeedsSessionEnv(p *plan.Plan) bool {
-	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path, plan.OvermountPrefix(p))) > 0))
+	if usesMise(p) {
+		return true
+	}
+	if p.Target != manifest.TargetOpenShell {
+		return false
+	}
+	for _, e := range p.Image.Env {
+		if e.Name != "PATH" {
+			return true
+		}
+	}
+	return len(plan.SessionPathDirsFor(p)) > 0
 }
 
 // CuratedRC is the curated rc file content: CuratedRCPrefix, then the
