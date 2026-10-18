@@ -121,7 +121,7 @@ var plainDirRe = regexp.MustCompile(`^/[A-Za-z0-9._+@/-]*$`)
 // (spec 003 FR-002, SC-002); a tool the base image installed there is
 // re-provisioned by the workspace rule instead, and the plan reports each
 // hidden directory once. Callers go through SessionPathDirsFor and
-// imagePath, which supply the prefix.
+// setImagePath, which supply the prefix.
 func sessionPathDirs(basePath []string, overmount string) (kept, hidden []string) {
 	for _, d := range basePath {
 		d = path.Clean(d)

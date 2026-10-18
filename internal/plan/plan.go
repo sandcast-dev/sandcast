@@ -287,7 +287,7 @@ func Build(in Inputs) (*Plan, error) {
 	}
 	deltaNotices := slices.Clone(in.KindedNotices)
 	// A base image PATH directory under the overmount home never reaches the
-	// image PATH (imagePath) or a session's PATH (sessionPathDirs): the
+	// image PATH (setImagePath) or a session's PATH (sessionPathDirs): the
 	// workspace mounted there may come from an untrusted project. The plan
 	// says so once per directory.
 	_, hiddenDirs := sessionPathDirs(p.ImageFacts.Path, overmount)
