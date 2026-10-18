@@ -75,9 +75,9 @@ func testProbe(wanted []Wanted) *probe.Result {
 		}
 		checks[w.Key] = probe.CheckResult{ComponentKey: w.Key, Status: status, Version: version}
 	}
-	// The base image ships an older starship outside the workspace path
+	// The base image ships an older starship outside the overmount home
 	// (shadowed by the locked version) and a go that lives only under the
-	// workspace path (installed).
+	// overmount home (installed).
 	if _, ok := checks["starship"]; ok {
 		checks["starship"] = probe.CheckResult{ComponentKey: "starship", Status: probe.StatusPresent, Version: "1.20.0",
 			Path: "/usr/bin/starship", Paths: []string{"/usr/bin/starship"}}
@@ -1232,4 +1232,89 @@ func TestDeclaredBins(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, p.Conflicts, 1)
 	assert.Equal(t, component.Conflict{Binary: "git", Components: []string{"git", "my-git"}}, p.Conflicts[0])
+}
+
+// TestBuildHiddenSessionPathDirNotice checks a base image PATH directory
+// under the overmount home never reaches the session environment script
+// (P1 of the reconciliation review: the workspace mounted there may come
+// from an untrusted project, and Ubuntu's system bashrc calls groups by
+// name) and that the plan says so once per directory; a directory outside
+// the home is kept, and the container target reports nothing.
+func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is not put on the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated")
+	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
+	script := SessionEnvScriptFor(p)
+	assert.NotContains(t, script, "/sandbox")
+	assert.Contains(t, script, "/usr/local/go/bin")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.Probe.Facts.Path = in.Probe.Facts.Path
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "is not put on the session PATH", "no overmount on the container target")
+}
+
+// TestBuildWorkspaceRuleMixedAndMultiHit covers the workspace rule at the
+// plan level (D6 of the reconciliation): a tool with hits under and outside
+// the overmount home is shadowed with the workspace-path and unknown-version
+// notices and no relocation notice, and a tool whose every hit lies under
+// the home is re-provisioned with a relocation notice that names them all.
+func TestBuildWorkspaceRuleMixedAndMultiHit(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.0", Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go", "/usr/local/go/bin/go"}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionShadow, p.Component("go").Action)
+	for _, r := range p.Relocations {
+		assert.NotEqual(t, NoticeReprovisioned, r.Kind, "a mixed tool is not re-provisioned: %+v", r)
+	}
+	joined := strings.Join(p.Notices, "\n")
+	assert.Contains(t, joined, "workspace-path: go: first PATH hit /sandbox/go/bin/go lies under the overmount home /sandbox and is ignored; /usr/local/go/bin/go decides")
+	assert.Contains(t, joined, "unknown-version: go: the probed version came from the ignored copy under the overmount home; installing locked")
+
+	in = testInputs(t, testManifest(), nil)
+	in.Probe.Checks["go"] = probe.CheckResult{ComponentKey: "go", Status: probe.StatusPresent, Version: "1.25.0", Path: "/sandbox/go/bin/go", Paths: []string{"/sandbox/go/bin/go", "/sandbox/.local/bin/go"}}
+	p, err = Build(in)
+	require.NoError(t, err)
+	assert.Equal(t, ActionInstall, p.Component("go").Action)
+	var found bool
+	for _, r := range p.Relocations {
+		if r.Kind == NoticeReprovisioned && r.Subject == "go" {
+			found = true
+			assert.Equal(t, "/sandbox/go/bin/go, /sandbox/.local/bin/go", r.From, "every hidden hit is named")
+			assert.Equal(t, MiseDataDir, r.To)
+		}
+	}
+	assert.True(t, found, "a tool hidden at every hit is re-provisioned: %v", p.Relocations)
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "workspace-path: go:")
+}
+
+// TestBuildHiddenToolUnresolvedOrFragment checks the re-provision notice
+// says what happens to a hidden tool that no definition can install: it is
+// unresolved, and the notice says so instead of naming a location; with a
+// stored fragment the destination is the fragment's /opt tree.
+func TestBuildHiddenToolUnresolvedOrFragment(t *testing.T) {
+	m := testManifest()
+	m.Components = append(m.Components, manifest.ComponentRef{Key: "git"})
+	in := testInputs(t, m, nil)
+	in.Probe.Facts.PackageManager = PackageManagerNone
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/bin/git", Paths: []string{"/sandbox/bin/git"}}
+	p, err := Build(in)
+	require.NoError(t, err)
+	require.True(t, slices.ContainsFunc(p.Unresolved, func(u Unresolved) bool { return u.Key == "git" }), "git is unresolved: %+v", p.Unresolved)
+	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved")
+
+	in = testInputs(t, m, map[string]StoredFragment{"git": {Key: "git", Source: ".sandcast/fragments/git.containerfile", Body: "USER root\nRUN echo git\n"}})
+	in.Probe.Facts.PackageManager = PackageManagerNone
+	in.Probe.Checks["git"] = probe.CheckResult{ComponentKey: "git", Status: probe.StatusPresent, Version: "2.43.0", Path: "/sandbox/bin/git", Paths: []string{"/sandbox/bin/git"}}
+	p, err = Build(in)
+	require.NoError(t, err)
+	assert.Contains(t, p.Notices, "component git was found only under /sandbox/bin/git (hidden once the workspace is mounted over the home); it is provisioned to /opt/git instead")
 }

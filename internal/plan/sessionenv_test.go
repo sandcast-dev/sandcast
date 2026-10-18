@@ -123,13 +123,20 @@ func TestSessionEnvScriptForPlan(t *testing.T) {
 
 // TestSessionPathDirs: the base image's PATH directories beyond the
 // OpenShell default PATH and the shims are kept in the base image's order,
-// once each; a directory the script would have to quote is left out (I-1).
+// once each; a directory the script would have to quote is left out (I-1),
+// and so is a directory under the overmount home (the workspace mounted
+// there may come from an untrusted project; a command looked up in it during
+// shell startup would run project code), which HiddenSessionPathDirs names.
 func TestSessionPathDirs(t *testing.T) {
-	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin"},
-		SessionPathDirs([]string{"/opt/mise/shims", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/opt/x/bin/", "/usr/bin",
-			"/sbin", "/bin", "/usr/sbin", "/opt/has space", "relative/bin", "/opt/$HOME", "/sandbox/.local/bin"}))
-	assert.Empty(t, SessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}))
-	assert.Empty(t, SessionPathDirs(nil))
+	base := []string{"/opt/mise/shims", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/opt/x/bin/", "/usr/bin",
+		"/sbin", "/bin", "/usr/sbin", "/opt/has space", "relative/bin", "/opt/$HOME", "/sandbox/.local/bin", "/sandbox/.venv/bin", "/sandbox/.local/bin"}
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}, SessionPathDirs(base, ""), "no overmount: every plain extra directory")
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin"}, SessionPathDirs(base, "/sandbox"))
+	assert.Equal(t, []string{"/sandbox/.local/bin", "/sandbox/.venv/bin"}, HiddenSessionPathDirs(base, "/sandbox"), "the hidden directories, once each, in order")
+	assert.Empty(t, HiddenSessionPathDirs(base, ""))
+	assert.Equal(t, []string{"/usr/local/sbin", "/usr/sbin", "/opt/x/bin", "/sbin", "/sandbox/.local/bin", "/sandbox/.venv/bin"}, SessionPathDirs(base, "/sandboxes"), "the overmount home is matched as a path prefix, not a string prefix")
+	assert.Empty(t, SessionPathDirs([]string{"/usr/local/bin", "/usr/bin", "/bin"}, "/sandbox"))
+	assert.Empty(t, SessionPathDirs(nil, "/sandbox"))
 }
 
 // TestSessionEnvScriptBasePath sources the OpenShell script with the
@@ -137,8 +144,9 @@ func TestSessionPathDirs(t *testing.T) {
 // first, then the base image's extra directories in their order, then the
 // default PATH, each once. The container target gets no extra directories.
 func TestSessionEnvScriptBasePath(t *testing.T) {
-	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/opt/x/bin", "/bin"}}}
+	p := &Plan{Target: "openshell", ImageFacts: ImageFacts{Path: []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/opt/x/bin", "/sandbox/.venv/bin", "/bin"}}}
 	text := SessionEnvScriptFor(p)
+	assert.NotContains(t, text, "/sandbox", "a base image PATH directory under the overmount home never reaches a session PATH")
 	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", ImageFacts: p.ImageFacts}), "/opt/x/bin")
 	dir := t.TempDir()
 	script := filepath.Join(dir, "sandcast-env.sh")

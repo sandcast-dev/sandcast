@@ -47,26 +47,36 @@ var MiseEnv = []EnvVar{
 	{Name: "MISE_USE_VERSIONS_HOST", Value: "0"},
 }
 
-// defaultSessionEnvScript is /etc/profile.d/sandcast-env.sh (R-04, R-05). It is
-// POSIX sh, idempotent and safe to source more than once. It exports every
-// MISE_* variable of MiseEnv, defines _sandcast_path, which puts the mise
-// shims first on PATH, and calls it. In bash it also re-applies the shims
-// after the user's rc files: an interactive bash runs _sandcast_path from
-// PROMPT_COMMAND before every prompt, and a login non-interactive bash
-// (bash -lc, OpenShell exec) runs it from a self-removing DEBUG trap right
-// before the first top-level command. The bash-only part sits in eval, so
-// dash and zsh never parse bash array syntax.
+// defaultSessionEnvScript is /etc/profile.d/sandcast-env.sh (spec 002 R-04,
+// R-05). It is POSIX sh, idempotent and safe to source more than once. It
+// exports every MISE_* variable of MiseEnv, defines _sandcast_path, which
+// puts the mise shims first on PATH, and calls it. In bash it also adds
+// _sandcast_path to PROMPT_COMMAND, so an interactive bash puts the shims
+// first again before every prompt, and in a login non-interactive bash sets
+// a self-removing DEBUG trap that runs it right before the first top-level
+// command. Both repairs matter on the container target, where a directly
+// started bash still reads the image home's rc files after the system
+// files. In OpenShell images no home rc file runs: the login hook execs a
+// fresh bash before the first command, so the trap dies with the exec, and
+// PROMPT_COMMAND only puts the shims first again after a curated rc that
+// changed PATH. The bash-only part sits in eval, so dash and zsh never parse
+// bash array syntax.
 var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil)
 
 // SessionEnvScriptFor is the session environment script of p: the MISE_*
-// variables of MiseEnv followed by the image environment of the plan's
-// components and harnesses (for example RUSTUP_HOME, GOPATH or
-// CLAUDE_CONFIG_DIR), which a session started with a cleared environment
-// needs as much as the mise settings. PATH and names MiseEnv already sets
-// are left out. For the OpenShell target, _sandcast_path also puts the base
-// image's PATH directories beyond the OpenShell default PATH back on PATH
+// variables of MiseEnv followed by the image environment of the plan (the
+// components' and harnesses' variables such as RUSTUP_HOME, GOPATH or
+// CLAUDE_CONFIG_DIR, and the relocation variables such as ZDOTDIR or
+// STARSHIP_CONFIG, whose values win in the image env), which a session
+// started with a cleared environment needs as much as the mise settings; the
+// shell hooks and launchers of spec 003 source the script, so this is the
+// one export list of a session. PATH and names MiseEnv already sets are left
+// out. For the OpenShell target, _sandcast_path also puts the base image's
+// PATH directories beyond the OpenShell default PATH back on PATH
 // (SessionPathDirs), so a tool the base image ships in, for example,
-// /usr/sbin or /opt/x/bin resolves in a session as it does in the image.
+// /usr/sbin or /opt/x/bin resolves in a session as it does in the image,
+// except directories under the overmount home, which the mounted workspace
+// hides.
 func SessionEnvScriptFor(p *Plan) string {
 	env := slices.Clone(MiseEnv)
 	for _, e := range p.Image.Env {
@@ -77,7 +87,7 @@ func SessionEnvScriptFor(p *Plan) string {
 	}
 	var dirs []string
 	if p.Target == manifest.TargetOpenShell {
-		dirs = SessionPathDirs(p.ImageFacts.Path)
+		dirs = SessionPathDirs(p.ImageFacts.Path, OvermountPrefix(p))
 	}
 	return sessionEnvScript(env, dirs)
 }
@@ -91,19 +101,42 @@ var plainDirRe = regexp.MustCompile(`^/[A-Za-z0-9._+@/-]*$`)
 
 // SessionPathDirs returns the directories of the base image's PATH that a
 // session needs beyond the OpenShell default PATH and the mise shims, in the
-// base image's order and without duplicates. A directory with characters
-// beyond [A-Za-z0-9._+@/-] is left out, so the generated script never
-// quotes a probed value.
-func SessionPathDirs(basePath []string) []string {
-	var out []string
+// base image's order and without duplicates. Left out are a directory with
+// characters beyond [A-Za-z0-9._+@/-], so the generated script never quotes
+// a probed value, and a directory under the overmount home (overmount, the
+// plan's OvermountPrefix, "" for none): the workspace mounted there may come
+// from an untrusted project, and a command looked up in it during shell
+// startup (Ubuntu's system bashrc calls groups) would run project code, so
+// no session PATH ever names it (spec 003 FR-002, SC-002). A tool the base
+// image installed there is hidden once the workspace is mounted and is
+// re-provisioned by the workspace rule instead; HiddenSessionPathDirs names
+// such directories for the plan notice.
+func SessionPathDirs(basePath []string, overmount string) []string {
+	kept, _ := sessionPathDirs(basePath, overmount)
+	return kept
+}
+
+// HiddenSessionPathDirs returns the base image PATH directories that
+// SessionPathDirs leaves out because they lie under the overmount home, in
+// the base image's order.
+func HiddenSessionPathDirs(basePath []string, overmount string) []string {
+	_, hidden := sessionPathDirs(basePath, overmount)
+	return hidden
+}
+
+func sessionPathDirs(basePath []string, overmount string) (kept, hidden []string) {
 	for _, d := range basePath {
 		d = path.Clean(d)
-		if !plainDirRe.MatchString(d) || d == MiseShimsDir || slices.Contains(OpenShellDefaultPath, d) || slices.Contains(out, d) {
+		if !plainDirRe.MatchString(d) || d == MiseShimsDir || slices.Contains(OpenShellDefaultPath, d) || slices.Contains(kept, d) || slices.Contains(hidden, d) {
 			continue
 		}
-		out = append(out, d)
+		if UnderOvermount(overmount, d) {
+			hidden = append(hidden, d)
+			continue
+		}
+		kept = append(kept, d)
 	}
-	return out
+	return kept, hidden
 }
 
 func sessionEnvScript(env []EnvVar, dirs []string) string {

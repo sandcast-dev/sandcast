@@ -99,10 +99,10 @@ func usesMise(p *plan.Plan) bool {
 // whose system profile resets PATH needs the shims back, on either target),
 // and for the OpenShell target whenever the components, harnesses or the
 // relocation set image environment variables or the base image has PATH
-// directories beyond the OpenShell default PATH, which an OpenShell session
-// would otherwise lose.
+// directories beyond the OpenShell default PATH outside the overmount home,
+// which an OpenShell session would otherwise lose.
 func NeedsSessionEnv(p *plan.Plan) bool {
-	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path)) > 0))
+	return usesMise(p) || (p.Target == manifest.TargetOpenShell && (len(p.Image.Env) > 0 || len(plan.SessionPathDirs(p.ImageFacts.Path, plan.OvermountPrefix(p))) > 0))
 }
 
 // CuratedRC is the curated rc file content: CuratedRCPrefix, then the

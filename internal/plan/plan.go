@@ -286,6 +286,14 @@ func Build(in Inputs) (*Plan, error) {
 		return nil, err
 	}
 	deltaNotices := slices.Clone(in.KindedNotices)
+	// A base image PATH directory under the overmount home never reaches a
+	// session's PATH (SessionPathDirs): the workspace mounted there may come
+	// from an untrusted project. The plan says so once per directory.
+	for _, d := range HiddenSessionPathDirs(p.ImageFacts.Path, overmount) {
+		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+			"base image PATH directory %s lies under the overmount home %s and is not put on the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment the project creates there is active only after it is activated",
+			d, overmount)))
+	}
 
 	var (
 		packages   []string
@@ -328,18 +336,23 @@ func Build(in Inputs) (*Plan, error) {
 		// location, which the plan reports. The probe cache keeps the raw
 		// result; this is a pure function of the cached result plus the
 		// known overmount prefix, applied at plan time.
-		opts := DeltaOptions{PackageManager: facts.PackageManager, Platform: in.Platform.Value, WorkspacePath: overmount}
+		opts := DeltaOptions{PackageManager: facts.PackageManager, Platform: in.Platform.Value, OvermountHome: overmount}
 		if t, ok := miseTool(w); ok {
 			opts.LockedVersion, _ = in.Lock.Locked(t, misePlatform)
 		}
 		entry, reason := DeltaFor(w.Def, w.Selector(), check, opts)
-		if entry.Status == string(probe.StatusMissing) && len(entry.IgnoredPaths) > 0 {
-			reprovisioned = append(reprovisioned, RelocationNotice{
-				Kind: NoticeReprovisioned, Subject: w.Key, From: strings.Join(entry.IgnoredPaths, ", "), To: reprovisionTarget(w.Def),
-			})
-		}
 		deltaNotices = append(deltaNotices, entry.Notices...)
 		p.ProbeDelta = append(p.ProbeDelta, entry)
+		// hidden reports the tool as re-provisioned once its destination is
+		// known: the persistent location of its installer, the /opt tree of
+		// a stored fragment, or nothing when no definition can provision it.
+		hidden := func(to string) {
+			if entry.Hidden() {
+				reprovisioned = append(reprovisioned, RelocationNotice{
+					Kind: NoticeReprovisioned, Subject: w.Key, From: strings.Join(entry.IgnoredPaths, ", "), To: to,
+				})
+			}
+		}
 		if entry.Action == ActionUnresolvable {
 			if hasStored {
 				c := fragmentComponent(w, stored)
@@ -347,11 +360,14 @@ func Build(in Inputs) (*Plan, error) {
 				p.Components = append(p.Components, c)
 				installed = append(installed, w.Def)
 				fragmentDirs = append(fragmentDirs, OptDir(w.Key))
+				hidden(OptDir(w.Key))
 				continue
 			}
 			p.Unresolved = append(p.Unresolved, Unresolved{Key: w.Key, Reason: reason, Optional: w.Ref.Optional})
+			hidden("")
 			continue
 		}
+		hidden(reprovisionTarget(w.Def))
 		if anyStored {
 			state := "stale"
 			if stored.Superseded {

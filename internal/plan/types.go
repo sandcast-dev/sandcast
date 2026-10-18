@@ -5,6 +5,7 @@ import (
 
 	"github.com/rhuss/sandcast/internal/component"
 	"github.com/rhuss/sandcast/internal/manifest"
+	"github.com/rhuss/sandcast/internal/probe"
 )
 
 // Delta actions (data-model "Probe result").
@@ -101,8 +102,17 @@ type RelocationNotice struct {
 	// From is the overmount-shadowed location a reprovisioned tool was
 	// probed at. It is empty for a relocation, whose source is the Subject.
 	From string `yaml:"from,omitempty" json:"from,omitempty"`
-	// To is the persistent location chosen outside the home.
-	To string `yaml:"to" json:"to"`
+	// To is the persistent location chosen outside the home. It is empty
+	// for a hidden tool that nothing can provision (an unresolved
+	// component without a stored fragment).
+	To string `yaml:"to,omitempty" json:"to,omitempty"`
+}
+
+// Hidden reports whether the workspace rule found every copy of the tool
+// under the overmount home: the tool counts as missing and its hits are the
+// ignored paths. plan.Build reports such a tool as re-provisioned.
+func (e DeltaEntry) Hidden() bool {
+	return e.Status == string(probe.StatusMissing) && len(e.IgnoredPaths) > 0
 }
 
 // Relocation notice kinds.
@@ -117,6 +127,10 @@ const (
 func (n RelocationNotice) String() string {
 	switch n.Kind {
 	case NoticeReprovisioned:
+		if n.To == "" {
+			return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); no definition or fragment can provision it, so it is unresolved",
+				n.Subject, n.From)
+		}
 		return fmt.Sprintf("component %s was found only under %s (hidden once the workspace is mounted over the home); it is provisioned to %s instead",
 			n.Subject, n.From, n.To)
 	default:
@@ -200,7 +214,9 @@ type DeltaEntry struct {
 	// LockedVersion is the version mise.lock locks for the target platform
 	// (mise components with a lock entry only).
 	LockedVersion string `yaml:"locked_version,omitempty" json:"locked_version,omitempty"`
-	// IgnoredPaths are binary paths the workspace rule discarded.
+	// IgnoredPaths are binary paths the workspace rule discarded because
+	// they lie under the overmount home. With Status missing they are every
+	// hit of the tool (Hidden), which plan.Build reports as re-provisioned.
 	IgnoredPaths []string `yaml:"ignored_paths,omitempty" json:"ignored_paths,omitempty"`
 	Action       string   `yaml:"action" json:"action"`
 	// Notices explain decisions that depart from a plain present or

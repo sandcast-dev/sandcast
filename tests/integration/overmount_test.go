@@ -88,6 +88,15 @@ func workspaceWithPlantedRC(t *testing.T) string {
 	}
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "bin"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(ws, "bin", "bash"), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-bash\nexec /bin/bash \"$@\"\n"), 0o755))
+	// The community base image's PATH starts with /sandbox/.venv/bin, a
+	// directory the workspace hides. Ubuntu's system bashrc calls groups and
+	// /etc/profile calls id by name during startup, so a project that commits
+	// them there would run at every session start if that directory ever
+	// reached the session PATH.
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, ".venv", "bin"), 0o755))
+	for _, name := range []string{"groups", "id"} {
+		require.NoError(t, os.WriteFile(filepath.Join(ws, ".venv", "bin", name), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-"+name+"\nexec /usr/bin/"+name+" \"$@\"\n"), 0o755))
+	}
 	return ws
 }
 
@@ -106,6 +115,8 @@ report() { echo "RESULT $1 pwned=[$(ls /tmp | grep '^pwned-' | tr '\n' ' ')]"; r
 rm -f /tmp/pwned-*
 $E /bin/bash -c '. /sandbox/.bashrc'
 report control
+/sandbox/.venv/bin/groups >/dev/null; /sandbox/.venv/bin/id >/dev/null
+report control-venv
 printf 'alias myll; echo "ZDOTDIR=[$ZDOTDIR] INPUTRC=[$INPUTRC]"; echo "SESSION-ENV MISE=[$MISE_DATA_DIR] PATH=[$PATH]"; exit\n' | script -qec "$E /bin/bash -i" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT pty-i /'
 report pty-i
 $E /bin/bash -lc 'echo "LC 0=$0 @=$*"; exit 3' zero a b | sed 's/^/OUT lc /'
@@ -189,6 +200,7 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	}
 
 	assert.Contains(t, results["control"], "pwned-bashrc", "positive control: sourcing a workspace file leaves its sentinel")
+	assert.Equal(t, "[pwned-planted-groups pwned-planted-id ]", results["control-venv"], "positive control: the planted .venv/bin binaries run when called by path")
 	cases := []string{"pty-i", "lc", "options", "c", "pty-l", "lc-env", "noswitch", "pipe-l", "abs-bash", "shell-l", "sh-lc", "ssh"}
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
@@ -212,15 +224,17 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 		has("pty-l", "ZDOTDIR=["+zdotdir+"] INPUTRC=[/opt/sandcast/inputrc]")
 	}
 	// The session environment (spec 002) reaches every session the hooks
-	// replace: the MISE_* settings are set, the shims come first on PATH and
-	// the base image's PATH directories beyond the OpenShell default follow
-	// (the community base image's PATH adds /sandbox/.venv/bin), in the
-	// terminal session, the default agent's login shell and the exec session
-	// alike. The curated rc of these manifests prepends $HOME/bin, so the
+	// replace: the MISE_* settings are set and the shims come first on PATH,
+	// in the terminal session, the default agent's login shell and the exec
+	// session alike. The base image's only PATH directory beyond the
+	// OpenShell default, /sandbox/.venv/bin, lies under the overmount home
+	// and never reaches a session PATH (P1 of the reconciliation review): the
+	// planted .venv/bin/groups and id, which Ubuntu's startup files call by
+	// name, leave no sentinel in any case above. The curated rc of these manifests prepends $HOME/bin, so the
 	// interactive sessions may carry that in front (bash's prompt repair
 	// puts the shims first again, zsh keeps the rc's order); the exec
 	// session, which reads no rc, has the session PATH exactly.
-	sessionPath := "/opt/mise/shims:/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin]"
+	sessionPath := "/opt/mise/shims:/usr/local/bin:/usr/bin:/bin]"
 	for _, c := range []string{"pty-i", "pty-l"} {
 		has(c, "SESSION-ENV MISE=[/opt/mise] PATH=[")
 		has(c, sessionPath)

@@ -24,9 +24,12 @@ type DeltaOptions struct {
 	LockedVersion string
 	// Platform is the target platform (linux/arm64), named in notices.
 	Platform string
-	// WorkspacePath is the directory OpenShell may mount the workspace
-	// volume over (WorkspacePath). Empty turns the workspace rule off.
-	WorkspacePath string
+	// OvermountHome is the base image's overmount home for the OpenShell
+	// target (plan.OvermountPrefix: the registry entry's overmount_home,
+	// recorded as base_image.overmount_home, /sandbox by default), the path
+	// the workspace volume is mounted over. Empty (the container target)
+	// turns the workspace rule off.
+	OvermountHome string
 }
 
 // DeltaFor derives the probe delta entry for one component from its probe
@@ -35,7 +38,7 @@ type DeltaOptions struct {
 // missing result carry their notices in DeltaEntry.Notices (FR-002).
 //
 // The workspace rule (FR-003) runs first: when every binary path lies under
-// the workspace path, the component counts as missing; when only the first
+// the overmount home, the component counts as missing; when only the first
 // PATH hit does, the probed version came from the hidden copy and counts as
 // unknown. Then, for a mise component with a lock entry, a present version
 // equal to the locked one means skip, and a different or unknown one means
@@ -61,10 +64,10 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	if len(paths) == 0 && check.Path != "" {
 		paths = []string{check.Path}
 	}
-	if found && o.WorkspacePath != "" && len(paths) > 0 {
+	if found && o.OvermountHome != "" && len(paths) > 0 {
 		var inside, outside []string
 		for _, p := range paths {
-			if underDir(p, o.WorkspacePath) {
+			if UnderOvermount(o.OvermountHome, p) {
 				inside = append(inside, p)
 			} else {
 				outside = append(outside, p)
@@ -78,11 +81,11 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 			e.IgnoredPaths = inside
 			found = false
 			e.InstalledVersion = ""
-		case underDir(paths[0], o.WorkspacePath):
+		case UnderOvermount(o.OvermountHome, paths[0]):
 			e.IgnoredPaths = inside
 			e.Notices = append(e.Notices, Notice(NoticeWorkspacePath, c.Key, fmt.Sprintf(
-				"first PATH hit %s lies under %s (workspace path) and is ignored; %s decides",
-				paths[0], o.WorkspacePath, outside[0])))
+				"first PATH hit %s lies under the overmount home %s and is ignored; %s decides",
+				paths[0], o.OvermountHome, outside[0])))
 			unknownVersion = true
 			mixed = true
 			e.InstalledVersion = ""
@@ -105,7 +108,7 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 			e.Action = ActionShadow
 			why := "base image version could not be read"
 			if mixed {
-				why = "the probed version came from the ignored copy under the workspace path"
+				why = "the probed version came from the ignored copy under the overmount home"
 			}
 			e.Notices = append(e.Notices, Notice(NoticeUnknownVersion, c.Key, fmt.Sprintf(
 				"%s; installing locked %s", why, o.LockedVersion)))
@@ -119,7 +122,7 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 		}
 		return e, ""
 	}
-	// Without a lock entry, a copy outside the workspace path counts as
+	// Without a lock entry, a copy outside the overmount home counts as
 	// present whatever version the hidden copy reported.
 	if check.Status == probe.StatusPresent || mixed {
 		e.Action = ActionSkip
@@ -132,15 +135,6 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	e.Action = ActionUnresolvable
 	return e, fmt.Sprintf("the base image has %s %s, which does not satisfy %q; a %s installer cannot install a second version",
 		c.Key, orUnknown(check.Version), selector, kind)
-}
-
-// underDir reports whether p is dir or lies below it.
-func underDir(p, dir string) bool {
-	dir = strings.TrimRight(dir, "/")
-	if dir == "" {
-		return false
-	}
-	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 // sameVersion compares a probed and a locked version, ignoring a leading v.

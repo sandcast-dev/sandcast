@@ -146,7 +146,7 @@ func TestDeltaForLockAndWorkspace(t *testing.T) {
 		wantKinds  []string
 	}{
 		{name: "missing installs", comp: miseComp("gh"), check: check(probe.StatusMissing, ""), locked: "2.102.0", workspace: ws, wantAction: ActionInstall, wantStatus: "missing"},
-		// A tool found only under the workspace path counts as missing; the
+		// A tool found only under the overmount home counts as missing; the
 		// plan reports the re-provisioning (RelocationNotice), not DeltaFor.
 		{name: "only under workspace installs", comp: miseComp("python"), check: check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3"), locked: "3.14.5", workspace: ws,
 			wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/.uv/python/bin/python3"}},
@@ -181,7 +181,7 @@ func TestDeltaForLockAndWorkspace(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			e, reason := DeltaFor(tt.comp, "latest", tt.check, DeltaOptions{PackageManager: "apt-get", LockedVersion: tt.locked, Platform: "linux/arm64", WorkspacePath: tt.workspace})
+			e, reason := DeltaFor(tt.comp, "latest", tt.check, DeltaOptions{PackageManager: "apt-get", LockedVersion: tt.locked, Platform: "linux/arm64", OvermountHome: tt.workspace})
 			assert.Empty(t, reason)
 			assert.Equal(t, tt.wantAction, e.Action)
 			assert.Equal(t, tt.wantStatus, e.Status)
@@ -197,15 +197,15 @@ func TestDeltaForLockAndWorkspace(t *testing.T) {
 		})
 	}
 
-	e, _ := DeltaFor(miseComp("gh"), "latest", check(probe.StatusPresent, "2.93.0", "/usr/bin/gh"), DeltaOptions{LockedVersion: "2.102.0", Platform: "linux/arm64", WorkspacePath: ws})
+	e, _ := DeltaFor(miseComp("gh"), "latest", check(probe.StatusPresent, "2.93.0", "/usr/bin/gh"), DeltaOptions{LockedVersion: "2.102.0", Platform: "linux/arm64", OvermountHome: ws})
 	assert.Equal(t, []string{"lockfile-shadow: gh: base image has 2.93.0, mise.lock pins 2.102.0 for linux/arm64; installing 2.102.0"}, e.Notices)
-	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3.14"), DeltaOptions{LockedVersion: "3.14.5", WorkspacePath: ws})
-	assert.Empty(t, e.Notices, "the plan reports a tool found only under the workspace path as re-provisioned")
+	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.3", "/sandbox/.uv/python/bin/python3.14"), DeltaOptions{LockedVersion: "3.14.5", OvermountHome: ws})
+	assert.Empty(t, e.Notices, "the plan reports a tool found only under the overmount home as re-provisioned")
 	assert.Equal(t, []string{"/sandbox/.uv/python/bin/python3.14"}, e.IgnoredPaths)
-	e, _ = DeltaFor(miseComp("codex"), "latest", check(probe.StatusPresent, "", "/usr/local/bin/codex"), DeltaOptions{LockedVersion: "0.162.1", WorkspacePath: ws})
+	e, _ = DeltaFor(miseComp("codex"), "latest", check(probe.StatusPresent, "", "/usr/local/bin/codex"), DeltaOptions{LockedVersion: "0.162.1", OvermountHome: ws})
 	assert.Equal(t, []string{"unknown-version: codex: base image version could not be read; installing locked 0.162.1"}, e.Notices)
-	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.5", "/sandbox/.venv/bin/python3", "/usr/bin/python3"), DeltaOptions{LockedVersion: "3.14.5", WorkspacePath: ws})
+	e, _ = DeltaFor(miseComp("python"), "latest", check(probe.StatusPresent, "3.14.5", "/sandbox/.venv/bin/python3", "/usr/bin/python3"), DeltaOptions{LockedVersion: "3.14.5", OvermountHome: ws})
 	require.Len(t, e.Notices, 2)
 	assert.Contains(t, e.Notices[0], "/sandbox/.venv/bin/python3", "the mixed-path notice names the ignored copy")
-	assert.Equal(t, "unknown-version: python: the probed version came from the ignored copy under the workspace path; installing locked 3.14.5", e.Notices[1])
+	assert.Equal(t, "unknown-version: python: the probed version came from the ignored copy under the overmount home; installing locked 3.14.5", e.Notices[1])
 }
