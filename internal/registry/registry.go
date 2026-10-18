@@ -54,25 +54,34 @@ type Entry struct {
 	OvermountHome string `yaml:"overmount_home,omitempty" json:"overmount_home,omitempty"`
 }
 
-// systemRoots may never be the overmount home. The build creates the
-// workspace directory with install -d -o <user> -g <group>, which hands an
-// existing directory to the final user, so a registry entry that names one
-// of these (a value copied by mistake) would give the sandbox user a system
-// directory of the image.
-var systemRoots = []string{"/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var", "/opt", "/root", "/boot", "/proc", "/sys", "/dev", "/run", "/tmp"}
+// systemRoots and everything below them may never be the overmount home.
+// The build creates the workspace directory with install -d -o <user> -g
+// <group>, which hands an existing directory to the final user, so a
+// registry entry that names a system directory (a value copied by mistake,
+// /etc or /usr/local) would give the sandbox user a directory of the image
+// that holds system files. /home is refused as a value but accepted as a
+// parent: a user's home directory such as /home/dev is a workspace, as
+// /sandbox is on the OpenShell base images.
+var systemRoots = []string{"/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var", "/opt", "/root", "/boot", "/proc", "/sys", "/dev", "/run", "/tmp", "/home"}
 
 // CheckOvermountHome reports why p cannot be an overmount home, or nil: it
 // must be an absolute path of letters, digits, '.', '_' and '-' without .
 // or .. segments, because the build writes it unquoted into WORKDIR and a
-// RUN instruction, and it must not be a well-known system directory
-// (systemRoots). The registry applies it to every entry and the plan to the
-// value it records, so the rule and its message exist once.
+// RUN instruction ("/" itself is not such a path), and it must not be a
+// well-known system directory or lie below one (systemRoots), except a
+// subdirectory of /home. The registry applies it to every entry and the
+// plan to the value it records, so the rule and its message exist once.
 func CheckOvermountHome(p string) error {
 	if !shell.SafeAbsPath(p) {
 		return fmt.Errorf("overmount_home %q must be an absolute path of letters, digits, '.', '_' and '-' without . or .. segments", p)
 	}
-	if slices.Contains(systemRoots, p) {
-		return fmt.Errorf("overmount_home %q is a system directory, which the build would hand to the final user", p)
+	for _, root := range systemRoots {
+		if p == root {
+			return fmt.Errorf("overmount_home %q is a system directory, which the build would hand to the final user", p)
+		}
+		if root != "/home" && strings.HasPrefix(p, root+"/") {
+			return fmt.Errorf("overmount_home %q lies under the system directory %s, which the build would hand to the final user", p, root)
+		}
 	}
 	return nil
 }

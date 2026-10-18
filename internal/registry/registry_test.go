@@ -3,6 +3,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"testing/fstest"
 
@@ -383,15 +384,22 @@ func TestDefaultAndList(t *testing.T) {
 // TestCheckOvermountHome checks the one rule for the field: a safe absolute
 // path that is not a well-known system directory.
 func TestCheckOvermountHome(t *testing.T) {
-	for _, ok := range []string{"/sandbox", "/workspace", "/home/dev", "/usr/local/work", "/opt/work", "/tmp2", "/var/lib/work"} {
+	for _, ok := range []string{"/sandbox", "/workspace", "/home/dev", "/home/dev/work", "/tmp2", "/srv/work", "/mnt/work", "/data"} {
 		assert.NoError(t, CheckOvermountHome(ok), ok)
 	}
-	for _, root := range systemRoots {
+	for _, root := range append(slices.Clone(systemRoots), "/") {
 		err := CheckOvermountHome(root)
 		require.Error(t, err, root)
 		if root != "/" {
 			assert.Contains(t, err.Error(), "is a system directory", root)
 		}
+	}
+	// A path below a system root is refused too (install -d -o would hand
+	// the existing directory to the final user); below /home it is a home.
+	for _, under := range []string{"/usr/local", "/usr/local/work", "/var/lib/work", "/opt/work", "/etc/sandbox", "/tmp/ws", "/root/ws"} {
+		err := CheckOvermountHome(under)
+		require.Error(t, err, under)
+		assert.Contains(t, err.Error(), "lies under the system directory", under)
 	}
 	for _, bad := range []string{"", "work", "/work/", "/work/../etc", "/w; id", "/a b"} {
 		err := CheckOvermountHome(bad)
