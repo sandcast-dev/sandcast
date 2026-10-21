@@ -484,18 +484,38 @@ func readDotfile(env Env, p string) (fsutil.HostPathKind, string, error) {
 			return 0, "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
 		}
 	}
-	content, err := readRegularFile(real)
+	// The checks above judged real by path. Open it component by component
+	// without following a symlink, so a leaf or a parent swapped for one
+	// after EvalSymlinks fails here instead of being read (#17).
+	dotfileResolvedHook(real)
+	rel, err := filepath.Rel(realRoot, real)
+	if err != nil {
+		return 0, "", fmt.Errorf("could not be read (%w)", err)
+	}
+	f, err := fsutil.OpenBeneath(realRoot, rel)
+	switch {
+	case errors.Is(err, fsutil.ErrSymlinkInPath):
+		return 0, "", errors.New("changed while it was read")
+	case err != nil:
+		return 0, "", fmt.Errorf("could not be read (%w)", err)
+	}
+	defer func() { _ = f.Close() }()
+	content, err := readRegularFile(f)
 	if err != nil {
 		return 0, "", err
 	}
 	return kind, content, nil
 }
 
-// readRegularFile reads a regular file of at most manifest.MaxDotfileSize bytes. It
-// checks the type before opening, so a FIFO cannot block the plan, and again
-// on the open file, so a swap in between is caught.
-func readRegularFile(name string) (string, error) {
-	fi, err := os.Stat(name)
+// dotfileResolvedHook runs between the path checks and the open in
+// readDotfile, so tests can swap the file or a parent for a symlink there.
+var dotfileResolvedHook = func(string) {}
+
+// readRegularFile reads an open file that must be a regular file of at most
+// manifest.MaxDotfileSize bytes. The type and size come from the descriptor,
+// so they describe the file that is read.
+func readRegularFile(f *os.File) (string, error) {
+	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("could not be read (%w)", err)
 	}
@@ -504,15 +524,6 @@ func readRegularFile(name string) (string, error) {
 	}
 	if fi.Size() > manifest.MaxDotfileSize {
 		return "", fmt.Errorf("is larger than %d KiB", manifest.MaxDotfileSize>>10)
-	}
-	f, err := os.Open(name)
-	if err != nil {
-		return "", fmt.Errorf("could not be read (%w)", err)
-	}
-	defer func() { _ = f.Close() }()
-	ofi, err := f.Stat()
-	if err != nil || !ofi.Mode().IsRegular() || !os.SameFile(fi, ofi) {
-		return "", errors.New("changed while it was read")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, manifest.MaxDotfileSize+1))
 	if err != nil {

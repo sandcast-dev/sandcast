@@ -248,3 +248,62 @@ func TestDotfileInputsResolveErrorsAreDistinct(t *testing.T) {
 
 	skippedWith(t, dotfileEnv(filepath.Join(t.TempDir(), "missing-home"), root), "home directory", "~/.gitconfig")
 }
+
+// swapAfterResolve runs swap in readDotfile between the path checks and the
+// open, the window a concurrent writer would use (#17).
+func swapAfterResolve(t *testing.T, swap func(real string)) {
+	t.Helper()
+	orig := dotfileResolvedHook
+	dotfileResolvedHook = func(real string) {
+		swap(real)
+		dotfileResolvedHook = orig
+	}
+	t.Cleanup(func() { dotfileResolvedHook = orig })
+}
+
+// TestDotfileInputsSwappedAfterResolveSkipped checks the file that is read
+// is the file that passed the checks: a leaf or a parent directory replaced
+// by a symlink after resolution is reported as changed and its target is
+// not read, whether the link leaves the root or stays inside it.
+func TestDotfileInputsSwappedAfterResolveSkipped(t *testing.T) {
+	const secret = "PRIVATE KEY MATERIAL"
+	for _, tc := range []struct {
+		name  string
+		entry string
+		home  bool
+		swap  func(t *testing.T, real, home, outside string)
+	}{
+		{"leaf to outside", "tool.conf", false, func(t *testing.T, real, _, outside string) {
+			require.NoError(t, os.Remove(real))
+			require.NoError(t, os.Symlink(filepath.Join(outside, "secret"), real))
+		}},
+		{"parent to outside", "sub/tool.conf", false, func(t *testing.T, real, _, outside string) {
+			dir := filepath.Dir(real)
+			require.NoError(t, os.Rename(dir, dir+".orig"))
+			writeFile(t, filepath.Join(outside, "tool.conf"), secret)
+			require.NoError(t, os.Symlink(outside, dir))
+		}},
+		{"home leaf to a key inside the home", "~/.config/nvim/init.lua", true, func(t *testing.T, real, home, _ string) {
+			writeFile(t, filepath.Join(home, ".ssh", "id_ed25519"), secret)
+			require.NoError(t, os.Remove(real))
+			require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "id_ed25519"), real))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, root, outside := t.TempDir(), t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(outside, "secret"), secret)
+			if tc.home {
+				writeFile(t, filepath.Join(home, strings.TrimPrefix(tc.entry, "~/")), "set number\n")
+			} else {
+				writeFile(t, filepath.Join(root, tc.entry), "ok\n")
+			}
+			swapAfterResolve(t, func(real string) { tc.swap(t, real, home, outside) })
+
+			out, notices := dotfileInputs(dotfileEnv(home, root), mdotfiles(tc.entry))
+			assert.Empty(t, out)
+			require.Len(t, notices, 1)
+			assert.Contains(t, notices[0], "changed while it was read")
+			assert.NotContains(t, notices[0], secret)
+		})
+	}
+}
