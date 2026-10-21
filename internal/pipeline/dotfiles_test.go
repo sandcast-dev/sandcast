@@ -331,3 +331,23 @@ func TestDotfileInputsSwappedAfterResolveSkipped(t *testing.T) {
 		})
 	}
 }
+
+// TestReadRegularFileChecksDescriptor checks the type check on the open
+// descriptor, which catches a leaf swapped after OpenBeneath checked it: a
+// FIFO or a directory handed over open is refused.
+func TestReadRegularFileChecksDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o644))
+	f, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	_, err = readRegularFile(f)
+	assert.ErrorContains(t, err, "is not a regular file")
+
+	d, err := os.Open(dir)
+	require.NoError(t, err)
+	defer func() { _ = d.Close() }()
+	_, err = readRegularFile(d)
+	assert.ErrorContains(t, err, "is not a regular file")
+}

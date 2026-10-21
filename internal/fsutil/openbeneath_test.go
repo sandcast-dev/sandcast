@@ -1,6 +1,7 @@
 package fsutil
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // realTempDir is t.TempDir resolved, since OpenBeneath wants a root free of
@@ -38,6 +40,9 @@ func TestOpenBeneathReads(t *testing.T) {
 // TestOpenBeneathSearchOnlyDirs checks that the root and the directories on
 // the way need execute permission only, as for a plain open of the path.
 func TestOpenBeneathSearchOnlyDirs(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not apply to root")
+	}
 	root := realTempDir(t)
 	writeTestFile(t, filepath.Join(root, "x", "f"), "hi")
 	for _, d := range []string{filepath.Join(root, "x"), root} {
@@ -111,27 +116,91 @@ func TestOpenBeneathMissingAndUnreadable(t *testing.T) {
 }
 
 // TestOpenBeneathNotRegular checks that a FIFO, a directory and the root
-// itself are refused by type, before an open that could block.
+// itself are refused by type, before any open.
 func TestOpenBeneathNotRegular(t *testing.T) {
 	root := realTempDir(t)
 	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "fifo"), 0o644))
 	require.NoError(t, os.Mkdir(filepath.Join(root, "dir"), 0o755))
+	for _, rel := range []string{"fifo", "dir", "."} {
+		f, err := OpenBeneath(root, rel)
+		if f != nil {
+			_ = f.Close()
+		}
+		assert.ErrorIs(t, err, ErrNotRegular, rel)
+	}
+}
 
+// swapLeafAfterCheck runs swap in OpenBeneath between the type check and the
+// open of the leaf.
+func swapLeafAfterCheck(t *testing.T, swap func(name string)) {
+	t.Helper()
+	orig := leafCheckedHook
+	leafCheckedHook = func(name string) {
+		swap(name)
+		leafCheckedHook = orig
+	}
+	t.Cleanup(func() { leafCheckedHook = orig })
+}
+
+// TestOpenBeneathLeafSwappedAfterCheck checks the flags of the leaf open: a
+// leaf swapped for a symlink after the type check is refused, and one
+// swapped for a FIFO opens without blocking and Stat reports the FIFO.
+func TestOpenBeneathLeafSwappedAfterCheck(t *testing.T) {
+	root := realTempDir(t)
+	outside := realTempDir(t)
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "link"), []byte("x"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "fifo"), []byte("x"), 0o644))
+
+	swapLeafAfterCheck(t, func(name string) {
+		require.NoError(t, os.Remove(name))
+		require.NoError(t, os.Symlink(filepath.Join(outside, "secret"), name))
+	})
+	_, err := OpenBeneath(root, "link")
+	assert.ErrorIs(t, err, ErrSymlinkInPath)
+
+	swapLeafAfterCheck(t, func(name string) {
+		require.NoError(t, os.Remove(name))
+		require.NoError(t, syscall.Mkfifo(name, 0o644))
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for _, rel := range []string{"fifo", "dir", "."} {
-			f, err := OpenBeneath(root, rel)
-			if f != nil {
-				_ = f.Close()
-			}
-			assert.ErrorIs(t, err, ErrNotRegular, rel)
+		f, err := OpenBeneath(root, "fifo")
+		if !assert.NoError(t, err) {
+			return
+		}
+		defer func() { _ = f.Close() }()
+		fi, err := f.Stat()
+		if assert.NoError(t, err) {
+			assert.NotZero(t, fi.Mode()&os.ModeNamedPipe)
 		}
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("opening a FIFO blocked")
+		t.Fatal("opening a FIFO swapped in after the type check blocked")
+	}
+}
+
+func TestIgnoringEINTR(t *testing.T) {
+	other := errors.New("other")
+	for _, tc := range []struct {
+		name  string
+		final error
+	}{{"success", nil}, {"other error", other}} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			err := ignoringEINTR(func() error {
+				calls++
+				if calls <= 3 {
+					return unix.EINTR
+				}
+				return tc.final
+			})
+			assert.Equal(t, 4, calls)
+			assert.Equal(t, tc.final, err)
+		})
 	}
 }
 

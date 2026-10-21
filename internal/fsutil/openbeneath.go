@@ -75,6 +75,7 @@ func OpenBeneath(root, rel string) (*os.File, error) {
 	default:
 		return nil, fmt.Errorf("%s: %w", name, ErrNotRegular)
 	}
+	leafCheckedHook(filepath.Join(root, rel))
 	var fd int
 	err = ignoringEINTR(func() (err error) {
 		fd, err = unix.Openat(dirfd, leaf, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
@@ -85,6 +86,10 @@ func OpenBeneath(root, rel string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), name), nil
 }
+
+// leafCheckedHook runs between the type check and the open of the leaf in
+// OpenBeneath, so tests can swap the leaf there.
+var leafCheckedHook = func(string) {}
 
 // ignoringEINTR retries fn while it fails with EINTR, as the os package does
 // for its own opens: the Go runtime's preemption signal can interrupt an
