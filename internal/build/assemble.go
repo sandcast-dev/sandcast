@@ -105,7 +105,8 @@ func usesMise(p *plan.Plan) bool {
 // and relocation variables; the image PATH value the plan writes is not one
 // of its exports) or the base image has PATH directories beyond the
 // OpenShell default PATH outside the overmount home, which an OpenShell
-// session would otherwise lose.
+// session would otherwise lose, or the plan cleared base image variables
+// that the script unsets (plan.SessionEnvUnsetsFor).
 func NeedsSessionEnv(p *plan.Plan) bool {
 	if usesMise(p) || baseProvidesMise(p) {
 		return true
@@ -113,7 +114,7 @@ func NeedsSessionEnv(p *plan.Plan) bool {
 	if p.Target != manifest.TargetOpenShell {
 		return false
 	}
-	return len(plan.SessionEnvExports(p)) > 0 || len(plan.SessionPathDirsFor(p)) > 0
+	return len(plan.SessionEnvExports(p)) > 0 || len(plan.SessionPathDirsFor(p)) > 0 || len(plan.SessionEnvUnsetsFor(p)) > 0
 }
 
 // baseProvidesMise reports whether the base image already carries mise

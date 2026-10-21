@@ -193,8 +193,10 @@ func normalize(reqs []Request) ([]Request, error) {
 			return nil, fmt.Errorf("probe: component %s requested twice", r.Key)
 		case strings.TrimSpace(r.Command) == "":
 			return nil, fmt.Errorf("probe: component %s has no check command", r.Key)
-		case strings.ContainsRune(r.Command, 0) || strings.ContainsRune(r.Bin, 0):
+		case strings.ContainsRune(r.Command, 0):
 			return nil, fmt.Errorf("probe: check of component %s contains a NUL byte", r.Key)
+		case slices.ContainsFunc(r.Bins, func(b string) bool { return strings.ContainsAny(b, " \t\n\x00") }):
+			return nil, fmt.Errorf("probe: component %s has an invalid binary name in %q", r.Key, r.Bins)
 		case !hashPattern.MatchString(r.Hash):
 			return nil, fmt.Errorf("probe: component %s has an invalid check hash %q", r.Key, r.Hash)
 		}

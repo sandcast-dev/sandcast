@@ -57,6 +57,7 @@ func TestCheckHashCoversCheck(t *testing.T) {
 		{"check command", func(c *Component) { c.Check.Command = "go env GOVERSION" }},
 		{"expected exit", func(c *Component) { c.Check.Expect.Exit = 1 }},
 		{"expected stdout", func(c *Component) { c.Check.Expect.StdoutContains = "go version" }},
+		{"binaries", func(c *Component) { c.Installer.Mise.Bins = []string{"go"} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

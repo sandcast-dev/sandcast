@@ -457,6 +457,10 @@ func Build(in Inputs) (*Plan, error) {
 	for _, d := range hiddenPath {
 		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, hiddenPathReason(d, overmount)))
 	}
+	// The same holds for the other base image variables that name a path
+	// there, such as VIRTUAL_ENV=/sandbox/.venv: a tool reading one would
+	// use the mounted workspace without activation (#18).
+	deltaNotices = append(deltaNotices, clearImageEnv(&p.Image, p.ImageFacts.Env, overmount)...)
 
 	// Every overmount decision is reported in plan.yaml and in the output of
 	// sandcast plan and sandcast build, sorted by subject so rebuilds are
@@ -567,6 +571,65 @@ func setImagePath(setup *ImageSetup, basePath []string, overmount string) (notic
 	return notices, hidden
 }
 
+// keptBaseEnv are the base image variables clearImageEnv never touches:
+// HOME is the overmount home itself by design.
+var keptBaseEnv = []string{"HOME", "PATH"}
+
+// clearImageEnv drops the entries under the overmount home from the base
+// image variables that name paths (probe env fact), for the OpenShell
+// target: the OpenShell default agent inherits the image ENV, so an image
+// ENV instruction carries the result. A variable keeps its entries outside
+// the home in their order; a variable left without any is set to the empty
+// value (an image cannot unset an inherited variable; uv treats an empty
+// VIRTUAL_ENV and UV_PYTHON_INSTALL_DIR as unset) and recorded in
+// setup.Cleared, which the session script unsets. A variable that a
+// component, harness or relocation sets, or that MiseEnv sets, keeps that
+// value. It returns one workspace-path notice per changed variable.
+func clearImageEnv(setup *ImageSetup, baseEnv []EnvVar, overmount string) []string {
+	if overmount == "" {
+		return nil
+	}
+	env := envMap(setup.Env)
+	var notices []string
+	for _, v := range baseEnv {
+		if _, set := env[v.Name]; set || !component.ValidEnvName(v.Name) || slices.Contains(keptBaseEnv, v.Name) ||
+			slices.ContainsFunc(MiseEnv, func(m EnvVar) bool { return m.Name == v.Name }) {
+			continue
+		}
+		var kept []string
+		hidden := false
+		for _, e := range strings.Split(v.Value, ":") {
+			if e != "" && UnderOvermount(overmount, path.Clean(e)) {
+				hidden = true
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if !hidden {
+			continue
+		}
+		value := strings.Join(kept, ":")
+		if strings.Trim(value, ":") == "" {
+			env[v.Name] = ""
+			setup.Cleared = append(setup.Cleared, v.Name)
+			notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+				"base image variable %s=%s points under the overmount home %s and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace",
+				v.Name, v.Value, overmount)))
+			continue
+		}
+		env[v.Name] = value
+		notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+			"base image variable %s=%s names entries under the overmount home %s; the image environment and sessions keep %s",
+			v.Name, v.Value, overmount, value)))
+	}
+	if len(notices) == 0 {
+		return nil
+	}
+	slices.Sort(setup.Cleared)
+	setup.Env = sortedEnv(env)
+	return notices
+}
+
 // imagePathEntries returns the entries of the PATH the image ends up with:
 // a component or harness PATH value (fromEnv), whose $PATH or ${PATH} entry
 // stands for the base image's PATH, as ENV expands it at build time, or the
@@ -592,7 +655,7 @@ func hiddenPathReason(entry, overmount string) string {
 	if !path.IsAbs(entry) {
 		return fmt.Sprintf("base image PATH entry %s is not absolute and would resolve from the working directory or the home, the mounted workspace in a session; it is left out of the image PATH and the session PATH", entry)
 	}
-	return fmt.Sprintf("base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)", entry, overmount)
+	return fmt.Sprintf("base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated", entry, overmount)
 }
 
 // homeRCNotices reports the home-directory rc files of the base image that
@@ -927,7 +990,16 @@ func factsOf(f probe.Facts) ImageFacts {
 		Shells:           shells,
 		HomeRCResetsPath: slices.Clone(f.HomeRCResetsPath),
 		Path:             slices.Clone(f.Path),
+		Env:              envOfFacts(f.Env),
 	}
+}
+
+func envOfFacts(in []probe.EnvVar) []EnvVar {
+	var out []EnvVar
+	for _, v := range in {
+		out = append(out, EnvVar{Name: v.Name, Value: v.Value})
+	}
+	return out
 }
 
 func shellOf(m *manifest.Manifest) Shell {

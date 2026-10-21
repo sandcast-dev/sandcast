@@ -18,9 +18,9 @@ func TestCacheLayout(t *testing.T) {
 	require.NoError(t, c.StoreFacts(testDigest, "linux/arm/v7", Facts{}))
 
 	hex := strings.TrimPrefix(testDigest, "sha256:")
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm64.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v3", hex+"_linux-arm-v7.json"))
-	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks-v3", hex+"_linux-arm64", "go-0123456789ab.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v4", hex+"_linux-arm64.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "facts-v4", hex+"_linux-arm-v7.json"))
+	assert.FileExists(t, filepath.Join(c.Dir, "probe", "checks-v4", hex+"_linux-arm64", "go-0123456789ab.json"))
 
 	f, ok := c.LookupFacts(testDigest, "linux/arm64")
 	require.True(t, ok)
@@ -48,16 +48,20 @@ func TestCacheFormatVersion(t *testing.T) {
 	_, ok = c.LookupCheck(testDigest, "linux/arm64", "go", hash)
 	assert.False(t, ok, "format 1 checks must not be read")
 
-	require.NoError(t, c.StoreFacts(testDigest, "linux/arm64", Facts{PackageManager: "apt-get", HomeRCResetsPath: []string{".bashrc"}}))
-	require.NoError(t, c.StoreCheck(testDigest, "linux/arm64", CheckResult{ComponentKey: "go", CheckHash: hash, Status: StatusPresent, Paths: []string{"/usr/bin/go"}}))
+	env := []EnvVar{{Name: "VIRTUAL_ENV", Value: "/sandbox/.venv"}}
+	bins := []BinHits{{Name: "go", Paths: []string{"/usr/bin/go"}, Real: []string{"/usr/lib/go/bin/go"}}, {Name: "gofmt"}}
+	require.NoError(t, c.StoreFacts(testDigest, "linux/arm64", Facts{PackageManager: "apt-get", HomeRCResetsPath: []string{".bashrc"}, Env: env}))
+	require.NoError(t, c.StoreCheck(testDigest, "linux/arm64", CheckResult{ComponentKey: "go", CheckHash: hash, Status: StatusPresent, Paths: []string{"/usr/bin/go"}, Bins: bins}))
 	f, ok := c.LookupFacts(testDigest, "linux/arm64")
 	require.True(t, ok)
 	assert.Equal(t, "apt-get", f.PackageManager)
 	assert.Equal(t, []string{".bashrc"}, f.HomeRCResetsPath)
+	assert.Equal(t, env, f.Env)
 	r, ok := c.LookupCheck(testDigest, "linux/arm64", "go", hash)
 	require.True(t, ok)
 	assert.Equal(t, []string{"/usr/bin/go"}, r.Paths)
-	assert.Equal(t, 3, FormatVersion)
+	assert.Equal(t, bins, r.Bins)
+	assert.Equal(t, 4, FormatVersion)
 }
 
 func TestCacheMisses(t *testing.T) {

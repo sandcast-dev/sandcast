@@ -310,4 +310,14 @@ func TestNeedsSessionEnvIgnoresOvermountDirs(t *testing.T) {
 	assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n")
 	assert.NotContains(t, got, "sandcast_legacy_remove /etc/profile.d/sandcast-env.sh", "the COPY replaces a previous script")
 	assert.NotContains(t, plan.SessionEnvScriptFor(p), "/sandbox/.venv/bin")
+
+	// A cleared base image variable (#18) is set empty in the image ENV and
+	// brings the script, which unsets it in sessions.
+	p.Image.Env = []plan.EnvVar{{Name: "VIRTUAL_ENV", Value: ""}}
+	p.Image.Cleared = []string{"VIRTUAL_ENV"}
+	assert.True(t, NeedsSessionEnv(p), "a cleared variable")
+	got, err = Assemble(p)
+	require.NoError(t, err)
+	assert.Contains(t, got, "ENV VIRTUAL_ENV=\"\"\n")
+	assert.Contains(t, got, "COPY shell/sandcast-env.sh /etc/profile.d/sandcast-env.sh\n")
 }

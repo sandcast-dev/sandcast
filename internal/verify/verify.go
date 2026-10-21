@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,14 +86,10 @@ func Requests(p *plan.Plan) []probe.Request {
 		if c.Check.Command == "" {
 			continue
 		}
-		bin := ""
-		if len(c.Bins) > 0 {
-			bin = c.Bins[0]
-		}
 		reqs = append(reqs, probe.Request{
 			Key:            c.Key,
 			Command:        c.Check.Command,
-			Bin:            bin,
+			Bins:           slices.Clone(c.Bins),
 			Selector:       c.Check.Version,
 			ExpectExit:     c.Check.ExpectExit,
 			StdoutContains: c.Check.StdoutContains,
@@ -143,12 +140,12 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	env := sessionEnv(p.FinalUser)
 	zsh := plan.ShellKind(p) == "zsh"
 	var reqs []probe.Request
-	add := func(key, command string, c plan.Check, bin string) {
+	add := func(key, command string, c plan.Check, bins []string) {
 		c.Command = command
 		reqs = append(reqs, probe.Request{
 			Key:            key,
 			Command:        command,
-			Bin:            bin,
+			Bins:           bins,
 			Selector:       c.Version,
 			ExpectExit:     c.ExpectExit,
 			StdoutContains: c.StdoutContains,
@@ -159,20 +156,17 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 		if c.Check.Command == "" {
 			continue
 		}
-		bin := ""
-		if len(c.Bins) > 0 {
-			bin = c.Bins[0]
-		}
+		bins := slices.Clone(c.Bins)
 		check := sessionBinsCheck + c.Check.Command
 		pre, post := binsPrelude(c)
-		add(sessionPrefix+"bash-login."+c.Key, pre+env+" bash -lc "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
+		add(sessionPrefix+"bash-login."+c.Key, pre+env+" bash -lc "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bins)
 		// bash -i prints its prompts and job control notes to stderr; the
 		// check's own stderr is kept through the group redirection. -s
 		// passes the binaries as positional parameters.
 		add(sessionPrefix+"bash-interactive."+c.Key,
-			pre+"printf '%s\\n' "+shell.Quote("{ "+check+"\n} 2>&1")+" | "+env+" bash -i -s -- $_sb 2>/dev/null"+post, c.Check, bin)
+			pre+"printf '%s\\n' "+shell.Quote("{ "+check+"\n} 2>&1")+" | "+env+" bash -i -s -- $_sb 2>/dev/null"+post, c.Check, bins)
 		if zsh {
-			add(sessionPrefix+"zsh."+c.Key, pre+env+" zsh -il -c "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
+			add(sessionPrefix+"zsh."+c.Key, pre+env+" zsh -il -c "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bins)
 		}
 	}
 	probeRC := ":"
@@ -183,11 +177,11 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 	case "zsh":
 		add(sessionStartupKey,
 			`_err=$(`+env+` zsh -il -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+zshNoTTYNoise+`); `+
-				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, "zsh")
+				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, []string{"zsh"})
 	case "bash":
 		add(sessionBashStartupKey,
 			`_err=$(`+env+` bash -i -c `+shell.Quote(probeRC)+` 2>&1 >/dev/null </dev/null | grep -v `+bashNoTTYNoise+`); `+
-				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, "bash")
+				`if [ -n "$_err" ]; then printf '%s\n' "$_err"; exit 1; fi`, plan.Check{}, []string{"bash"})
 	}
 	sort.Slice(reqs, func(i, j int) bool { return reqs[i].Key < reqs[j].Key })
 	return reqs
