@@ -77,7 +77,7 @@ var MiseEnv = []EnvVar{
 // PROMPT_COMMAND only puts the shims first again after a curated rc that
 // changed PATH. The bash-only part sits in eval, so dash and zsh never parse
 // bash array syntax.
-var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil, "")
+var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil, "", nil)
 
 // SessionEnvScriptFor is the session environment script of p: the MISE_*
 // variables of MiseEnv followed by the image environment of the plan (the
@@ -96,20 +96,32 @@ var defaultSessionEnvScript = sessionEnvScript(MiseEnv, nil, "")
 // except directories under the overmount home, which the mounted workspace
 // hides.
 func SessionEnvScriptFor(p *Plan) string {
-	return sessionEnvScript(append(slices.Clone(MiseEnv), SessionEnvExports(p)...), SessionPathDirsFor(p), OvermountPrefix(p))
+	return sessionEnvScript(append(slices.Clone(MiseEnv), SessionEnvExports(p)...), SessionPathDirsFor(p), OvermountPrefix(p), SessionEnvUnsetsFor(p))
+}
+
+// SessionEnvUnsetsFor returns the base image variables the session script
+// of p unsets: those the plan cleared because they pointed under the
+// overmount home only (ImageSetup.Cleared), none off the OpenShell target.
+func SessionEnvUnsetsFor(p *Plan) []string {
+	if OvermountPrefix(p) == "" {
+		return nil
+	}
+	return slices.Clone(p.Image.Cleared)
 }
 
 // SessionEnvExports returns the variables of the image environment that the
 // session environment script exports beyond MiseEnv: every image variable
 // except PATH (the script rewrites PATH itself, through the strip and
-// _sandcast_path; the image PATH the plan writes is not one of its exports)
-// and except the names MiseEnv already sets. The build asks it whether an
+// _sandcast_path; the image PATH the plan writes is not one of its exports),
+// except the names MiseEnv already sets, and except the cleared base image
+// variables, which the script unsets instead. The build asks it whether an
 // image needs the script at all (NeedsSessionEnv), so the two never
 // disagree on what counts.
 func SessionEnvExports(p *Plan) []EnvVar {
 	var env []EnvVar
 	for _, e := range p.Image.Env {
-		if e.Name == "PATH" || slices.ContainsFunc(MiseEnv, func(m EnvVar) bool { return m.Name == e.Name }) {
+		if e.Name == "PATH" || slices.ContainsFunc(MiseEnv, func(m EnvVar) bool { return m.Name == e.Name }) ||
+			slices.Contains(p.Image.Cleared, e.Name) {
 			continue
 		}
 		env = append(env, e)
@@ -196,8 +208,12 @@ func sessionPathDirs(basePath []string, overmount string) []string {
 // later, such as an activated virtual environment; the cleared environment
 // of an OpenShell session and the image ENV never carry the marker. The
 // step stays out of _sandcast_path for the same reason: the bash
-// PROMPT_COMMAND repair never strips such a directory either.
-func sessionEnvScript(env []EnvVar, dirs []string, overmount string) string {
+// PROMPT_COMMAND repair never strips such a directory either. The same
+// once-per-session step unsets the variables in unset, the base image
+// variables the plan cleared (SessionEnvUnsetsFor), so a session that
+// inherits one from its runtime does not keep it while a child shell keeps
+// a virtual environment activated later.
+func sessionEnvScript(env []EnvVar, dirs []string, overmount string, unset []string) string {
 	var b strings.Builder
 	b.WriteString(SessionEnvHeader + ` for shells started with a cleared
 # or an inherited environment. Safe to source more than once.
@@ -206,12 +222,16 @@ func sessionEnvScript(env []EnvVar, dirs []string, overmount string) string {
 		fmt.Fprintf(&b, "export %s=%s\n", e.Name, shell.Quote(e.Value))
 	}
 	if overmount != "" {
+		unsetLine := ""
+		if len(unset) > 0 {
+			unsetLine = "\tunset " + strings.Join(unset, " ") + "\n"
+		}
 		fmt.Fprintf(&b, `# Once per session, drop inherited PATH entries under the overmount home
 # %[1]s and entries that are not absolute: the workspace mounted there must
 # never be searched for commands. A child shell keeps what the session
 # added later.
 if [ -z "${%[2]s-}" ]; then
-	_sandcast_prest=${PATH:-} _sandcast_pnew=
+%[3]s	_sandcast_prest=${PATH:-} _sandcast_pnew=
 	while [ -n "$_sandcast_prest" ]; do
 		case $_sandcast_prest in *:*) _sandcast_pd=${_sandcast_prest%%%%:*} _sandcast_prest=${_sandcast_prest#*:} ;; *) _sandcast_pd=$_sandcast_prest _sandcast_prest= ;; esac
 		case $_sandcast_pd in "" | [!/]* | %[1]s | %[1]s/*) ;; *) _sandcast_pnew="${_sandcast_pnew:+$_sandcast_pnew:}$_sandcast_pd" ;; esac
@@ -220,7 +240,7 @@ if [ -z "${%[2]s-}" ]; then
 	export PATH %[2]s
 	unset _sandcast_prest _sandcast_pnew _sandcast_pd
 fi
-`, overmount, SessionPathMarker)
+`, overmount, SessionPathMarker, unsetLine)
 	}
 	b.WriteString("_sandcast_path() {\n")
 	// Each missing base image directory is prepended, last first, so they

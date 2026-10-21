@@ -230,6 +230,40 @@ func TestSessionEnvScriptStripsOvermountPath(t *testing.T) {
 	}
 }
 
+// TestSessionEnvScriptUnsetsClearedEnv covers #18 in the session script: a
+// session that inherits a cleared base image variable (the image ENV sets
+// it empty, a runtime may set it again) has it unset once per session,
+// while a child shell keeps a virtual environment the session activated
+// later.
+func TestSessionEnvScriptUnsetsClearedEnv(t *testing.T) {
+	p := &Plan{Target: "openshell", Image: ImageSetup{
+		Env:     []EnvVar{{Name: "UV_PYTHON_INSTALL_DIR", Value: ""}, {Name: "VIRTUAL_ENV", Value: ""}},
+		Cleared: []string{"UV_PYTHON_INSTALL_DIR", "VIRTUAL_ENV"},
+	}}
+	text := SessionEnvScriptFor(p)
+	assert.NotContains(t, text, "export VIRTUAL_ENV")
+	assert.Equal(t, 1, strings.Count(text, "unset UV_PYTHON_INSTALL_DIR VIRTUAL_ENV\n"))
+	assert.NotContains(t, SessionEnvScriptFor(&Plan{Target: "container", Image: p.Image}), "unset UV_PYTHON_INSTALL_DIR")
+	dir := t.TempDir()
+	script := filepath.Join(dir, "sandcast-env.sh")
+	require.NoError(t, os.WriteFile(script, []byte(text), 0o644))
+	ran := 0
+	for _, sh := range []string{"sh", "dash", "bash", "zsh"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			continue
+		}
+		ran++
+		cmd := exec.Command(path, "-c", `. "$1"; printf '%s|%s\n' "${VIRTUAL_ENV-unset}" "${UV_PYTHON_INSTALL_DIR-unset}"; `+
+			`VIRTUAL_ENV=/sandbox/.venv; export VIRTUAL_ENV; "$0" -c '. "$1"; printf "%s\n" "${VIRTUAL_ENV-unset}"' "$0" "$1"`, sh, script)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/sandbox", "VIRTUAL_ENV=/sandbox/.venv", "UV_PYTHON_INSTALL_DIR="}
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s: %s", sh, out)
+		assert.Equal(t, "unset|unset\n/sandbox/.venv\n", string(out), "%s: unset once per session; a child keeps the activated venv", sh)
+	}
+	assert.Positive(t, ran)
+}
+
 // TestSessionEnvScriptBasePath sources the OpenShell script with the
 // OpenShell default PATH under every available shell, twice: the shims come
 // first, then the base image's extra directories in their order, then the

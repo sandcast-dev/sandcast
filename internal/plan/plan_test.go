@@ -1249,7 +1249,7 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated")
 	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
 	assert.Equal(t, 1, strings.Count(strings.Join(p.Notices, "\n"), "/sandbox/.venv/bin lies under"), "once per directory")
 	script := SessionEnvScriptFor(p)
@@ -1269,6 +1269,62 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	for _, e := range cp.Image.Env {
 		assert.NotEqual(t, "PATH", e.Name, "the container target keeps the base image's PATH")
 	}
+}
+
+// TestBuildClearsBaseEnvUnderOvermount covers #18: a base image variable
+// that names only paths under the overmount home is set to the empty value
+// in the image environment and unset by the session script; a colon list
+// keeps its other entries; HOME, variables outside the home and variables a
+// component sets stay; the container target changes nothing.
+func TestBuildClearsBaseEnvUnderOvermount(t *testing.T) {
+	baseEnv := []probe.EnvVar{
+		{Name: "HOME", Value: "/sandbox"},
+		{Name: "PYTHONPATH", Value: "/sandbox/lib:/usr/lib/extra"},
+		{Name: "UV_PYTHON_INSTALL_DIR", Value: "/sandbox/.uv/python"},
+		{Name: "VIRTUAL_ENV", Value: "/sandbox/.venv"},
+		{Name: "JAVA_HOME", Value: "/usr/lib/jvm/default"},
+		{Name: "GOPATH", Value: "/sandbox/go"},
+		{Name: "SANDBOXED", Value: "/sandboxed/x"},
+	}
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Facts.Env = baseEnv
+	p, err := Build(in)
+	require.NoError(t, err)
+	env := envMap(p.Image.Env)
+	assert.Equal(t, []string{"UV_PYTHON_INSTALL_DIR", "VIRTUAL_ENV"}, p.Image.Cleared)
+	for _, name := range p.Image.Cleared {
+		v, ok := env[name]
+		assert.True(t, ok, name)
+		assert.Empty(t, v, name)
+	}
+	assert.Equal(t, "/usr/lib/extra", env["PYTHONPATH"])
+	assert.Equal(t, "/opt/go", env["GOPATH"], "the go component's GOPATH wins")
+	for _, name := range []string{"HOME", "JAVA_HOME", "SANDBOXED"} {
+		assert.NotContains(t, env, name)
+	}
+	notices := strings.Join(p.Notices, "\n")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable VIRTUAL_ENV=/sandbox/.venv points under the overmount home /sandbox and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable PYTHONPATH=/sandbox/lib:/usr/lib/extra names entries under the overmount home /sandbox; the image environment and sessions keep /usr/lib/extra")
+	assert.Contains(t, notices, "UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python points under")
+	assert.NotContains(t, notices, "GOPATH=/sandbox/go")
+	assert.NotContains(t, notices, "HOME=/sandbox")
+
+	script := SessionEnvScriptFor(p)
+	assert.Contains(t, script, "\tunset UV_PYTHON_INSTALL_DIR VIRTUAL_ENV\n")
+	assert.NotContains(t, script, "export VIRTUAL_ENV")
+	assert.Contains(t, script, "export PYTHONPATH='/usr/lib/extra'")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.Probe.Facts.Env = baseEnv
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.Empty(t, cp.Image.Cleared)
+	assert.NotContains(t, envMap(cp.Image.Env), "VIRTUAL_ENV")
+	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "base image variable")
+	assert.NotContains(t, SessionEnvScriptFor(cp), "unset VIRTUAL_ENV")
 }
 
 // TestSetImagePath pins the image PATH rule: nothing without an overmount

@@ -308,7 +308,17 @@ func TestSessionEnvironment(t *testing.T) {
 	pathOut, err := exec.Command(engine, "image", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", img).Output()
 	require.NoError(t, err)
 	var extra []string
+	cleared := map[string]bool{}
 	for _, line := range strings.Split(string(pathOut), "\n") {
+		// #18: the community base image's VIRTUAL_ENV and
+		// UV_PYTHON_INSTALL_DIR point under the overmount home; the image
+		// ENV clears them.
+		for _, name := range []string{"VIRTUAL_ENV", "UV_PYTHON_INSTALL_DIR"} {
+			if v, ok := strings.CutPrefix(line, name+"="); ok {
+				assert.Empty(t, v, "image ENV %s", name)
+				cleared[name] = true
+			}
+		}
 		if v, ok := strings.CutPrefix(line, "PATH="); ok {
 			for _, d := range strings.Split(v, ":") {
 				assert.False(t, d == "/sandbox" || strings.HasPrefix(d, "/sandbox/"), "the image PATH %s names a directory under the overmount home", v)
@@ -318,6 +328,11 @@ func TestSessionEnvironment(t *testing.T) {
 			}
 		}
 	}
+	assert.Equal(t, map[string]bool{"VIRTUAL_ENV": true, "UV_PYTHON_INSTALL_DIR": true}, cleared, "the image ENV sets both cleared variables empty")
+	assert.Contains(t, r.stdout, "base image variable VIRTUAL_ENV=/sandbox/.venv points under the overmount home /sandbox and is cleared")
+	out, _, err = run("", false, "/bin/bash", "-lc", `echo "VENV=[${VIRTUAL_ENV-unset}] UVPY=[${UV_PYTHON_INSTALL_DIR-unset}]"`)
+	require.NoError(t, err)
+	assert.Equal(t, "VENV=[unset] UVPY=[unset]\n", out, "a session has neither variable")
 	out, _, err = run("", false, "/bin/bash", "-lc", "echo $PATH")
 	require.NoError(t, err)
 	assert.Equal(t, strings.Join(append(append([]string{"/opt/mise/shims"}, extra...), "/usr/local/bin", "/usr/bin", "/bin"), ":")+"\n", out,
@@ -536,9 +551,18 @@ targets:
 			}
 		}
 		assert.True(t, found, "%s verified", key)
+		if key == "python" {
+			continue
+		}
 		assert.True(t, noticeFor(key, "lockfile-shadow", "unknown-version"), "%s: the base image version differs and a notice says so", key)
 	}
-	assert.True(t, noticeFor("python", "workspace-path"), "python's first PATH hit lies under /sandbox")
+	// T060: the base image's python binary exists only under /sandbox, as
+	// /sandbox/.venv/bin/python and as the symlink /usr/local/bin/python
+	// into /sandbox/.uv, so python counts as missing and is re-provisioned,
+	// although python3 also has a system copy in /usr/bin.
+	assert.Contains(t, strings.Join(rep.Notices, "\n"),
+		"component python was found only under /sandbox/.venv/bin/python, /usr/local/bin/python -> /sandbox/.uv/python/",
+		"python is re-provisioned, its symlink into the workspace judged by its target")
 
 	// SC-002: no resolved binary under the workspace path.
 	profiles := filepath.Join(dir, ".sandcast", "build", "openshell", "profiles")

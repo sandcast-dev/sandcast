@@ -179,6 +179,9 @@ type ImageFacts struct {
 	HomeRCResetsPath []string `yaml:"home_rc_resets_path,omitempty" json:"home_rc_resets_path,omitempty"`
 	// Path lists the directories of the base image's PATH, in order.
 	Path []string `yaml:"path,omitempty" json:"path,omitempty"`
+	// Env lists the base image variables other than PATH whose value is an
+	// absolute path or a colon list of them, sorted by name.
+	Env []EnvVar `yaml:"env,omitempty" json:"env,omitempty"`
 }
 
 // OS identifies the base image operating system.
@@ -257,6 +260,10 @@ type Check struct {
 type ImageSetup struct {
 	Env  []EnvVar `yaml:"env" json:"env"`
 	Dirs []Dir    `yaml:"dirs" json:"dirs"`
+	// Cleared names the base image variables that pointed under the
+	// overmount home only: Env sets them to the empty value, and the
+	// session script unsets them (#18). Sorted.
+	Cleared []string `yaml:"cleared,omitempty" json:"cleared,omitempty"`
 }
 
 // EnvVar is one image environment variable.
