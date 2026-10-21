@@ -147,7 +147,7 @@ Single Go module. `internal/<pkg>/` packages, root-level embedded assets (`compo
 
 ### Follow-up from T058 (quickstart walk-through, 2026-10-13)
 
-- [ ] T059 mise shims read project configuration: in a session inside a project that has `.tool-versions` or `mise.toml`, every shim call prints `mise WARN ... node@20.11.1 is not in the lockfile` for a tool the image lockfile lacks (seen on `tests/fixtures/pinned-project`), and a project pin of another version than the image's could make a shim fail. SC-005 itself holds (no toolchain download with the network disabled). Research a mise setting that keeps image shims on the image configuration only, and add a session check for it.
+- [x] T059 mise shims read project configuration: in a session inside a project that has `.tool-versions` or `mise.toml`, every shim call prints `mise WARN ... node@20.11.1 is not in the lockfile` for a tool the image lockfile lacks (seen on `tests/fixtures/pinned-project`), and a project pin of another version than the image's could make a shim fail. SC-005 itself holds (no toolchain download with the network disabled). Research a mise setting that keeps image shims on the image configuration only, and add a session check for it. Resolved: `MiseEnv` sets `MISE_OVERRIDE_CONFIG_FILENAMES=/etc/mise/mise.toml` and `MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none`, checked by the `session.mise.project-config` verify check and `TestProjectMiseFilesIgnored`.
 
 ### Follow-up from code review (2026-10-13)
 

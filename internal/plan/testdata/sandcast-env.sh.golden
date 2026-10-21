@@ -6,6 +6,8 @@ export MISE_CACHE_DIR='/tmp/sandcast-mise/cache'
 export MISE_STATE_DIR='/tmp/sandcast-mise/state'
 export MISE_TRUSTED_CONFIG_PATHS='/etc/mise'
 export MISE_USE_VERSIONS_HOST='0'
+export MISE_OVERRIDE_CONFIG_FILENAMES='/etc/mise/mise.toml'
+export MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES='none'
 _sandcast_path() {
 	case "${PATH:-}" in
 	/opt/mise/shims | /opt/mise/shims:*) ;;

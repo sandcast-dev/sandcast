@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"github.com/goccy/go-yaml"
 
 	"github.com/rhuss/sandcast/internal/engine"
@@ -54,6 +55,11 @@ const (
 	sessionPrefix             = "session."
 	sessionStartupKey         = "session.zsh.startup"
 	sessionBashStartupKey     = "session.bash.startup"
+	sessionMiseProjectKey     = "session.mise.project-config"
+	// miseProjectDir is the project directory the mise project check
+	// creates; miseProjectPin is the version it pins every image tool to.
+	miseProjectDir = "/tmp/sandcast-check-project"
+	miseProjectPin = "0.0.0-sandcast-check"
 	// bashNoTTYNoise are the lines bash -i prints to stderr when it runs
 	// without a terminal; the bash startup check ignores them.
 	bashNoTTYNoise = "-e 'cannot set terminal process group' -e 'no job control in this shell'"
@@ -135,7 +141,11 @@ func checkHash(c plan.Check) string {
 // (session.zsh.startup or session.bash.startup, an interactive shell in
 // both cases) fails when the startup writes to stderr (apart from the notes
 // a shell prints only because verify runs it without a terminal) or does
-// not read the curated rc.
+// not read the curated rc. When mise installs a checked component,
+// session.mise.project-config runs the first such check again in a login
+// bash from a project directory that pins every image tool to a version
+// the lockfile lacks (miseProjectCheck), so a project's mise files cannot
+// change or break the image tools (spec 002 T059).
 func SessionRequests(p *plan.Plan) []probe.Request {
 	if p.Target != manifest.TargetOpenShell {
 		return nil
@@ -174,6 +184,11 @@ func SessionRequests(p *plan.Plan) []probe.Request {
 		if zsh {
 			add(sessionPrefix+"zsh."+c.Key, pre+env+" zsh -il -c "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, bin)
 		}
+	}
+	if c, ok := miseProjectComponent(p); ok {
+		check := sessionBinsCheck + miseProjectCheck(miseProjectDir, c.Check.Command, miseTools(p))
+		pre, post := binsPrelude(c)
+		add(sessionMiseProjectKey, pre+env+" bash -lc "+shell.Quote(check)+" sandcast-session $_sb"+post, c.Check, c.Bins[0])
 	}
 	probeRC := ":"
 	if p.Shell.RCPath != "" {
@@ -228,6 +243,67 @@ func binsPrelude(c plan.Component) (string, string) {
 	return pre, post
 }
 
+// miseProjectComponent returns the first component, by key, that mise
+// installs and that has a check and a binary.
+func miseProjectComponent(p *plan.Plan) (plan.Component, bool) {
+	var found []plan.Component
+	for _, c := range p.Components {
+		if c.InstallerKind == "mise" && c.Action != plan.ActionSkip && c.Check.Command != "" && len(c.Bins) > 0 {
+			found = append(found, c)
+		}
+	}
+	if len(found) == 0 {
+		return plan.Component{}, false
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Key < found[j].Key })
+	return found[0], true
+}
+
+// miseTools returns the tool names of the image mise.toml, sorted.
+func miseTools(p *plan.Plan) []string {
+	var cfg struct {
+		Tools map[string]any `toml:"tools"`
+	}
+	if _, err := toml.Decode(p.Mise.TOML, &cfg); err != nil {
+		return nil
+	}
+	tools := make([]string, 0, len(cfg.Tools))
+	for t := range cfg.Tools {
+		tools = append(tools, t)
+	}
+	sort.Strings(tools)
+	return tools
+}
+
+// miseProjectCheck wraps a component check: it creates the directory dir with
+// a mise.toml and a .tool-versions that pin every tool to miseProjectPin
+// (.tool-versions only names tools without a backend prefix), runs the
+// check there and fails when mise warns or errs on its stderr. Without
+// MISE_OVERRIDE_* in the session, mise reads both files, warns that the pin
+// is not in the lockfile and leaves the shim without a version. mise's own
+// update notice is not a failure. The check's stderr is kept otherwise.
+func miseProjectCheck(dir, command string, tools []string) string {
+	var cfg, versions strings.Builder
+	cfg.WriteString("[tools]\n")
+	for _, t := range tools {
+		fmt.Fprintf(&cfg, "%q = %q\n", t, miseProjectPin)
+		if !strings.Contains(t, ":") {
+			fmt.Fprintf(&versions, "%s %s\n", t, miseProjectPin)
+		}
+	}
+	d := shell.QuoteIfNeeded(dir)
+	return `mkdir -p ` + d + ` && cd ` + d + ` || exit 1
+printf '%s' ` + shell.Quote(cfg.String()) + ` > mise.toml
+printf '%s' ` + shell.Quote(versions.String()) + ` > .tool-versions
+{ ` + command + `
+} 2>` + d + `/.stderr
+_rc=$?
+if grep -E '^mise (WARN|ERROR)' ` + d + `/.stderr | grep -v -e 'mise version .* available' -e 'To update, run' >&2; then exit 1; fi
+cat ` + d + `/.stderr >&2
+exit "$_rc"
+`
+}
+
 // sessionEnv is the env -i prefix that reproduces the environment OpenShell
 // gives a session: only HOME, USER, TERM and the default PATH.
 func sessionEnv(u plan.FinalUser) string {
@@ -238,7 +314,7 @@ func sessionEnv(u plan.FinalUser) string {
 // condition maps a request key to its condition.
 func condition(key string) string {
 	switch {
-	case strings.HasPrefix(key, sessionPrefix+"bash-login."):
+	case strings.HasPrefix(key, sessionPrefix+"bash-login."), key == sessionMiseProjectKey:
 		return ConditionSessionBashLogin
 	case strings.HasPrefix(key, sessionPrefix+"bash-interactive."), key == sessionBashStartupKey:
 		return ConditionSessionBashInter

@@ -140,6 +140,8 @@ components:
           MISE_STATE_DIR=/tmp/sandcast-mise/state \
           MISE_TRUSTED_CONFIG_PATHS=/etc/mise \
           MISE_USE_VERSIONS_HOST=0 \
+          MISE_OVERRIDE_CONFIG_FILENAMES=/etc/mise/mise.toml \
+          MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none \
           PATH=/opt/mise/shims:$PATH
       COPY mise/mise.toml mise/mise.lock /etc/mise/
       RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
@@ -240,6 +242,8 @@ components:
           MISE_STATE_DIR=/tmp/sandcast-mise/state \
           MISE_TRUSTED_CONFIG_PATHS=/etc/mise \
           MISE_USE_VERSIONS_HOST=0 \
+          MISE_OVERRIDE_CONFIG_FILENAMES=/etc/mise/mise.toml \
+          MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none \
           PATH=/opt/mise/shims:$PATH
       COPY mise/mise.toml mise/mise.lock /etc/mise/
       RUN chmod 0644 /etc/mise/mise.toml /etc/mise/mise.lock \
