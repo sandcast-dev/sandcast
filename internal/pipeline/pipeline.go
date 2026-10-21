@@ -496,6 +496,8 @@ func readDotfile(env Env, p string) (fsutil.HostPathKind, string, error) {
 	switch {
 	case errors.Is(err, fsutil.ErrSymlinkInPath):
 		return 0, "", errors.New("changed while it was read")
+	case errors.Is(err, fsutil.ErrNotRegular):
+		return 0, "", errors.New("is not a regular file")
 	case err != nil:
 		return 0, "", fmt.Errorf("could not be read (%w)", err)
 	}
@@ -513,7 +515,8 @@ var dotfileResolvedHook = func(string) {}
 
 // readRegularFile reads an open file that must be a regular file of at most
 // manifest.MaxDotfileSize bytes. The type and size come from the descriptor,
-// so they describe the file that is read.
+// so they describe the file that is read, even when the leaf was swapped
+// after OpenBeneath checked its type.
 func readRegularFile(f *os.File) (string, error) {
 	fi, err := f.Stat()
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,13 +33,23 @@ func TestOpenBeneathReads(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hi", string(data))
 	assert.Equal(t, filepath.Join(root, "a", "b", "f"), f.Name())
+}
 
-	d, err := OpenBeneath(root, ".")
+// TestOpenBeneathSearchOnlyDirs checks that the root and the directories on
+// the way need execute permission only, as for a plain open of the path.
+func TestOpenBeneathSearchOnlyDirs(t *testing.T) {
+	root := realTempDir(t)
+	writeTestFile(t, filepath.Join(root, "x", "f"), "hi")
+	for _, d := range []string{filepath.Join(root, "x"), root} {
+		require.NoError(t, os.Chmod(d, 0o311))
+		t.Cleanup(func() { _ = os.Chmod(d, 0o755) })
+	}
+	f, err := OpenBeneath(root, filepath.Join("x", "f"))
 	require.NoError(t, err)
-	fi, err := d.Stat()
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(f)
 	require.NoError(t, err)
-	assert.True(t, fi.IsDir())
-	_ = d.Close()
+	assert.Equal(t, "hi", string(data))
 }
 
 func TestOpenBeneathRefusesSymlinks(t *testing.T) {
@@ -80,18 +91,52 @@ func TestOpenBeneathRefusesEscapes(t *testing.T) {
 	}
 }
 
-func TestOpenBeneathMissingAndFIFO(t *testing.T) {
+func TestOpenBeneathMissingAndUnreadable(t *testing.T) {
 	root := realTempDir(t)
-	_, err := OpenBeneath(root, "missing")
-	assert.ErrorIs(t, err, os.ErrNotExist)
-	assert.NotErrorIs(t, err, ErrSymlinkInPath)
+	for _, rel := range []string{"missing", "nodir/f"} {
+		_, err := OpenBeneath(root, filepath.FromSlash(rel))
+		assert.ErrorIs(t, err, os.ErrNotExist, rel)
+		assert.NotErrorIs(t, err, ErrSymlinkInPath, rel)
+	}
 
-	// A FIFO opens without blocking, and Stat tells it apart.
+	if os.Geteuid() == 0 {
+		t.Skip("permissions do not apply to root")
+	}
+	writeTestFile(t, filepath.Join(root, "locked", "f"), "x")
+	require.NoError(t, os.Chmod(filepath.Join(root, "locked"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "locked"), 0o755) })
+	_, err := OpenBeneath(root, filepath.Join("locked", "f"))
+	assert.ErrorIs(t, err, os.ErrPermission)
+	assert.NotErrorIs(t, err, ErrSymlinkInPath)
+}
+
+// TestOpenBeneathNotRegular checks that a FIFO, a directory and the root
+// itself are refused by type, before an open that could block.
+func TestOpenBeneathNotRegular(t *testing.T) {
+	root := realTempDir(t)
 	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "fifo"), 0o644))
-	f, err := OpenBeneath(root, "fifo")
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	fi, err := f.Stat()
-	require.NoError(t, err)
-	assert.False(t, fi.Mode().IsRegular())
+	require.NoError(t, os.Mkdir(filepath.Join(root, "dir"), 0o755))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, rel := range []string{"fifo", "dir", "."} {
+			f, err := OpenBeneath(root, rel)
+			if f != nil {
+				_ = f.Close()
+			}
+			assert.ErrorIs(t, err, ErrNotRegular, rel)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO blocked")
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }

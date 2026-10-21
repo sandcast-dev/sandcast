@@ -22,12 +22,18 @@ func StrictlyWithin(root, p string) bool {
 }
 
 // relWithin returns p relative to root and whether p is root or below it.
-// Every containment check in sandcast goes through it, so a fix here (for
-// example to separator handling) reaches all of them.
+// Every containment check in sandcast goes through it or escapesRoot, so a
+// fix here (for example to separator handling) reaches all of them.
 func relWithin(root, p string) (string, bool) {
 	rel, err := filepath.Rel(root, p)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || escapesRoot(rel) {
 		return "", false
 	}
 	return rel, true
+}
+
+// escapesRoot reports whether the cleaned relative path rel leaves the
+// directory it is relative to: it is ".." or starts with a ".." segment.
+func escapesRoot(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

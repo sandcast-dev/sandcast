@@ -123,6 +123,30 @@ func TestDotfileInputsProjectRelativeInsideKept(t *testing.T) {
 	assert.Equal(t, "ok\n", out[0].Content)
 }
 
+// TestDotfileInputsSymlinkInsideKept checks a dotfile managed by symlinks
+// that stay inside the home (stow or chezmoi style, a linked file and a
+// linked directory) is still read, also when the home itself is reached
+// through a symlink, so the resolved root differs from the given one on
+// every platform and not only under the darwin /var link.
+func TestDotfileInputsSymlinkInsideKept(t *testing.T) {
+	realHome := t.TempDir()
+	writeFile(t, filepath.Join(realHome, "dotfiles", "git", "gitconfig"), "[user]\n\tname = stow\n")
+	writeFile(t, filepath.Join(realHome, "dotfiles", "nvim", "init.lua"), "set number\n")
+	require.NoError(t, os.Symlink(filepath.Join(realHome, "dotfiles", "git", "gitconfig"), filepath.Join(realHome, ".gitconfig")))
+	require.NoError(t, os.MkdirAll(filepath.Join(realHome, ".config"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(realHome, "dotfiles", "nvim"), filepath.Join(realHome, ".config", "nvim")))
+	linkedHome := filepath.Join(t.TempDir(), "home")
+	require.NoError(t, os.Symlink(realHome, linkedHome))
+
+	for _, home := range []string{realHome, linkedHome} {
+		out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.gitconfig", "~/.config/nvim/init.lua"))
+		require.Empty(t, notices, home)
+		require.Len(t, out, 2, home)
+		assert.Equal(t, "[user]\n\tname = stow\n", out[0].Content)
+		assert.Equal(t, "set number\n", out[1].Content)
+	}
+}
+
 // skippedWith asserts that dotfileInputs bakes nothing for paths and reports
 // one notice per path containing want.
 func skippedWith(t *testing.T, env Env, want string, paths ...string) {
