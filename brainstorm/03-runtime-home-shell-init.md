@@ -1,7 +1,7 @@
 # Brainstorm: Runtime home model and shell initialization
 
 **Date:** 2026-10-14
-**Status:** active
+**Status:** spec-created
 
 ## Problem Framing
 

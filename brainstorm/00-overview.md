@@ -1,6 +1,6 @@
 # Brainstorm Overview
 
-Last updated: 2026-10-14
+Last updated: 2026-10-21
 
 ## Sessions
 
@@ -8,7 +8,7 @@ Last updated: 2026-10-14
 |---|------|-------|--------|------|-------|
 | 01 | 2026-10-08 | sandcast-standalone-build | spec-created | 001 | - |
 | 02 | 2026-10-11 | website-landing-docs | active | - | - |
-| 03 | 2026-10-14 | runtime-home-shell-init | active | - | - |
+| 03 | 2026-10-14 | runtime-home-shell-init | spec-created | 003 | - |
 
 ## Open Threads
 - sandcast standalone build: profile id strategy for image-adapted copies, compiled policy fallback for gateways without profiles, refresh cadence for vendored upstream profiles and pinned mise, build plan format and stable API, fragment store lifecycle after promotion, portable skill format across OpenCode/Codex/pi, binary vs skill bundle version coupling, relationship to cc-deck profile delegation (from #01)
