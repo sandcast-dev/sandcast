@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -587,4 +588,99 @@ func lockedVersions(t *testing.T, path string) map[string]string {
 		}
 	}
 	return out
+}
+
+// projectMiseScript runs the node, python and go shims from the project
+// mounted at /sandbox, once with the cleared environment of an OpenShell
+// session (bash -lc, as openshell sandbox exec runs it) and once with the
+// image environment, as the default agent gets it. Each line of a tool's
+// stdout and stderr is prefixed with the mode and the tool.
+const projectMiseScript = `#!/bin/sh
+for mode in session agent; do
+	for cmd in "node --version" "python --version" "go version"; do
+		tool=${cmd%% *}
+		if [ "$mode" = session ]; then
+			env -i HOME=/sandbox USER=sandbox TERM=xterm-256color PATH=/usr/local/bin:/usr/bin:/bin bash -lc "cd /sandbox && $cmd" >/tmp/out 2>/tmp/err
+		else
+			bash -lc "cd /sandbox && $cmd" >/tmp/out 2>/tmp/err
+		fi
+		echo "EXIT $mode $tool $?"
+		sed "s/^/OUT $mode $tool /" /tmp/out
+		sed "s/^/ERR $mode $tool /" /tmp/err
+	done
+done
+`
+
+// TestProjectMiseFilesIgnored mounts the pinned-project fixture, plus a
+// mise.toml that pins go to a version the lockfile lacks, over the home of
+// an OpenShell image with node, python and go from mise, with the network
+// disabled (spec 002 T059, SC-005). Every shim runs the locked version, in
+// a session and in the default agent's environment, mise prints no warning,
+// and no toolchain is downloaded. build --verify passes the
+// session.mise.project-config check.
+func TestProjectMiseFilesIgnored(t *testing.T) {
+	engine := requireEngine(t)
+	requireMise(t)
+	img := "localhost/sandcast-it-mise-project:latest"
+	dir := project(t, `schema_version: 1
+name: sc-mise-project
+base_image: nvidia-community-base
+components:
+  - key: node
+  - key: python
+  - key: go
+targets:
+  openshell:
+    image: localhost/sandcast-it-mise-project
+`)
+	removeImages(t, engine, img)
+	require.Zero(t, sandcast(t, dir, nil, "lock", "--platform", hostPlatform()).code)
+	r := sandcast(t, dir, nil, "build", "--verify")
+	require.Zero(t, r.code, "build --verify")
+	assert.Contains(t, r.stdout, "session.mise.project-config")
+	locked := lockedVersions(t, filepath.Join(dir, ".sandcast", "mise.lock"))
+
+	ws := t.TempDir()
+	src := "../fixtures/pinned-project"
+	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(ws, rel), 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(ws, rel), data, 0o644)
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "mise.toml"), []byte("[tools]\ngo = \"1.22.0\"\n"), 0o644))
+	require.NoError(t, os.Chmod(ws, 0o755))
+	harness := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(harness, "run.sh"), []byte(projectMiseScript), 0o755))
+	out, err := runEngine(t, engine, "run", "--rm", "--network", "none", "-v", ws+":/sandbox:ro", "-v", harness+":/harness:ro",
+		"--entrypoint", "/bin/sh", img, "/harness/run.sh")
+	require.NoError(t, err, out)
+
+	for _, tool := range []string{"node", "python", "go"} {
+		version := locked[tool]
+		require.NotEmpty(t, version, "%s is locked", tool)
+		for _, mode := range []string{"session", "agent"} {
+			assert.Contains(t, out, "EXIT "+mode+" "+tool+" 0\n", "%s %s runs", mode, tool)
+			var stdout, stderr []string
+			for _, l := range strings.Split(out, "\n") {
+				if s, ok := strings.CutPrefix(l, "OUT "+mode+" "+tool+" "); ok {
+					stdout = append(stdout, s)
+				}
+				if s, ok := strings.CutPrefix(l, "ERR "+mode+" "+tool+" "); ok {
+					stderr = append(stderr, s)
+				}
+			}
+			assert.Contains(t, strings.Join(stdout, "\n"), version, "%s %s runs the locked version", mode, tool)
+			assert.Empty(t, stderr, "%s %s: mise prints nothing and no toolchain is downloaded", mode, tool)
+		}
+	}
 }

@@ -54,6 +54,15 @@ const MiseShimsDir = MiseDataDir + "/shims"
 // list feeds the session environment script, so a session started with a
 // cleared environment gets the same settings (FR-006). The values are plain
 // paths and flags; the script quotes them anyway.
+//
+// The two MISE_OVERRIDE_* variables keep the shims on the image
+// configuration in a project directory (spec 002 T059). mise joins every
+// config file name to each directory from the working directory up, so the
+// absolute MiseConfigFile resolves to the image file in every directory and
+// no project mise.toml, .mise.toml or .mise/config.toml is read; "none"
+// turns .tool-versions off. Without them, a project pin the image lockfile
+// lacks makes a shim warn under locked mode, and a pin of another version of
+// an image tool makes the shim fail ("No version is set for shim").
 var MiseEnv = []EnvVar{
 	{Name: "MISE_DATA_DIR", Value: MiseDataDir},
 	{Name: "MISE_CONFIG_DIR", Value: MiseConfigDir},
@@ -61,6 +70,8 @@ var MiseEnv = []EnvVar{
 	{Name: "MISE_STATE_DIR", Value: MiseRuntimeDir + "/state"},
 	{Name: "MISE_TRUSTED_CONFIG_PATHS", Value: MiseConfigDir},
 	{Name: "MISE_USE_VERSIONS_HOST", Value: "0"},
+	{Name: "MISE_OVERRIDE_CONFIG_FILENAMES", Value: MiseConfigFile},
+	{Name: "MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", Value: "none"},
 }
 
 // defaultSessionEnvScript is /etc/profile.d/sandcast-env.sh (spec 002 R-04,

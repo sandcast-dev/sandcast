@@ -105,3 +105,8 @@ First release of the standalone sandcast tool (feature 001-sandcast-standalone-b
 ### Build push override
 
 - `sandcast build --push=false` now skips the push of a target with `push: true`. The `--push` flag overrides the target field `push` whenever it is given; without the flag the target field decides. Before, the two were combined with a logical or, so a manifest with `push: true` always pushed.
+
+### mise shims ignore project mise files (002 T059)
+
+- The image sets `MISE_OVERRIDE_CONFIG_FILENAMES=/etc/mise/mise.toml` and `MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES=none` in the `30-mise` layer and in the session environment script, so a shim run inside a project with a `mise.toml`, `.mise.toml`, `.mise/config.toml` or `.tool-versions` keeps the image configuration. Before, a project pin missing from the image lockfile made every shim print `mise WARN ... is not in the lockfile`, and a pin of another version of an image tool left its shim with no version (`mise ERROR No version is set for shim`). `MISE_ENV` still selects a `mise.<env>.toml` when a user sets it.
+- `sandcast verify` adds the session check `session.mise.project-config` for the OpenShell target when mise installs a checked component: the first such component check runs in a login bash from a project directory that pins every image tool to a version the lockfile lacks, and fails on any `mise WARN` or `mise ERROR` line other than mise's update notice.

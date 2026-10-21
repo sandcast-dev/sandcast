@@ -261,6 +261,89 @@ func TestSessionChecksDeclaredBins(t *testing.T) {
 	}
 }
 
+// misePlan is an OpenShell plan in which mise installs go and a backend
+// tool, and the package manager installs zsh.
+func misePlan() *plan.Plan {
+	p := openshellPlan("bash")
+	p.Mise.TOML = "[settings]\nlocked = true\n\n[tools]\n\"aqua:jqlang/jq\" = \"latest\"\ngo = \"1.25\"\n"
+	for i := range p.Components {
+		switch p.Components[i].Key {
+		case "go", "broken":
+			p.Components[i].InstallerKind, p.Components[i].Action = "mise", plan.ActionInstall
+		case "zsh":
+			p.Components[i].InstallerKind, p.Components[i].Action = "package", plan.ActionInstall
+		}
+	}
+	return p
+}
+
+func TestSessionMiseProjectRequest(t *testing.T) {
+	var got []probe.Request
+	for _, r := range SessionRequests(misePlan()) {
+		if r.Key == sessionMiseProjectKey {
+			got = append(got, r)
+		}
+	}
+	require.Len(t, got, 1)
+	r := got[0]
+	assert.Equal(t, ConditionSessionBashLogin, condition(r.Key))
+	assert.Equal(t, "broken", r.Bin, "the first mise component by key")
+	assert.Contains(t, r.Command, "bash -lc ")
+	assert.Contains(t, r.Command, `"aqua:jqlang/jq" = "`+miseProjectPin+`"`)
+	assert.Contains(t, r.Command, "go "+miseProjectPin)
+	assert.NotContains(t, r.Command, "aqua:jqlang/jq "+miseProjectPin, ".tool-versions names no backend tool")
+
+	skipped := misePlan()
+	for i := range skipped.Components {
+		skipped.Components[i].Action = plan.ActionSkip
+	}
+	for _, r := range SessionRequests(skipped) {
+		assert.NotEqual(t, sessionMiseProjectKey, r.Key, "no check when mise installs nothing")
+	}
+	for _, r := range SessionRequests(openshellPlan("bash")) {
+		assert.NotEqual(t, sessionMiseProjectKey, r.Key, "no check without mise components")
+	}
+}
+
+// TestMiseProjectCheckRunsLocally runs the wrapper with the host's sh and a
+// fake shim that behaves like mise without the override settings: it warns
+// and fails when it finds a project mise.toml.
+func TestMiseProjectCheckRunsLocally(t *testing.T) {
+	bin := t.TempDir()
+	shim := "#!/bin/sh\n" +
+		`if [ -z "$MISE_OVERRIDE_CONFIG_FILENAMES" ] && [ -f mise.toml ]; then` + "\n" +
+		`  echo "mise WARN  Failed to resolve tool version list for go: go@0.0.0 is not in the lockfile" >&2` + "\n" +
+		`  echo "mise ERROR No version is set for shim: go" >&2; exit 1` + "\n" +
+		"fi\n" +
+		`echo "mise WARN  mise version 2099.1.1 available" >&2` + "\n" +
+		`echo "To update, run mise self-update" >&2` + "\n" +
+		"echo go version go1.25.1; echo note >&2\n"
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "go"), []byte(shim), 0o755))
+	run := func(env ...string) (int, string) {
+		dir := filepath.Join(t.TempDir(), "proj")
+		cmd := exec.Command("/bin/sh", "-c", miseProjectCheck(dir, "go version", []string{"aqua:jqlang/jq", "go"}))
+		cmd.Env = append(os.Environ(), append(env, "PATH="+bin+":"+os.Getenv("PATH"))...)
+		out, err := cmd.CombinedOutput()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode(), string(out)
+		}
+		require.NoError(t, err)
+		data, err := os.ReadFile(filepath.Join(dir, ".tool-versions"))
+		require.NoError(t, err)
+		assert.Equal(t, "go "+miseProjectPin+"\n", string(data))
+		return 0, string(out)
+	}
+	code, out := run("MISE_OVERRIDE_CONFIG_FILENAMES=")
+	assert.Equal(t, 1, code, out)
+	assert.Contains(t, out, "is not in the lockfile")
+
+	code, out = run("MISE_OVERRIDE_CONFIG_FILENAMES=/etc/mise/mise.toml")
+	assert.Equal(t, 0, code, "the update notice is not a failure: %s", out)
+	assert.Contains(t, out, "go version go1.25.1")
+	assert.Contains(t, out, "note", "the check's stderr is kept")
+}
+
 // TestRunSessionFailureFailsVerify checks that session entries are reported
 // with their condition and count toward the exit status, even when every
 // image-condition check passes (FR-010, SC-004).
