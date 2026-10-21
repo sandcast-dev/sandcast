@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -40,6 +39,9 @@ func TestOpenBeneathReads(t *testing.T) {
 // TestOpenBeneathSearchOnlyDirs checks that the root and the directories on
 // the way need execute permission only, as for a plain open of the path.
 func TestOpenBeneathSearchOnlyDirs(t *testing.T) {
+	if !searchOnly {
+		t.Skip("no search-only directory open on this system")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permissions do not apply to root")
 	}
@@ -119,7 +121,7 @@ func TestOpenBeneathMissingAndUnreadable(t *testing.T) {
 // itself are refused by type, before any open.
 func TestOpenBeneathNotRegular(t *testing.T) {
 	root := realTempDir(t)
-	require.NoError(t, syscall.Mkfifo(filepath.Join(root, "fifo"), 0o644))
+	require.NoError(t, unix.Mkfifo(filepath.Join(root, "fifo"), 0o644))
 	require.NoError(t, os.Mkdir(filepath.Join(root, "dir"), 0o755))
 	for _, rel := range []string{"fifo", "dir", "."} {
 		f, err := OpenBeneath(root, rel)
@@ -159,9 +161,10 @@ func TestOpenBeneathLeafSwappedAfterCheck(t *testing.T) {
 	_, err := OpenBeneath(root, "link")
 	assert.ErrorIs(t, err, ErrSymlinkInPath)
 
+	// The hook runs on the goroutine below, so it reports with assert.
 	swapLeafAfterCheck(t, func(name string) {
-		require.NoError(t, os.Remove(name))
-		require.NoError(t, syscall.Mkfifo(name, 0o644))
+		assert.NoError(t, os.Remove(name))
+		assert.NoError(t, unix.Mkfifo(name, 0o644))
 	})
 	done := make(chan struct{})
 	go func() {
@@ -208,4 +211,20 @@ func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// TestOpenErrSymlinkErrno checks a symlink is reported as ErrSymlinkInPath
+// also where O_NOFOLLOW fails with another errno than ELOOP (EMLINK on
+// FreeBSD, EFTYPE on NetBSD), and that the same errno on a plain file stays
+// a plain error.
+func TestOpenErrSymlinkErrno(t *testing.T) {
+	root := realTempDir(t)
+	writeTestFile(t, filepath.Join(root, "f"), "x")
+	require.NoError(t, os.Symlink(filepath.Join(root, "f"), filepath.Join(root, "link")))
+
+	err := openErr(unix.AT_FDCWD, filepath.Join(root, "link"), "link", unix.EMLINK, false)
+	assert.ErrorIs(t, err, ErrSymlinkInPath)
+	err = openErr(unix.AT_FDCWD, filepath.Join(root, "f"), "f", unix.EMLINK, false)
+	assert.NotErrorIs(t, err, ErrSymlinkInPath)
+	assert.ErrorIs(t, err, unix.EMLINK)
 }
