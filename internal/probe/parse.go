@@ -17,6 +17,7 @@ const (
 	lineShells = "shells"
 	lineHomeRC = "homerc"
 	linePath   = "path"
+	lineEnv    = "env"
 	lineCheck  = "check"
 	factsLines = 4
 )
@@ -25,12 +26,13 @@ const (
 // check was stopped at the time limit, by timeout(1) or the script's
 // watchdog.
 type rawCheck struct {
-	Key     string   `json:"key"`
-	Exit    int      `json:"exit"`
-	Path    string   `json:"path"`
-	Paths   []string `json:"paths"`
-	Out     string   `json:"out"`
-	Timeout bool     `json:"timeout"`
+	Key     string    `json:"key"`
+	Exit    int       `json:"exit"`
+	Path    string    `json:"path"`
+	Paths   []string  `json:"paths"`
+	Bins    []BinHits `json:"bins"`
+	Out     string    `json:"out"`
+	Timeout bool      `json:"timeout"`
 }
 
 // errNoProbeLines is the Parse error for an output without any probe line.
@@ -52,9 +54,13 @@ type pathLine struct {
 	Dirs []string `json:"dirs"`
 }
 
+type envLine struct {
+	Vars []EnvVar `json:"vars"`
+}
+
 // Parse reads the output of a probe script. facts is nil when the output has
 // no facts lines (a partial probe); when one facts line is present, the os,
-// pkgmgr, user and shells lines must be. The homerc and path lines are optional. Lines that do not start with "{" are ignored, unknown line types
+// pkgmgr, user and shells lines must be. The homerc, path and env lines are optional. Lines that do not start with "{" are ignored, unknown line types
 // too. A malformed JSON line, a duplicate line or an output without any probe
 // line is an error.
 func Parse(stdout []byte) (*Facts, []rawCheck, error) {
@@ -103,6 +109,10 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 			if len(facts.Path) == 0 {
 				facts.Path = nil
 			}
+		case lineEnv:
+			var el envLine
+			err = json.Unmarshal(line, &el)
+			facts.Env = envVars(el.Vars)
 		case lineCheck:
 			var c rawCheck
 			if c, err = parseCheck(line, keys); err == nil {
@@ -125,7 +135,7 @@ func Parse(stdout []byte) (*Facts, []rawCheck, error) {
 		return nil, nil, errNoProbeLines
 	}
 	required := len(seen)
-	for _, optional := range []string{lineHomeRC, linePath} {
+	for _, optional := range []string{lineHomeRC, linePath, lineEnv} {
 		if seen[optional] {
 			required--
 		}
@@ -164,7 +174,38 @@ func parseCheck(line []byte, keys map[string]bool) (rawCheck, error) {
 	if len(c.Paths) == 0 {
 		c.Paths = nil
 	}
+	bins := c.Bins[:0]
+	for _, b := range c.Bins {
+		if b.Name == "" {
+			continue
+		}
+		if len(b.Paths) == 0 {
+			b.Paths = nil
+		}
+		if len(b.Real) != len(b.Paths) || len(b.Real) == 0 {
+			b.Real = nil
+		}
+		bins = append(bins, b)
+	}
+	c.Bins = bins
+	if len(c.Bins) == 0 {
+		c.Bins = nil
+	}
 	return c, nil
+}
+
+// envVars drops entries without a name or value and repeated names, keeping
+// the first, and sorts the rest by name.
+func envVars(in []EnvVar) []EnvVar {
+	var out []EnvVar
+	for _, v := range in {
+		if v.Name == "" || v.Value == "" || slices.ContainsFunc(out, func(o EnvVar) bool { return o.Name == v.Name }) {
+			continue
+		}
+		out = append(out, v)
+	}
+	slices.SortFunc(out, func(a, b EnvVar) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 // dedupe drops empty and repeated entries and keeps the first occurrence.

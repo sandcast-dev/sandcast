@@ -468,7 +468,7 @@ func TestRequestFor(t *testing.T) {
 	}
 	r := RequestFor(c, "")
 	assert.Equal(t, Request{
-		Key: "python", Command: "python3 --version", Bin: "python3", Selector: "3.12",
+		Key: "python", Command: "python3 --version", Bins: []string{"python3", "pip3"}, Selector: "3.12",
 		StdoutContains: "Python", Hash: c.CheckHash("3.12"),
 	}, r)
 	pinned := RequestFor(c, "3.13")

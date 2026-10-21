@@ -65,6 +65,36 @@ func TestParse(t *testing.T) {
 			facts: func() *Facts { f := *debian; f.Path = []string{"/opt/x/bin", "/usr/bin"}; return &f }(),
 		},
 		{
+			name: "env facts",
+			out: factsOutput + `{"type":"env","vars":[{"name":"VIRTUAL_ENV","value":"/sandbox/.venv"},` +
+				`{"name":"UV_PYTHON_INSTALL_DIR","value":"/sandbox/.uv/python"},{"name":"VIRTUAL_ENV","value":"/other"},` +
+				`{"name":"","value":"/x"},{"name":"EMPTY","value":""}]}` + "\n",
+			facts: func() *Facts {
+				f := *debian
+				f.Env = []EnvVar{{Name: "UV_PYTHON_INSTALL_DIR", Value: "/sandbox/.uv/python"}, {Name: "VIRTUAL_ENV", Value: "/sandbox/.venv"}}
+				return &f
+			}(),
+		},
+		{
+			name:  "empty env facts",
+			out:   factsOutput + `{"type":"env","vars":[]}` + "\n",
+			facts: debian,
+		},
+		{
+			name: "binary hits",
+			out: `{"type":"check","key":"python","exit":0,"path":"/usr/local/bin/python","paths":["/usr/local/bin/python"],` +
+				`"bins":[{"name":"python","paths":["/usr/local/bin/python"],"real":["/sandbox/.uv/python/bin/python3.14"]},` +
+				`{"name":"pip","paths":["/usr/bin/pip","/opt/pip"],"real":["/usr/bin/pip"]},{"name":"uv","paths":[],"real":[]},{"name":"","paths":["/x"]}],"out":""}`,
+			checks: []rawCheck{{
+				Key: "python", Path: "/usr/local/bin/python", Paths: []string{"/usr/local/bin/python"},
+				Bins: []BinHits{
+					{Name: "python", Paths: []string{"/usr/local/bin/python"}, Real: []string{"/sandbox/.uv/python/bin/python3.14"}},
+					{Name: "pip", Paths: []string{"/usr/bin/pip", "/opt/pip"}},
+					{Name: "uv"},
+				},
+			}},
+		},
+		{
 			name: "noise and unknown types are ignored",
 			out: "WARNING: platform mismatch\r\n\n" + factsOutput +
 				`{"type":"future","x":1}` + "\n" + `{"type":"check","key":"go","exit":0,"path":"","out":""}` + "\r\n",

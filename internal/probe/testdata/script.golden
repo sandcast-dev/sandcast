@@ -40,6 +40,8 @@ if command -v setsid >/dev/null 2>&1 && command -v sleep >/dev/null 2>&1; then
 fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
+_rl=
+if [ "$(readlink -f / 2>/dev/null)" = / ]; then _rl=1; fi
 _run() {
 	if [ -n "$_sg" ]; then
 		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
@@ -73,7 +75,7 @@ _run() {
 	fi
 }
 _paths() {
-	_ps= _seen=$_nl
+	_ps= _rs= _seen=$_nl
 	_cifs=$IFS
 	IFS=:
 	set -f
@@ -83,17 +85,32 @@ _paths() {
 		if [ -f "$_d/$1" ] && [ -x "$_d/$1" ]; then
 			_seen=$_seen$_d/$1$_nl
 			_ps=$_ps\"$(_jsafe "$_d/$1")\",
+			_r=
+			if [ -n "$_rl" ]; then _r=$(readlink -f "$_d/$1" 2>/dev/null) || _r=; fi
+			_rs=$_rs\"$(_jsafe "$_r")\",
 		fi
 	done
 	set +f
 	IFS=$_cifs
 	_ps=${_ps%,}
+	_rs=${_rs%,}
 }
 _check() {
-	_p= _ps=
+	_p= _ps= _p1= _bs=
 	if [ -n "$2" ]; then
-		_p=$(command -v "$2" 2>/dev/null) || _p=
-		_paths "$2"
+		_p=$(command -v "${2%% *}" 2>/dev/null) || _p=
+		_bifs=$IFS
+		IFS=' '
+		set -f
+		for _b in $2; do
+			_paths "$_b"
+			[ -n "$_bs" ] || _p1=$_ps
+			_bs="$_bs{\"name\":\"$(_jsafe "$_b")\",\"paths\":[$_ps],\"real\":[$_rs]},"
+		done
+		set +f
+		IFS=$_bifs
+		_ps=$_p1
+		_bs=${_bs%,}
 	fi
 	if [ -n "$_hd" ]; then
 		_o=$( { _st=$( { { _run "$3"; echo "$?" >&3; } | { head -c "$_max"; cat >/dev/null; } >&4; } 3>&1 ); printf '\n%s' "$_st"; } 4>&1 )
@@ -115,8 +132,8 @@ _check() {
 		_t=${_o#$_cut}
 		if [ "$_t" != "$_o" ]; then _o=${_o%"$_t"}; fi
 	fi
-	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"out":"%s","timeout":%s}\n' \
-		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$(_jsafe "$_o")" "$_x"
+	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"bins":[%s],"out":"%s","timeout":%s}\n' \
+		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$_bs" "$(_jsafe "$_o")" "$_x"
 }
 _os_id= _os_id_like= _os_name= _os_version=
 _osr=$_sysroot/etc/os-release
@@ -215,5 +232,32 @@ done
 set +f
 IFS=$_cifs
 printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
+_evars=
+while IFS= read -r _line; do
+	case $_line in
+	'export '*) _n=${_line#export } ;;
+	'declare -x '*) _n=${_line#declare -x } ;;
+	*) continue ;;
+	esac
+	_n=${_n%%=*}
+	case $_n in '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+	case $_n in PATH | PWD | OLDPWD | _) continue ;; esac
+	eval "_v=\${$_n-}"
+	case $_v in '' | *"$_nl"*) continue ;; esac
+	_abs=1
+	_cifs=$IFS
+	IFS=:
+	set -f
+	for _d in $_v; do
+		case $_d in '' | /*) ;; *) _abs= ;; esac
+	done
+	set +f
+	IFS=$_cifs
+	[ -n "$_abs" ] || continue
+	_evars="$_evars{\"name\":\"$_n\",\"value\":\"$(_jsafe "$_v")\"},"
+done <<_SANDCAST_ENV_
+$(export -p)
+_SANDCAST_ENV_
+printf '{"type":"env","vars":[%s]}\n' "${_evars%,}"
 _check 'go' 'go' 'go version'
 exit 0

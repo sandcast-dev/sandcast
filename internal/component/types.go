@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Tier is the source of a component definition (FR-016).
@@ -197,11 +198,12 @@ func (c *Component) VersionSelector(override string) string {
 	return c.Check.Expect.Version
 }
 
-// CheckHash is the sha256 of the check command and its expected outcome; it
-// keys per-component probe cache entries (FR-012).
+// CheckHash is the sha256 of the check command, its expected outcome and the
+// binaries whose PATH hits the probe records; it keys per-component probe
+// cache entries (FR-012).
 func (c *Component) CheckHash(selector string) string {
 	h := sha256.New()
-	for _, s := range []string{c.Check.Command, strconv.Itoa(c.Check.Expect.Exit), selector, c.Check.Expect.StdoutContains} {
+	for _, s := range []string{c.Check.Command, strconv.Itoa(c.Check.Expect.Exit), selector, c.Check.Expect.StdoutContains, strings.Join(c.Bins(), " ")} {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
 	}
