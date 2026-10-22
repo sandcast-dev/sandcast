@@ -11,20 +11,21 @@ import (
 // with a ".." segment leaves root; a name that merely starts with two dots
 // ("..x") does not.
 func Within(root, p string) bool {
-	_, ok := relWithin(root, p)
+	_, ok := RelWithin(root, p)
 	return ok
 }
 
 // StrictlyWithin reports whether p is below root and not root itself.
 func StrictlyWithin(root, p string) bool {
-	rel, ok := relWithin(root, p)
+	rel, ok := RelWithin(root, p)
 	return ok && rel != "."
 }
 
-// relWithin returns p relative to root and whether p is root or below it.
-// Every containment check in sandcast goes through it or escapesRoot, so a
-// fix here (for example to separator handling) reaches all of them.
-func relWithin(root, p string) (string, bool) {
+// RelWithin returns p relative to root and whether p is root or below it,
+// with the same lexical check as Within. Every containment check in sandcast
+// goes through it or escapesRoot, so a fix here (for example to separator
+// handling) reaches all of them.
+func RelWithin(root, p string) (string, bool) {
 	rel, err := filepath.Rel(root, p)
 	if err != nil || escapesRoot(rel) {
 		return "", false

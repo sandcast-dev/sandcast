@@ -8,5 +8,6 @@ import "golang.org/x/sys/unix"
 // known, so the directories on the way need read permission as well.
 const searchDir = unix.O_RDONLY | unix.O_DIRECTORY
 
-// searchOnly reports that searchDir needs no read permission.
+// searchOnly is true where searchDir needs execute permission only on the
+// directories it opens. Here they need read permission as well.
 const searchOnly = false

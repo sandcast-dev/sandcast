@@ -10,5 +10,6 @@ const oExec = 0x40000000
 // read permission on the directory.
 const searchDir = oExec | unix.O_DIRECTORY
 
-// searchOnly reports that searchDir needs no read permission.
+// searchOnly is true where searchDir needs execute permission only on the
+// directories it opens.
 const searchOnly = true

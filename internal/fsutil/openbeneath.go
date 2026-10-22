@@ -15,11 +15,12 @@ import (
 var ErrSymlinkInPath = errors.New("a path component is a symlink or not a directory")
 
 // ErrNotRegular reports that the leaf OpenBeneath was asked for is not a
-// regular file. The type is checked before the open, so a device, socket or
-// FIFO found there is not opened; one swapped in after the check is opened
-// with O_NONBLOCK and O_NOCTTY, and callers check the type of the returned
-// file with Stat.
+// regular file.
 var ErrNotRegular = errors.New("not a regular file")
+
+// ErrLeafChanged reports that the leaf OpenBeneath opened is not the file it
+// checked a moment earlier.
+var ErrLeafChanged = errors.New("the file changed between its check and its open")
 
 // OpenBeneath opens the regular file rel below root for reading without
 // following any symlink on the way: root and every directory of rel are
@@ -29,11 +30,16 @@ var ErrNotRegular = errors.New("not a regular file")
 // symlinks (filepath.EvalSymlinks). On linux and darwin the directories are
 // opened for search only (searchDir), so like a plain open they need execute
 // permission, not read permission; elsewhere they need read permission too
-// (searchOnly is false). The leaf is checked with fstatat before it is opened and
-// is opened with O_NONBLOCK and O_NOCTTY, so a leaf swapped for a FIFO or a
-// device between the two cannot block the caller or become its terminal;
-// callers check the type again with Stat on the returned file. rel must be
-// relative and must not leave root.
+// (searchOnly is false). The leaf is checked with fstatat before it is opened,
+// so a device, socket or FIFO found there is refused with ErrNotRegular
+// without being opened. The open itself uses O_NONBLOCK and O_NOCTTY, so a
+// leaf swapped for a FIFO or a device between the check and the open cannot
+// block the caller or become its terminal. The open file must then be a
+// regular file with the checked device and inode, so a rename, a hard link or
+// a change of type in that window fails with ErrLeafChanged. A regular file
+// removed and recreated there can get the freed inode number back (ext4) and
+// is not detected; callers that care check the content they read. rel must
+// be relative and must not leave root.
 func OpenBeneath(root, rel string) (*os.File, error) {
 	rel = filepath.Clean(rel)
 	if filepath.IsAbs(rel) || escapesRoot(rel) {
@@ -89,7 +95,17 @@ func OpenBeneath(root, rel string) (*os.File, error) {
 	if err != nil {
 		return nil, openErr(dirfd, leaf, name, err, false)
 	}
-	return os.NewFile(uintptr(fd), name), nil
+	f := os.NewFile(uintptr(fd), name)
+	var opened unix.Stat_t
+	if err := ignoringEINTR(func() error { return unix.Fstat(fd, &opened) }); err != nil {
+		_ = f.Close()
+		return nil, &os.PathError{Op: "stat", Path: name, Err: err}
+	}
+	if opened.Mode&unix.S_IFMT != unix.S_IFREG || opened.Dev != st.Dev || opened.Ino != st.Ino {
+		_ = f.Close()
+		return nil, fmt.Errorf("%s: %w", name, ErrLeafChanged)
+	}
+	return f, nil
 }
 
 // leafCheckedHook runs between the type check and the open of the leaf in
@@ -116,7 +132,8 @@ func openErr(dirfd int, part, name string, err error, dir bool) error {
 		return fmt.Errorf("%s: %w", name, ErrSymlinkInPath)
 	}
 	var st unix.Stat_t
-	if unix.Fstatat(dirfd, part, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
+	statErr := ignoringEINTR(func() error { return unix.Fstatat(dirfd, part, &st, unix.AT_SYMLINK_NOFOLLOW) })
+	if statErr == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
 		return fmt.Errorf("%s: %w", name, ErrSymlinkInPath)
 	}
 	return &os.PathError{Op: "open", Path: name, Err: err}

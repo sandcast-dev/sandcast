@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -321,13 +322,44 @@ func TestDotfileInputsSwappedAfterResolveSkipped(t *testing.T) {
 			} else {
 				writeFile(t, filepath.Join(root, tc.entry), "ok\n")
 			}
-			swapAfterResolve(t, func(real string) { tc.swap(t, real, home, outside) })
+			var resolved string
+			swapAfterResolve(t, func(real string) {
+				resolved = real
+				tc.swap(t, real, home, outside)
+			})
 
 			out, notices := dotfileInputs(dotfileEnv(home, root), mdotfiles(tc.entry))
 			assert.Empty(t, out)
 			require.Len(t, notices, 1)
 			assert.Contains(t, notices[0], "changed while it was read")
 			assert.NotContains(t, notices[0], secret)
+			// The notice names the component that changed: the leaf, or the
+			// parent directory, both of which start with the resolved parent.
+			assert.Contains(t, notices[0], filepath.Dir(resolved))
+		})
+	}
+}
+
+// TestDotfileOpenErr checks the notice for each OpenBeneath failure, and
+// that a changed component keeps its path and sentinel in the notice.
+func TestDotfileOpenErr(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		want     string
+		sentinel error
+	}{
+		{"symlink in path", fmt.Errorf("/r/x: %w", fsutil.ErrSymlinkInPath), "changed while it was read (/r/x: ", fsutil.ErrSymlinkInPath},
+		{"leaf changed", fmt.Errorf("/r/x: %w", fsutil.ErrLeafChanged), "changed while it was read (/r/x: ", fsutil.ErrLeafChanged},
+		{"not regular", fmt.Errorf("/r/x: %w", fsutil.ErrNotRegular), "is not a regular file", nil},
+		{"other", &os.PathError{Op: "open", Path: "/r/x", Err: os.ErrPermission}, "could not be read (open /r/x: ", os.ErrPermission},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dotfileOpenErr(tc.err)
+			assert.True(t, strings.HasPrefix(err.Error(), tc.want), err.Error())
+			if tc.sentinel != nil {
+				assert.ErrorIs(t, err, tc.sentinel)
+			}
 		})
 	}
 }

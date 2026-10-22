@@ -6,5 +6,6 @@ import "golang.org/x/sys/unix"
 // permission on the directory, and fstatat and openat accept the descriptor.
 const searchDir = unix.O_PATH | unix.O_DIRECTORY
 
-// searchOnly reports that searchDir needs no read permission.
+// searchOnly is true where searchDir needs execute permission only on the
+// directories it opens.
 const searchOnly = true

@@ -144,15 +144,19 @@ func swapLeafAfterCheck(t *testing.T, swap func(name string)) {
 	t.Cleanup(func() { leafCheckedHook = orig })
 }
 
-// TestOpenBeneathLeafSwappedAfterCheck checks the flags of the leaf open: a
-// leaf swapped for a symlink after the type check is refused, and one
-// swapped for a FIFO opens without blocking and Stat reports the FIFO.
+// TestOpenBeneathLeafSwappedAfterCheck checks the leaf open after the type
+// check: a leaf swapped for a symlink is refused, one swapped for another
+// regular file (a rename or a hard link) is refused as changed, and one
+// swapped for a FIFO is refused as changed without blocking the open. The
+// FIFO is refused by its type, so the case holds also where the FIFO gets
+// the inode number the removed leaf freed (ext4).
 func TestOpenBeneathLeafSwappedAfterCheck(t *testing.T) {
 	root := realTempDir(t)
 	outside := realTempDir(t)
 	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret"), []byte("s"), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "link"), []byte("x"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "fifo"), []byte("x"), 0o644))
+	for _, n := range []string{"link", "renamed", "linked", "fifo"} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, n), []byte("x"), 0o644))
+	}
 
 	swapLeafAfterCheck(t, func(name string) {
 		require.NoError(t, os.Remove(name))
@@ -160,6 +164,22 @@ func TestOpenBeneathLeafSwappedAfterCheck(t *testing.T) {
 	})
 	_, err := OpenBeneath(root, "link")
 	assert.ErrorIs(t, err, ErrSymlinkInPath)
+
+	// Another regular file renamed over the leaf: same type, other inode.
+	swapLeafAfterCheck(t, func(name string) {
+		require.NoError(t, os.Rename(filepath.Join(outside, "secret"), name))
+	})
+	_, err = OpenBeneath(root, "renamed")
+	assert.ErrorIs(t, err, ErrLeafChanged)
+
+	// A hard link to a file elsewhere in the root put in place of the leaf.
+	require.NoError(t, os.WriteFile(filepath.Join(root, "key"), []byte("k"), 0o600))
+	swapLeafAfterCheck(t, func(name string) {
+		require.NoError(t, os.Remove(name))
+		require.NoError(t, os.Link(filepath.Join(root, "key"), name))
+	})
+	_, err = OpenBeneath(root, "linked")
+	assert.ErrorIs(t, err, ErrLeafChanged)
 
 	// The hook runs on the goroutine below, so it reports with assert.
 	swapLeafAfterCheck(t, func(name string) {
@@ -170,14 +190,10 @@ func TestOpenBeneathLeafSwappedAfterCheck(t *testing.T) {
 	go func() {
 		defer close(done)
 		f, err := OpenBeneath(root, "fifo")
-		if !assert.NoError(t, err) {
-			return
+		if f != nil {
+			_ = f.Close()
 		}
-		defer func() { _ = f.Close() }()
-		fi, err := f.Stat()
-		if assert.NoError(t, err) {
-			assert.NotZero(t, fi.Mode()&os.ModeNamedPipe)
-		}
+		assert.ErrorIs(t, err, ErrLeafChanged)
 	}()
 	select {
 	case <-done:
