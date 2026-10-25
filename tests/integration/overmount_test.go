@@ -121,6 +121,11 @@ func workspaceWithPlantedRC(t *testing.T, engine, image string) string {
 	for _, name := range []string{"git", "groups", "id"} {
 		require.NoError(t, os.WriteFile(filepath.Join(ws, ".venv", "bin", name), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-"+name+"\nexec /usr/bin/"+name+" \"$@\"\n"), 0o755))
 	}
+	// The base image's VIRTUAL_ENV names /sandbox/.venv (#18): a planted
+	// interpreter there would run for every uv call that reads the variable.
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".venv", "bin", "python"), []byte("#!/bin/sh\ntouch /tmp/pwned-planted-python\nexec /usr/bin/python3 \"$@\"\n"), 0o755))
+	require.NoError(t, os.Symlink("python", filepath.Join(ws, ".venv", "bin", "python3")))
+	require.NoError(t, os.WriteFile(filepath.Join(ws, ".venv", "pyvenv.cfg"), []byte("home = /usr/bin\nversion = 3.12\n"), 0o644))
 	return ws
 }
 
@@ -150,6 +155,15 @@ $E /bin/bash -c '. /sandbox/.bashrc'
 report control
 /sandbox/.venv/bin/groups >/dev/null; /sandbox/.venv/bin/id >/dev/null; /sandbox/.venv/bin/git --version >/dev/null
 report control-venv
+echo "OUT image-venv VENV=[${VIRTUAL_ENV-unset}] UVPY=[${UV_PYTHON_INSTALL_DIR-unset}]"
+if command -v uv >/dev/null; then
+  (cd /tmp && VIRTUAL_ENV=/sandbox/.venv uv python find >/dev/null 2>&1)
+  report control-uv
+  (cd /tmp && uv python find >/dev/null 2>&1; uv run --no-project python -c 1 >/dev/null 2>&1)
+  report agent-uv
+  /bin/bash -lc 'cd /tmp && uv python find >/dev/null 2>&1'
+  report agent-lc-uv
+fi
 printf '. /harness/child-report.sh AGENT\nexit\n' | script -qec "/bin/bash -l" /dev/null 2>&1 | tr -d '\r' | sed 's/^/OUT agent-pty /'
 report agent-pty
 /bin/bash -lc '. /harness/child-report.sh AGENT' | sed 's/^/OUT agent-lc /'
@@ -206,7 +220,7 @@ var ansiEscapeRe = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-z]")
 // label: it prints the shell's PATH, where git and the workspace mytool
 // resolve, the mise data directory of the session environment and the
 // once-per-session marker of the PATH strip.
-const childReportScript = `echo "$1 PATH=[$PATH] git=[$(command -v git)] mytool=[$(command -v mytool)] MISE=[${MISE_DATA_DIR-}] MARK=[${SANDCAST_PATH_STRIPPED-unset}]"
+const childReportScript = `echo "$1 PATH=[$PATH] git=[$(command -v git)] mytool=[$(command -v mytool)] MISE=[${MISE_DATA_DIR-}] MARK=[${SANDCAST_PATH_STRIPPED-unset}] VENV=[${VIRTUAL_ENV-unset}] UVPY=[${UV_PYTHON_INSTALL_DIR-unset}]"
 `
 
 // spawnShellScript is what tmux or an editor's terminal does inside a
@@ -263,6 +277,16 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	if zdotdir == "" {
 		cases = append(cases, "launcher-c")
 	}
+	// #18: the base image's VIRTUAL_ENV and UV_PYTHON_INSTALL_DIR point
+	// under the overmount home. The image ENV that the default agent
+	// inherits sets them empty, so uv, which uses a VIRTUAL_ENV without
+	// activation, does not run the planted interpreter; the positive control
+	// sets the variable and reaches it. Every shell unsets both. The
+	// community base image ships uv, so the uv cases must run.
+	has("image-venv", "VENV=[] UVPY=[]")
+	require.Contains(t, results, "control-uv", "the community base image has uv on its PATH")
+	assert.Contains(t, results["control-uv"], "pwned-planted-python", "positive control: uv runs the planted interpreter when VIRTUAL_ENV names it")
+	cases = append(cases, "agent-uv", "agent-lc-uv")
 	for _, c := range cases {
 		require.Contains(t, results, c, "case %s ran", c)
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)
@@ -280,7 +304,11 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	// The exec forms read no rc and have the session PATH exactly; the pty
 	// forms end in the curated shell, whose rc prepends $HOME/bin.
 	for _, c := range []string{"agent-lc", "dirty-lc"} {
-		has(c, " PATH=[/opt/mise/shims:/usr/local/bin:/usr/bin:/bin] git=[/usr/bin/git] mytool=[] MISE=[/opt/mise] MARK=[1]")
+		has(c, " PATH=[/opt/mise/shims:/usr/local/bin:/usr/bin:/bin] git=[/usr/bin/git] mytool=[] MISE=[/opt/mise] MARK=[1] VENV=[unset] UVPY=[unset]")
+	}
+	for _, c := range []string{"agent-pty", "dirty-pty", "nested-path"} {
+		has(c, "VENV=[unset] UVPY=[unset]")
+		assert.NotContains(t, strings.Join(lines[c], "\n"), "VENV=[/sandbox", "case %s", c)
 	}
 	for _, c := range []string{"agent-pty", "dirty-pty"} {
 		has(c, "git=[/usr/bin/git] mytool=[/sandbox/bin/mytool] MISE=[/opt/mise] MARK=[1]")

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,7 +97,7 @@ func TestJsafe(t *testing.T) {
 }
 
 func TestScriptSections(t *testing.T) {
-	reqs := []Request{{Key: "go", Bin: "go", Command: "go version"}, {Key: "node", Bin: "node", Command: "node --version"}}
+	reqs := []Request{{Key: "go", Bins: []string{"go"}, Command: "go version"}, {Key: "node", Bins: []string{"node"}, Command: "node --version"}}
 	tests := []struct {
 		name    string
 		facts   bool
@@ -133,14 +134,14 @@ func TestScriptRunsChecks(t *testing.T) {
 	long := strings.Repeat("abcdefgh", 600)
 	reqs := []Request{
 		{Key: "exits-first", Command: "echo bye; exit 5"},
-		{Key: "plain", Bin: "sh", Command: "echo hello 1.2.3"},
+		{Key: "plain", Bins: []string{"sh"}, Command: "echo hello 1.2.3"},
 		{Key: "quotes", Command: `printf '%s\n' "it's \"quoted\""`},
 		{Key: "subst", Command: `echo "$(echo nested)" | tr a-z A-Z`},
 		{Key: "stderr", Command: "echo failing >&2; exit 3"},
 		{Key: "multiline", Command: `printf 'line1\nline2\n'`},
 		{Key: "control", Command: `printf 'a\tb\001c\\d'`},
 		{Key: "long", Command: `i=0; while [ $i -lt 600 ]; do printf abcdefgh; i=$((i+1)); done`},
-		{Key: "no-bin", Bin: "sandcast-no-such-binary", Command: "true"},
+		{Key: "no-bin", Bins: []string{"sandcast-no-such-binary"}, Command: "true"},
 		{Key: "stdin", Command: "cat"},
 		{Key: "isolated", Command: `echo "[$_max][$_sysroot][$1]"`},
 	}
@@ -180,7 +181,7 @@ func TestScriptRunsChecks(t *testing.T) {
 }
 
 func TestScriptFactsOnHost(t *testing.T) {
-	script := Script([]Request{{Key: "sh", Bin: "sh", Command: "echo ok"}}, ScriptOptions{Facts: true})
+	script := Script([]Request{{Key: "sh", Bins: []string{"sh"}, Command: "echo ok"}}, ScriptOptions{Facts: true})
 	cur, err := user.Current()
 	require.NoError(t, err)
 	group, err := user.LookupGroupId(strconv.Itoa(os.Getgid()))
@@ -246,7 +247,7 @@ func writeFile(t *testing.T, path, content string) {
 // TestScriptGolden pins the rendered probe script, so changes to the script
 // are reviewed together with a FormatVersion bump.
 func TestScriptGolden(t *testing.T) {
-	s := Script([]Request{{Key: "go", Bin: "go", Command: "go version"}}, ScriptOptions{Facts: true})
+	s := Script([]Request{{Key: "go", Bins: []string{"go"}, Command: "go version"}}, ScriptOptions{Facts: true})
 	testutil.Golden(t, "testdata/script.golden", []byte(s))
 }
 
@@ -269,8 +270,8 @@ func TestScriptRecordsAllPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(noexec, "sandcast-tool"), []byte("x"), 0o644))
 	path := strings.Join([]string{first, empty, noexec, "relative", second, first, "/usr/bin", "/bin"}, ":")
 	script := Script([]Request{
-		{Key: "tool", Bin: "sandcast-tool", Command: "sandcast-tool"},
-		{Key: "none", Bin: "sandcast-no-such-binary", Command: "true"},
+		{Key: "tool", Bins: []string{"sandcast-tool"}, Command: "sandcast-tool"},
+		{Key: "none", Bins: []string{"sandcast-no-such-binary"}, Command: "true"},
 	}, ScriptOptions{})
 	for name, sh := range shells(t) {
 		t.Run(name, func(t *testing.T) {
@@ -281,6 +282,94 @@ func TestScriptRecordsAllPaths(t *testing.T) {
 			assert.Equal(t, []string{filepath.Join(first, "sandcast-tool"), filepath.Join(second, "sandcast-tool")}, checks[0].Paths)
 			assert.Nil(t, checks[1].Paths)
 		})
+	}
+}
+
+// TestScriptRecordsEveryBinary checks that each requested binary gets its own
+// hits with their resolved targets, that a symlink into another directory
+// resolves to its target, and that path and paths stay those of the first
+// binary (T060).
+func TestScriptRecordsEveryBinary(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	bin := filepath.Join(root, "usr", "bin")
+	hidden := filepath.Join(root, "sandbox", ".local", "bin")
+	for _, d := range []string{bin, hidden} {
+		require.NoError(t, os.MkdirAll(d, 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "sandcast-main"), []byte("#!/bin/sh\necho 1.2.3\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hidden, "sandcast-helper"), []byte("#!/bin/sh\n"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(hidden, "sandcast-helper"), filepath.Join(bin, "sandcast-helper")))
+	script := Script([]Request{
+		{Key: "tool", Bins: []string{"sandcast-main", "sandcast-helper", "sandcast-no-such-binary"}, Command: "sandcast-main"},
+	}, ScriptOptions{})
+	for name, sh := range shells(t) {
+		t.Run(name, func(t *testing.T) {
+			_, checks, err := Parse([]byte(runShell(t, sh, script, "PATH="+bin+":/usr/bin:/bin")))
+			require.NoError(t, err)
+			require.Len(t, checks, 1)
+			c := checks[0]
+			assert.Equal(t, filepath.Join(bin, "sandcast-main"), c.Path)
+			assert.Equal(t, []string{filepath.Join(bin, "sandcast-main")}, c.Paths)
+			require.Len(t, c.Bins, 3)
+			assert.Equal(t, "sandcast-main", c.Bins[0].Name)
+			assert.Equal(t, []string{filepath.Join(bin, "sandcast-main")}, c.Bins[0].Paths)
+			assert.Equal(t, BinHits{
+				Name:  "sandcast-helper",
+				Paths: []string{filepath.Join(bin, "sandcast-helper")},
+				Real:  []string{filepath.Join(hidden, "sandcast-helper")},
+			}, c.Bins[1])
+			assert.Equal(t, BinHits{Name: "sandcast-no-such-binary"}, c.Bins[2])
+		})
+	}
+}
+
+// TestScriptEnvFact checks the env fact: exported variables whose value is
+// an absolute path or a colon list of absolute paths, without PATH, PWD,
+// relative values, multi-line values and unexported variables, and the
+// names it records whatever their value (#18).
+func TestScriptEnvFact(t *testing.T) {
+	script := "SANDCAST_LOCAL=/not/exported\n" + Script(nil, ScriptOptions{Facts: true})
+	env := []string{
+		"SANDCAST_VENV=/sandbox/.venv",
+		"SANDCAST_LIST=/sandbox/lib:/usr/lib::",
+		"SANDCAST_REL=relative/path",
+		"SANDCAST_MIXED=/usr/lib:relative",
+		"SANDCAST_URL=https://example.com/x",
+		"SANDCAST_MULTI=/a\nexport SANDCAST_FAKE=/b",
+		"SANDCAST_QUOTE=/with \"quote\" and 'apostrophe'",
+		"SANDCAST_EMPTY=",
+		"PYTHONPATH=src",
+		"PERL5LIB=lib",
+		"BASH_ENV=.bashenv",
+		"SANDCAST_DSLASH=//sandbox/x",
+	}
+	all := shells(t)
+	// bash outside POSIX mode prints export -p as declare -x NAME=...
+	if p, err := exec.LookPath("bash"); err == nil {
+		all["bash (declare -x)"] = []string{p}
+	}
+	for name, sh := range all {
+		facts, _, err := Parse([]byte(runShell(t, sh, script, env...)))
+		require.NoError(t, err, name)
+		require.NotNil(t, facts, name)
+		got := map[string]string{}
+		for _, v := range facts.Env {
+			got[v.Name] = v.Value
+		}
+		assert.Equal(t, "/sandbox/.venv", got["SANDCAST_VENV"], name)
+		assert.Equal(t, "/sandbox/lib:/usr/lib::", got["SANDCAST_LIST"], name)
+		assert.Equal(t, "/usr/lib:relative", got["SANDCAST_MIXED"], "%s: a relative entry next to an absolute one is recorded", name)
+		assert.Equal(t, `/with "quote" and 'apostrophe'`, got["SANDCAST_QUOTE"], name)
+		assert.Equal(t, "src", got["PYTHONPATH"], "%s: a loader search path is recorded whatever its value", name)
+		assert.Equal(t, "lib", got["PERL5LIB"], "%s: every name of LoaderPathEnv is recorded", name)
+		assert.Equal(t, ".bashenv", got["BASH_ENV"], "%s: a startup variable is recorded whatever its value", name)
+		assert.Equal(t, "//sandbox/x", got["SANDCAST_DSLASH"], "%s: a leading double slash is an absolute path", name)
+		assert.Equal(t, "https://example.com/x", got["SANDCAST_URL"], "%s: the plan judges a URL as a whole", name)
+		for _, absent := range []string{"PATH", "PWD", "OLDPWD", "SANDCAST_REL", "SANDCAST_MULTI", "SANDCAST_FAKE", "SANDCAST_EMPTY", "SANDCAST_LOCAL"} {
+			assert.NotContains(t, got, absent, "%s: %s", name, absent)
+		}
+		assert.True(t, slices.IsSortedFunc(facts.Env, func(a, b EnvVar) int { return strings.Compare(a.Name, b.Name) }), name)
 	}
 }
 

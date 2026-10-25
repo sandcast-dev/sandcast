@@ -122,6 +122,179 @@ func TestMiseToolUsesCheckVersionWhenInstallerHasNone(t *testing.T) {
 	assert.Equal(t, []mise.Tool{{Key: "go", Tool: "go", Version: "1.25"}}, got, "the installed version is the one the checks expect")
 }
 
+// TestDeltaForEveryBinary covers T060: the workspace rule judges every
+// binary of the component, and each hit by its path and by the file it
+// resolves to.
+func TestDeltaForEveryBinary(t *testing.T) {
+	ws := "/sandbox"
+	bins := func(b ...probe.BinHits) probe.CheckResult {
+		c := probe.CheckResult{Status: probe.StatusPresent, Version: "3.14.5", Bins: b}
+		if len(b) > 0 && len(b[0].Paths) > 0 {
+			c.Path, c.Paths = b[0].Paths[0], b[0].Paths
+		}
+		return c
+	}
+	hit := func(name string, pairs ...string) probe.BinHits {
+		h := probe.BinHits{Name: name}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			h.Paths = append(h.Paths, pairs[i])
+			h.Real = append(h.Real, pairs[i+1])
+		}
+		return h
+	}
+	tests := []struct {
+		name       string
+		check      probe.CheckResult
+		locked     string
+		wantAction string
+		wantStatus string
+		wantIgnore []string
+		wantKinds  []string
+		wantNotice string
+		comp       *component.Component
+	}{
+		{name: "every binary outside skips",
+			check:  bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3.14"), hit("pip3", "/usr/bin/pip3", "/usr/bin/pip3")),
+			locked: "3.14.5", wantAction: ActionSkip, wantStatus: "present"},
+		{name: "a secondary binary only under the workspace installs",
+			check:  bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/sandbox/.local/bin/pip3", "/sandbox/.local/bin/pip3")),
+			locked: "3.14.5", wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/.local/bin/pip3"}},
+		{name: "a symlink into the workspace installs",
+			check:      bins(hit("python", "/usr/local/bin/python", "/sandbox/.uv/python/cpython-3.14.3/bin/python3.14")),
+			locked:     "3.14.5",
+			wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/usr/local/bin/python -> /sandbox/.uv/python/cpython-3.14.3/bin/python3.14"}},
+		{name: "a symlink into the workspace on a secondary binary installs",
+			check:  bins(hit("foo", "/usr/bin/foo", "/usr/bin/foo"), hit("foo-helper", "/usr/local/bin/foo-helper", "/sandbox/.local/bin/foo-helper")),
+			locked: "", wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/usr/local/bin/foo-helper -> /sandbox/.local/bin/foo-helper"}},
+		// The community base image: python3 has a system copy, python only
+		// the hidden ones; the ignored paths are those of python.
+		{name: "one binary hidden, another mixed, installs",
+			check: bins(
+				hit("python3", "/sandbox/.venv/bin/python3", "/sandbox/.uv/python/bin/python3.14", "/usr/local/bin/python3", "/sandbox/.uv/python/bin/python3.14", "/usr/bin/python3", "/usr/bin/python3.12"),
+				hit("python", "/sandbox/.venv/bin/python", "/sandbox/.uv/python/bin/python3.14", "/usr/local/bin/python", "/sandbox/.uv/python/bin/python3.14")),
+			locked: "3.14.5", wantAction: ActionInstall, wantStatus: "missing",
+			wantIgnore: []string{"/sandbox/.venv/bin/python", "/usr/local/bin/python -> /sandbox/.uv/python/bin/python3.14"}},
+		{name: "an unresolved target falls back to the path",
+			check:  bins(hit("python3", "/usr/bin/python3", "")),
+			locked: "3.14.5", wantAction: ActionSkip, wantStatus: "present"},
+		{name: "a workspace path resolving outside is still hidden",
+			check:  bins(hit("python3", "/sandbox/.venv/bin/python3", "/usr/bin/python3.14")),
+			locked: "3.14.5", wantAction: ActionInstall, wantStatus: "missing", wantIgnore: []string{"/sandbox/.venv/bin/python3"}},
+		{name: "a secondary binary without hits changes nothing",
+			check:  bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("idle3")),
+			locked: "3.14.5", wantAction: ActionSkip, wantStatus: "present"},
+		{name: "a secondary first hit under the workspace is mixed",
+			check:  bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/usr/local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3")),
+			locked: "3.14.5", wantAction: ActionShadow, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/pip3 -> /sandbox/.local/bin/pip3"},
+			wantKinds:  []string{NoticeWorkspacePath, NoticeWorkspacePath},
+			wantNotice: "workspace-path: python: first PATH hit of pip3 /usr/local/bin/pip3 -> /sandbox/.local/bin/pip3 resolves under the overmount home /sandbox and still comes first on PATH, so the mounted workspace provides it; /usr/bin/pip3 is the next copy"},
+		{name: "a secondary symlink with another version keeps the lockfile notice",
+			check: func() probe.CheckResult {
+				c := bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/usr/local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3"))
+				c.Version = "3.12.0"
+				return c
+			}(),
+			locked: "3.14.5", wantAction: ActionShadow, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/pip3 -> /sandbox/.local/bin/pip3"},
+			wantKinds: []string{NoticeWorkspacePath, NoticeLockfileShadow}},
+		{name: "a secondary symlink without a lock entry skips",
+			check:      bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/usr/local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3")),
+			wantAction: ActionSkip, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/pip3 -> /sandbox/.local/bin/pip3"},
+			wantKinds: []string{NoticeWorkspacePath}},
+		// The primary binary's symlink makes the version unknown: a locked
+		// mise component is shadowed, without a lock entry it is skipped (a
+		// known limitation), and a package component counts as present.
+		{name: "a primary symlink with a lock entry shadows",
+			check:  bins(hit("python3", "/usr/local/bin/python3", "/sandbox/.uv/python/bin/python3.14", "/usr/bin/python3", "/usr/bin/python3")),
+			locked: "3.14.5", wantAction: ActionShadow, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/python3 -> /sandbox/.uv/python/bin/python3.14"},
+			wantKinds:  []string{NoticeWorkspacePath, NoticeUnknownVersion},
+			wantNotice: "workspace-path: python: first PATH hit /usr/local/bin/python3 -> /sandbox/.uv/python/bin/python3.14 resolves under the overmount home /sandbox and still comes first on PATH, so the mounted workspace provides it; /usr/bin/python3 is the next copy"},
+		{name: "a primary symlink without a lock entry skips",
+			check:      bins(hit("python3", "/usr/local/bin/python3", "/sandbox/.uv/python/bin/python3.14", "/usr/bin/python3", "/usr/bin/python3")),
+			wantAction: ActionSkip, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/python3 -> /sandbox/.uv/python/bin/python3.14"},
+			wantKinds: []string{NoticeWorkspacePath}},
+		{name: "a primary symlink of a package counts as present",
+			check:      bins(hit("node", "/usr/local/bin/node", "/sandbox/.nvm/bin/node", "/usr/bin/node", "/usr/bin/node")),
+			comp:       pkgComp("node", "apt-get"),
+			wantAction: ActionSkip, wantStatus: "present", wantIgnore: []string{"/usr/local/bin/node -> /sandbox/.nvm/bin/node"},
+			wantKinds: []string{NoticeWorkspacePath}},
+		// A first hit in a directory under the home leaves the session PATH,
+		// so the next copy does decide.
+		{name: "a secondary first hit in the workspace keeps the version",
+			check:  bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/sandbox/.local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3")),
+			locked: "3.14.5", wantAction: ActionSkip, wantStatus: "present", wantIgnore: []string{"/sandbox/.local/bin/pip3"},
+			wantKinds:  []string{NoticeWorkspacePath},
+			wantNotice: "workspace-path: python: first PATH hit of pip3 /sandbox/.local/bin/pip3 lies under the overmount home /sandbox and is ignored; /usr/bin/pip3 decides"},
+		// The check runs the primary binary, whose first hit is outside the
+		// home, so a mixed secondary binary keeps the probed version.
+		{name: "a mixed secondary binary keeps an incompatible version",
+			check: func() probe.CheckResult {
+				c := bins(hit("node", "/usr/bin/node", "/usr/bin/node"), hit("npm", "/sandbox/.npm-global/bin/npm", "/sandbox/.npm-global/bin/npm", "/usr/bin/npm", "/usr/bin/npm"))
+				c.Status, c.Version = probe.StatusIncompatible, "18.19.0"
+				return c
+			}(),
+			comp:       miseComp("node"),
+			wantAction: ActionShadow, wantStatus: "incompatible", wantIgnore: []string{"/sandbox/.npm-global/bin/npm"},
+			wantKinds: []string{NoticeWorkspacePath}},
+		{name: "a mixed secondary package binary keeps an incompatible version",
+			check: func() probe.CheckResult {
+				c := bins(hit("node", "/usr/bin/node", "/usr/bin/node"), hit("npm", "/sandbox/.npm-global/bin/npm", "/sandbox/.npm-global/bin/npm", "/usr/bin/npm", "/usr/bin/npm"))
+				c.Status, c.Version = probe.StatusIncompatible, "18.19.0"
+				return c
+			}(),
+			comp:       pkgComp("node", "apt-get"),
+			wantAction: ActionUnresolvable, wantStatus: "incompatible", wantIgnore: []string{"/sandbox/.npm-global/bin/npm"},
+			wantKinds: []string{NoticeWorkspacePath}},
+		{name: "a mixed primary and a mixed secondary binary report each",
+			check: bins(
+				hit("python3", "/sandbox/.venv/bin/python3", "/sandbox/.venv/bin/python3", "/usr/bin/python3", "/usr/bin/python3"),
+				hit("pip3", "/sandbox/.local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3")),
+			locked: "3.14.5", wantAction: ActionShadow, wantStatus: "present",
+			wantIgnore: []string{"/sandbox/.venv/bin/python3", "/sandbox/.local/bin/pip3"},
+			wantKinds:  []string{NoticeWorkspacePath, NoticeWorkspacePath, NoticeUnknownVersion}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comp := tt.comp
+			if comp == nil {
+				comp = miseComp("python")
+			}
+			e, reason := DeltaFor(comp, ">=20", tt.check, DeltaOptions{PackageManager: "apt-get", LockedVersion: tt.locked, Platform: "linux/arm64", OvermountHome: ws})
+			if tt.wantAction == ActionUnresolvable {
+				assert.NotEmpty(t, reason)
+			} else {
+				assert.Empty(t, reason)
+			}
+			assert.Equal(t, tt.wantAction, e.Action)
+			assert.Equal(t, tt.wantStatus, e.Status)
+			assert.Equal(t, tt.wantIgnore, e.IgnoredPaths)
+			var kinds []string
+			for _, n := range e.Notices {
+				kind, _, _ := strings.Cut(n, ": ")
+				kinds = append(kinds, kind)
+			}
+			assert.Equal(t, tt.wantKinds, kinds)
+			if tt.wantNotice != "" {
+				assert.Contains(t, e.Notices, tt.wantNotice)
+			}
+			// A missing tool and a primary binary whose first hit lies in
+			// the home lose the probed version; every other row keeps it.
+			wantVersion := tt.check.Version
+			if p := tt.check.Bins; e.Status == "missing" || len(p) > 0 && len(p[0].Paths) > 0 &&
+				(UnderOvermount(ws, p[0].Paths[0]) || len(p[0].Real) > 0 && UnderOvermount(ws, p[0].Real[0])) {
+				wantVersion = ""
+			}
+			assert.Equal(t, wantVersion, e.InstalledVersion)
+		})
+	}
+	// The shadow for a secondary symlink says why.
+	e, _ := DeltaFor(miseComp("python"), "latest", bins(hit("python3", "/usr/bin/python3", "/usr/bin/python3"), hit("pip3", "/usr/local/bin/pip3", "/sandbox/.local/bin/pip3", "/usr/bin/pip3", "/usr/bin/pip3")), DeltaOptions{LockedVersion: "3.14.5", OvermountHome: ws})
+	assert.Equal(t, "workspace-path: python: installing locked 3.14.5 so that the mise shims come before the symlink into the overmount home", e.Notices[len(e.Notices)-1])
+	// The container target keeps a symlink into the home.
+	e, _ = DeltaFor(miseComp("python"), "latest", bins(hit("python", "/usr/local/bin/python", "/sandbox/.uv/python/bin/python3.14")), DeltaOptions{LockedVersion: "3.14.5"})
+	assert.Equal(t, ActionSkip, e.Action)
+	assert.Empty(t, e.IgnoredPaths)
+}
+
 // TestDeltaForLockAndWorkspace covers every row of the decision table in
 // data-model "Delta entry" plus the rules without a lock entry (FR-001 to
 // FR-003, acceptance scenarios 1 to 5 of User Story 2).

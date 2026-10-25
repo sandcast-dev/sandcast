@@ -37,12 +37,19 @@ type DeltaOptions struct {
 // the action is unresolvable. Decisions that depart from a plain present or
 // missing result carry their notices in DeltaEntry.Notices (FR-002).
 //
-// The workspace rule (FR-003) runs first: when every binary path lies under
-// the overmount home, the component counts as missing; when only the first
-// PATH hit does, the probed version came from the hidden copy and counts as
-// unknown. Then, for a mise component with a lock entry, a present version
-// equal to the locked one means skip, and a different or unknown one means
-// shadow with the locked version (FR-001).
+// The workspace rule (FR-003) runs first, for every binary of the component
+// and with each PATH hit judged by its path and by the file it resolves to:
+// when every hit of one binary lies under the overmount home, the component
+// counts as missing; when only the first PATH hit of a binary does, a notice
+// names the ignored copy, and for the primary binary, which the check runs,
+// the probed version may have come from the hidden copy and counts as
+// unknown. A binary without any hit changes nothing. Then, for a mise
+// component with a lock entry, a present version equal to the locked one
+// means skip, and a different or unknown one means shadow with the locked
+// version (FR-001). A secondary binary whose first PATH hit is a symlink from
+// outside the home into it stays first on the session PATH, so a locked
+// mise component is shadowed then even with an equal version, and its shims
+// come first; without a lock entry it is not (a known limitation).
 func DeltaFor(c *component.Component, selector string, check probe.CheckResult, o DeltaOptions) (DeltaEntry, string) {
 	e := DeltaEntry{
 		ComponentKey:     c.Key,
@@ -57,38 +64,68 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	kind := c.Kind()
 	found := check.Status == probe.StatusPresent || check.Status == probe.StatusIncompatible
 	unknownVersion := check.Version == ""
-	mixed := false
-	// The PATH hits of the probe, or the one resolved path of a result
-	// written before the probe recorded every hit.
-	paths := check.Paths
-	if len(paths) == 0 && check.Path != "" {
-		paths = []string{check.Path}
-	}
-	if found && o.OvermountHome != "" && len(paths) > 0 {
-		var inside, outside []string
-		for _, p := range paths {
-			if UnderOvermount(o.OvermountHome, p) {
-				inside = append(inside, p)
-			} else {
-				outside = append(outside, p)
+	primaryMixed := false
+	// linkFirst is set when a secondary binary's first PATH hit is a
+	// symlink outside the overmount home into it: the session PATH keeps
+	// that directory, so the symlink still wins the lookup and only the
+	// mise shims, put first by a shadow, come before it.
+	linkFirst := false
+	if found && o.OvermountHome != "" {
+		// inside collects the hits under the overmount home; hiddenBins the
+		// hits of the binaries that have no copy outside it; mixedNotices one
+		// notice per binary whose first PATH hit is hidden but has a copy
+		// outside.
+		var inside, hiddenBins, mixedNotices []string
+		for i, b := range binHitsOf(check) {
+			var in, out []string
+			for _, h := range b.hits {
+				if h.under(o.OvermountHome) {
+					in = append(in, h.String(o.OvermountHome))
+				} else {
+					out = append(out, h.raw)
+				}
+			}
+			inside = append(inside, in...)
+			switch {
+			case len(b.hits) == 0:
+			case len(out) == 0:
+				// Every copy of this binary is hidden once the workspace is
+				// mounted: the tool counts as missing.
+				hiddenBins = append(hiddenBins, in...)
+			case b.hits[0].under(o.OvermountHome):
+				first := "first PATH hit"
+				if i > 0 {
+					first = "first PATH hit of " + b.name
+				}
+				link := !UnderOvermount(o.OvermountHome, b.hits[0].raw)
+				msg := fmt.Sprintf("%s %s lies under the overmount home %s and is ignored; %s decides",
+					first, b.hits[0].String(o.OvermountHome), o.OvermountHome, out[0])
+				if link {
+					msg = fmt.Sprintf("%s %s resolves under the overmount home %s and still comes first on PATH, so the mounted workspace provides it; %s is the next copy",
+						first, b.hits[0].String(o.OvermountHome), o.OvermountHome, out[0])
+				}
+				mixedNotices = append(mixedNotices, Notice(NoticeWorkspacePath, c.Key, msg))
+				// The check runs the primary binary, so only its hidden
+				// first hit makes the probed version unknown.
+				primaryMixed = primaryMixed || i == 0
+				linkFirst = linkFirst || (i > 0 && link)
 			}
 		}
 		switch {
-		case len(outside) == 0:
-			// Every copy is hidden once the workspace is mounted: the tool
-			// counts as missing. The plan reports the re-provisioning with
-			// its target (plan.Build, RelocationNotice), so no notice here.
-			e.IgnoredPaths = inside
+		case len(hiddenBins) > 0:
+			// The plan reports the re-provisioning with its target
+			// (plan.Build, RelocationNotice), so no notice here.
+			e.IgnoredPaths = hiddenBins
 			found = false
+			primaryMixed = false
 			e.InstalledVersion = ""
-		case UnderOvermount(o.OvermountHome, paths[0]):
+		case len(mixedNotices) > 0:
+			e.Notices = append(e.Notices, mixedNotices...)
 			e.IgnoredPaths = inside
-			e.Notices = append(e.Notices, Notice(NoticeWorkspacePath, c.Key, fmt.Sprintf(
-				"first PATH hit %s lies under the overmount home %s and is ignored; %s decides",
-				paths[0], o.OvermountHome, outside[0])))
-			unknownVersion = true
-			mixed = true
-			e.InstalledVersion = ""
+			if primaryMixed {
+				unknownVersion = true
+				e.InstalledVersion = ""
+			}
 		}
 	}
 	if !found {
@@ -107,11 +144,15 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 		case unknownVersion:
 			e.Action = ActionShadow
 			why := "base image version could not be read"
-			if mixed {
+			if primaryMixed {
 				why = "the probed version came from the ignored copy under the overmount home"
 			}
 			e.Notices = append(e.Notices, Notice(NoticeUnknownVersion, c.Key, fmt.Sprintf(
 				"%s; installing locked %s", why, o.LockedVersion)))
+		case linkFirst && sameVersion(check.Version, o.LockedVersion):
+			e.Action = ActionShadow
+			e.Notices = append(e.Notices, Notice(NoticeWorkspacePath, c.Key, fmt.Sprintf(
+				"installing locked %s so that the mise shims come before the symlink into the overmount home", o.LockedVersion)))
 		case sameVersion(check.Version, o.LockedVersion):
 			e.Action = ActionSkip
 		default:
@@ -124,7 +165,7 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	}
 	// Without a lock entry, a copy outside the overmount home counts as
 	// present whatever version the hidden copy reported.
-	if check.Status == probe.StatusPresent || mixed {
+	if check.Status == probe.StatusPresent || primaryMixed {
 		e.Action = ActionSkip
 		return e, ""
 	}
@@ -135,6 +176,60 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	e.Action = ActionUnresolvable
 	return e, fmt.Sprintf("the base image has %s %s, which does not satisfy %q; a %s installer cannot install a second version",
 		c.Key, orUnknown(check.Version), selector, kind)
+}
+
+// binHit is one PATH hit of a binary with its resolved target ("" when the
+// probe could not resolve it).
+type binHit struct{ raw, real string }
+
+// under reports whether the hit lies under the overmount home, as the path
+// PATH names or as the file it resolves to.
+func (h binHit) under(overmount string) bool {
+	return UnderOvermount(overmount, h.raw) || (h.real != "" && UnderOvermount(overmount, h.real))
+}
+
+// String names the hit, with its target when only the target lies under
+// the overmount home.
+func (h binHit) String(overmount string) string {
+	if h.real != "" && h.real != h.raw && !UnderOvermount(overmount, h.raw) && UnderOvermount(overmount, h.real) {
+		return h.raw + " -> " + h.real
+	}
+	return h.raw
+}
+
+type binHits struct {
+	name string
+	hits []binHit
+}
+
+// binHitsOf returns the PATH hits of every binary of the check, the first
+// one primary. A result without per-binary hits falls back to the PATH hits
+// of the first binary, or its one resolved path.
+func binHitsOf(check probe.CheckResult) []binHits {
+	var out []binHits
+	for _, b := range check.Bins {
+		bh := binHits{name: b.Name}
+		for i, p := range b.Paths {
+			h := binHit{raw: p}
+			if i < len(b.Real) {
+				h.real = b.Real[i]
+			}
+			bh.hits = append(bh.hits, h)
+		}
+		out = append(out, bh)
+	}
+	if len(out) > 0 {
+		return out
+	}
+	paths := check.Paths
+	if len(paths) == 0 && check.Path != "" {
+		paths = []string{check.Path}
+	}
+	bh := binHits{}
+	for _, p := range paths {
+		bh.hits = append(bh.hits, binHit{raw: p})
+	}
+	return []binHits{bh}
 }
 
 // sameVersion compares a probed and a locked version, ignoring a leading v.

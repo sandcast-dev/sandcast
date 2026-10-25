@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rhuss/sandcast/internal/manifest"
+	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/redact"
 	"github.com/rhuss/sandcast/internal/shell"
 )
@@ -127,7 +128,7 @@ func mergeRelocationEnv(setup *ImageSetup, relocation []EnvVar) []string {
 // configuration from. A final image value under the overmount home would make
 // it read a workspace file (BASH_ENV for every non-interactive bash, ENV for
 // interactive POSIX shells, ZDOTDIR for zsh), so the guard refuses it.
-var startupEnvVars = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
+var startupEnvVars = probe.StartupEnv
 
 // relocateDotfile maps a host dotfile path to the image path it is baked to
 // and the environment variables that point the tool at it (research R5).
@@ -394,7 +395,9 @@ func checkOvermountGuard(p *Plan, overmount string, policyPaths []string) error 
 			return fmt.Errorf("image env %s is reserved: the session environment script sets it once per session after it dropped the entries under the overmount home %s from the inherited PATH, and an image that carried it would skip that; remove it from the component or harness",
 				e.Name, overmount)
 		}
-		if !guarded[e.Name] {
+		// A base image variable that clearImageEnv cleared is empty and names
+		// no file.
+		if !guarded[e.Name] || (e.Value == "" && slices.Contains(p.Image.Cleared, e.Name)) {
 			continue
 		}
 		if UnderOvermount(overmount, path.Clean(e.Value)) {

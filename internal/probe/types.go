@@ -2,6 +2,7 @@ package probe
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/rhuss/sandcast/internal/component"
@@ -48,9 +49,30 @@ type Facts struct {
 	// session environment re-exports the ones beyond the OpenShell default
 	// PATH (I-1).
 	Path []string `json:"path,omitempty" yaml:"path,omitempty"`
+	// Env lists the base image's exported variables other than PATH whose
+	// value has at least one absolute colon-separated entry, and the names of
+	// LoaderPathEnv and StartupEnv with any value, sorted by name. The plan
+	// cleans the ones that resolve in the overmount home for the OpenShell
+	// target (#18).
+	Env []EnvVar `json:"env,omitempty" yaml:"env,omitempty"`
 	// ProbedAt is the RFC 3339 time of the probe run. It is kept out of YAML
 	// so that plans stay byte-identical.
 	ProbedAt string `json:"probed_at" yaml:"-"`
+}
+
+// EnvVar is one variable of the base image environment.
+type EnvVar struct {
+	Name  string `json:"name" yaml:"name"`
+	Value string `json:"value" yaml:"value"`
+}
+
+// BinHits are the PATH hits of one binary of a component. Real holds the
+// resolved target of each hit (readlink -f), "" where it could not be
+// resolved; it is nil or as long as Paths.
+type BinHits struct {
+	Name  string   `json:"name" yaml:"name"`
+	Paths []string `json:"paths,omitempty" yaml:"paths,omitempty"`
+	Real  []string `json:"real,omitempty" yaml:"real,omitempty"`
 }
 
 // Request is one component check to run in an image.
@@ -59,8 +81,9 @@ type Request struct {
 	Key string
 	// Command is the check command, run with /bin/sh -c.
 	Command string
-	// Bin is the first binary of the component; its path is reported.
-	Bin string
+	// Bins are the binaries of the component, the first one primary: the
+	// probe reports the path of the first and the PATH hits of each.
+	Bins []string
 	// Selector is the effective version selector.
 	Selector string
 	// ExpectExit is the expected exit code of Command.
@@ -75,14 +98,10 @@ type Request struct {
 // (for example a manifest pin) replaces the component's own selector.
 func RequestFor(c *component.Component, selectorOverride string) Request {
 	selector := c.VersionSelector(selectorOverride)
-	bin := ""
-	if bins := c.Bins(); len(bins) > 0 {
-		bin = bins[0]
-	}
 	return Request{
 		Key:            c.Key,
 		Command:        c.Check.Command,
-		Bin:            bin,
+		Bins:           slices.Clone(c.Bins()),
 		Selector:       selector,
 		ExpectExit:     c.Check.Expect.Exit,
 		StdoutContains: c.Check.Expect.StdoutContains,
@@ -122,6 +141,9 @@ type CheckResult struct {
 	// order (R-02). Path is Paths[0] unless command -v found a builtin or
 	// alias.
 	Paths []string `json:"paths,omitempty" yaml:"paths,omitempty"`
+	// Bins lists the PATH hits and their resolved targets of every binary of
+	// the component, the first one primary (T060).
+	Bins []BinHits `json:"bins,omitempty" yaml:"bins,omitempty"`
 	// Version is the version parsed from Output.
 	Version string `json:"version" yaml:"version"`
 	// Output is the combined stdout and stderr of the check, cut to
@@ -170,6 +192,9 @@ func evaluateRaw(req Request, raw rawCheck) CheckResult {
 	}
 	if len(raw.Paths) > 0 {
 		r.Paths = raw.Paths
+	}
+	if len(raw.Bins) > 0 {
+		r.Bins = raw.Bins
 	}
 	return r
 }

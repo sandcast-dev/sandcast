@@ -19,7 +19,7 @@ import (
 )
 
 func TestScriptBoundsEachCheck(t *testing.T) {
-	s := Script([]Request{{Key: "go", Bin: "go", Command: "go version"}}, ScriptOptions{})
+	s := Script([]Request{{Key: "go", Bins: []string{"go"}, Command: "go version"}}, ScriptOptions{})
 	assert.Contains(t, s, "_tmax="+strconv.Itoa(int(CheckTimeout/time.Second))+"\n")
 	assert.Contains(t, s, `timeout "$_tmax" /bin/sh -c "$1"`, "a check runs under a coreutils timeout(1) when the image has one")
 	assert.Contains(t, s, `head -c "$_max"; cat >/dev/null;`, "each check's output is bounded before it reaches a variable")

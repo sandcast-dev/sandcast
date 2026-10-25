@@ -2,6 +2,7 @@ package probe
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +16,7 @@ const MaxOutput = 2048
 
 // ScriptOptions selects the sections of a probe script.
 type ScriptOptions struct {
-	// Facts adds the os, pkgmgr, user, shells and homerc sections. Without it the
+	// Facts adds the os, pkgmgr, user, shells, homerc, path and env sections. Without it the
 	// script only runs the checks (a partial probe).
 	Facts bool
 }
@@ -32,6 +33,12 @@ const CheckTimeout = 120 * time.Second
 // characters and prints one check line. Each check is bounded to $_tmax
 // seconds when the image allows it; exit 124 (coreutils) or 143 (SIGTERM)
 // then marks the line "timeout":true.
+//
+// The second argument of _check is the component's binaries, separated by
+// spaces, the first one primary. path is what command -v finds for the
+// primary binary, paths its PATH hits; bins holds, per binary, every PATH hit
+// and its readlink -f target ("" when the image has no readlink -f or the
+// target cannot be resolved), in the same order (T060).
 //
 // A coreutils timeout(1) moves itself and the check into a new process
 // group and signals that group, so the check runs under it, as a background
@@ -90,6 +97,8 @@ if command -v setsid >/dev/null 2>&1 && command -v sleep >/dev/null 2>&1; then
 fi
 _hd=
 if [ "$(printf abc | head -c 2 2>/dev/null)" = ab ] && command -v cat >/dev/null 2>&1; then _hd=1; fi
+_rl=
+if [ "$(readlink -f / 2>/dev/null)" = / ]; then _rl=1; fi
 _run() {
 	if [ -n "$_sg" ]; then
 		setsid /bin/sh -c "$1" 2>&1 </dev/null 3>&- 4>&- &
@@ -123,7 +132,7 @@ _run() {
 	fi
 }
 _paths() {
-	_ps= _seen=$_nl
+	_ps= _rs= _seen=$_nl
 	_cifs=$IFS
 	IFS=:
 	set -f
@@ -133,17 +142,32 @@ _paths() {
 		if [ -f "$_d/$1" ] && [ -x "$_d/$1" ]; then
 			_seen=$_seen$_d/$1$_nl
 			_ps=$_ps\"$(_jsafe "$_d/$1")\",
+			_r=
+			if [ -n "$_rl" ]; then _r=$(readlink -f "$_d/$1" 2>/dev/null) || _r=; fi
+			_rs=$_rs\"$(_jsafe "$_r")\",
 		fi
 	done
 	set +f
 	IFS=$_cifs
 	_ps=${_ps%,}
+	_rs=${_rs%,}
 }
 _check() {
-	_p= _ps=
+	_p= _ps= _p1= _bs=
 	if [ -n "$2" ]; then
-		_p=$(command -v "$2" 2>/dev/null) || _p=
-		_paths "$2"
+		_p=$(command -v "${2%% *}" 2>/dev/null) || _p=
+		_bifs=$IFS
+		IFS=' '
+		set -f
+		for _b in $2; do
+			_paths "$_b"
+			[ -n "$_bs" ] || _p1=$_ps
+			_bs="$_bs{\"name\":\"$(_jsafe "$_b")\",\"paths\":[$_ps],\"real\":[$_rs]},"
+		done
+		set +f
+		IFS=$_bifs
+		_ps=$_p1
+		_bs=${_bs%,}
 	fi
 	if [ -n "$_hd" ]; then
 		_o=$( { _st=$( { { _run "$3"; echo "$?" >&3; } | { head -c "$_max"; cat >/dev/null; } >&4; } 3>&1 ); printf '\n%s' "$_st"; } 4>&1 )
@@ -165,13 +189,19 @@ _check() {
 		_t=${_o#$_cut}
 		if [ "$_t" != "$_o" ]; then _o=${_o%"$_t"}; fi
 	fi
-	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"out":"%s","timeout":%s}\n' \
-		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$(_jsafe "$_o")" "$_x"
+	printf '{"type":"check","key":"%s","exit":%d,"path":"%s","paths":[%s],"bins":[%s],"out":"%s","timeout":%s}\n' \
+		"$(_jsafe "$1")" "$_e" "$(_jsafe "$_p")" "$_ps" "$_bs" "$(_jsafe "$_o")" "$_x"
 }
 `
 
-// scriptFacts prints the os, pkgmgr, user, shells, homerc and path lines.
-// The path line lists the directories of PATH in order. The
+// scriptFacts prints the os, pkgmgr, user, shells, homerc, path and env
+// lines. The path line lists the directories of PATH in order. The env line
+// lists the exported variables other than PATH, PWD, OLDPWD and _ whose
+// value has at least one absolute colon-separated entry, and the names of
+// LoaderPathEnv and StartupEnv with any value, in the order
+// export -p prints them. The names come from export -p (export NAME=... or
+// declare -x NAME=...) and each value from the variable itself, so a value
+// that spans lines is skipped and cannot fake an entry. The
 // homerc line lists the files among .bashrc, .profile and .bash_profile in
 // the default user's home that assign PATH without referencing $PATH, which
 // would drop directories set before them (R-05). The passwd entry
@@ -275,7 +305,47 @@ done
 set +f
 IFS=$_cifs
 printf '{"type":"path","dirs":[%s]}\n' "${_pdirs%,}"
+_evars=
+while IFS= read -r _line; do
+	case $_line in
+	'export '*) _n=${_line#export } ;;
+	'declare -x '*) _n=${_line#declare -x } ;;
+	*) continue ;;
+	esac
+	_n=${_n%%=*}
+	case $_n in '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+	case $_n in PATH | PWD | OLDPWD | _) continue ;; esac
+	eval "_v=\${$_n-}"
+	case $_v in '' | *"$_nl"*) continue ;; esac
+	_abs=
+	_cifs=$IFS
+	IFS=:
+	set -f
+	for _d in $_v; do
+		case $_d in /*) _abs=1 ;; esac
+	done
+	set +f
+	IFS=$_cifs
+	case $_n in @RECORDED_ENV@) _abs=1 ;; esac
+	[ -n "$_abs" ] || continue
+	_evars="$_evars{\"name\":\"$_n\",\"value\":\"$(_jsafe "$_v")\"},"
+done <<_SANDCAST_ENV_
+$(export -p)
+_SANDCAST_ENV_
+printf '{"type":"env","vars":[%s]}\n' "${_evars%,}"
 `
+
+// LoaderPathEnv are the search path variables of the dynamic loader and of
+// language runtimes, whose empty or relative entry loads code from the
+// working directory. The env fact records them whatever their value, so the
+// plan can clean them (#18).
+var LoaderPathEnv = []string{"LD_LIBRARY_PATH", "NODE_PATH", "PERL5LIB", "PYTHONPATH", "RUBYLIB"}
+
+// StartupEnv are the variables that name a file or directory a shell reads
+// its startup configuration from (BASH_ENV for every non-interactive bash,
+// ENV for interactive POSIX shells, ZDOTDIR for zsh). The env fact records
+// them whatever their value.
+var StartupEnv = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 
 // Script returns the POSIX sh probe script for reqs. It prints one JSON
 // object per line: with opts.Facts the os, pkgmgr, user and shells lines,
@@ -293,10 +363,10 @@ func Script(reqs []Request, opts ScriptOptions) string {
 	fmt.Fprintf(&b, "_tmax=%d\n", int(CheckTimeout/time.Second))
 	b.WriteString(scriptHelpers)
 	if opts.Facts {
-		b.WriteString(scriptFacts)
+		b.WriteString(strings.Replace(scriptFacts, "@RECORDED_ENV@", strings.Join(slices.Concat(LoaderPathEnv, StartupEnv), " | "), 1))
 	}
 	for _, r := range reqs {
-		fmt.Fprintf(&b, "_check %s %s %s\n", shell.Quote(r.Key), shell.Quote(r.Bin), shell.Quote(r.Command))
+		fmt.Fprintf(&b, "_check %s %s %s\n", shell.Quote(r.Key), shell.Quote(strings.Join(r.Bins, " ")), shell.Quote(r.Command))
 	}
 	b.WriteString("exit 0\n")
 	return b.String()

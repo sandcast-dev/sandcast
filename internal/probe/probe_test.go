@@ -436,6 +436,10 @@ func TestProbeRequestValidation(t *testing.T) {
 		{name: "nul byte", reqs: []Request{{Key: "x", Command: "a\x00b", Hash: good.Hash}}, err: "NUL byte"},
 		{name: "bad hash", reqs: []Request{{Key: "x", Command: "true"}}, err: "invalid check hash"},
 		{name: "bad key", reqs: []Request{{Key: "../x", Command: "true", Hash: good.Hash}}, err: "invalid component key"},
+		{name: "bin with a space", reqs: []Request{{Key: "x", Bins: []string{"py thon"}, Command: "true", Hash: good.Hash}}, err: "invalid binary name"},
+		{name: "bin with a tab", reqs: []Request{{Key: "x", Bins: []string{"x", "a\tb"}, Command: "true", Hash: good.Hash}}, err: "invalid binary name"},
+		{name: "bin with a newline", reqs: []Request{{Key: "x", Bins: []string{"a\nb"}, Command: "true", Hash: good.Hash}}, err: "invalid binary name"},
+		{name: "bin with a nul byte", reqs: []Request{{Key: "x", Bins: []string{"a\x00b"}, Command: "true", Hash: good.Hash}}, err: "invalid binary name"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -468,7 +472,7 @@ func TestRequestFor(t *testing.T) {
 	}
 	r := RequestFor(c, "")
 	assert.Equal(t, Request{
-		Key: "python", Command: "python3 --version", Bin: "python3", Selector: "3.12",
+		Key: "python", Command: "python3 --version", Bins: []string{"python3", "pip3"}, Selector: "3.12",
 		StdoutContains: "Python", Hash: c.CheckHash("3.12"),
 	}, r)
 	pinned := RequestFor(c, "3.13")

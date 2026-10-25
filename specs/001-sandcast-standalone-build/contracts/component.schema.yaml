@@ -30,7 +30,7 @@ properties:
         properties:
           tool: { type: string, description: Registry short name or backend:name. }
           version: { type: string, default: latest }
-          bins: { type: array, items: { type: string } }
+          bins: { type: array, items: { type: string, pattern: "^[A-Za-z0-9._+-]+$", not: { enum: [".", ".."] } } }
       package:
         type: object
         additionalProperties: false
@@ -46,7 +46,7 @@ properties:
               description: >-
                 Each package name may carry a version or architecture pin (curl=8.5.0-1,
                 libc6:amd64, curl~8.5, ripgrep@edge) but no option, glob, redirect or separator.
-          bins: { type: array, items: { type: string } }
+          bins: { type: array, items: { type: string, pattern: "^[A-Za-z0-9._+-]+$", not: { enum: [".", ".."] } } }
       script:
         type: object
         additionalProperties: false
@@ -54,7 +54,7 @@ properties:
         properties:
           run: { type: string, description: Shell script; no line may equal the heredoc delimiter SANDCAST_EOF that wraps it in the rendered Containerfile. }
           as_root: { type: boolean, default: false }
-          bins: { type: array, items: { type: string } }
+          bins: { type: array, items: { type: string, pattern: "^[A-Za-z0-9._+-]+$", not: { enum: [".", ".."] } } }
   check:
     type: object
     additionalProperties: false
@@ -89,7 +89,7 @@ properties:
             path: { type: string, pattern: "^/[A-Za-z0-9._@+/-]*$", description: Absolute path limited to letters, digits and . _ @ + / - so it needs no shell quoting. }
             owner: { type: string, enum: [root, user], default: user }
       runtime_globs: { type: array, items: { type: string, pattern: "^/" }, description: Absolute glob patterns; a pattern with a control character is rejected. }
-  provides: { type: array, items: { type: string } }
+  provides: { type: array, items: { type: string, pattern: "^[A-Za-z0-9._+-]+$", not: { enum: [".", ".."] } } }
   profiles: { type: array, items: { type: string } }
   targets: { type: array, items: { type: string, enum: [openshell, container] } }
   promoted_from: { type: string, description: Set by the promote step. }

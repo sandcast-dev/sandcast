@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
 	"github.com/rhuss/sandcast/internal/registry"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/version"
 )
 
@@ -457,6 +459,10 @@ func Build(in Inputs) (*Plan, error) {
 	for _, d := range hiddenPath {
 		deltaNotices = append(deltaNotices, Notice(NoticeWorkspacePath, NoticeSubjectImage, hiddenPathReason(d, overmount)))
 	}
+	// The same holds for the other base image variables that name a path
+	// there, such as VIRTUAL_ENV=/sandbox/.venv: a tool reading one would
+	// use the mounted workspace without activation (#18).
+	deltaNotices = append(deltaNotices, clearImageEnv(&p.Image, p.ImageFacts.Env, overmount)...)
 
 	// Every overmount decision is reported in plan.yaml and in the output of
 	// sandcast plan and sandcast build, sorted by subject so rebuilds are
@@ -567,6 +573,128 @@ func setImagePath(setup *ImageSetup, basePath []string, overmount string) (notic
 	return notices, hidden
 }
 
+// keptBaseEnv are the base image variables clearImageEnv never touches:
+// HOME is the overmount home itself by design.
+var keptBaseEnv = []string{"HOME", "PATH"}
+
+// loaderPathEnv are the base image search path variables whose empty or
+// relative entry loads code from the working directory, the mounted
+// workspace in a session (probe.LoaderPathEnv, which the probe records
+// whatever their value). clearImageEnv drops such entries from them even
+// when no entry lies under the overmount home, as setImagePath does for
+// PATH.
+var loaderPathEnv = probe.LoaderPathEnv
+
+// uriScheme matches the scheme of a value such as sqlite:/data/app.db or
+// https://host/x, which clearImageEnv judges as a whole, not as a colon list.
+var uriScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+
+// clearImageEnv drops the entries under the overmount home from the base
+// image variables that name paths (probe env fact), for the OpenShell
+// target: the OpenShell default agent inherits the image ENV, so an image
+// ENV instruction carries the result. A variable keeps its entries outside
+// the home in their order; a variable left without any is set to the empty
+// value (an image cannot unset an inherited variable; uv treats an empty
+// VIRTUAL_ENV and UV_PYTHON_INSTALL_DIR as unset) and recorded in
+// setup.Cleared, which the session script unsets. A variable that a
+// component, harness or relocation sets, or that MiseEnv sets, keeps that
+// value. A loaderPathEnv variable also drops its empty and relative
+// entries, even when none lies under the home (LD_LIBRARY_PATH also splits
+// on ';', as ld.so does). A startup variable (BASH_ENV, ENV, ZDOTDIR) that
+// is not a plain absolute path outside the home, and a URI whose path lies
+// under it, are cleared as a whole. It returns one workspace-path notice
+// per changed variable.
+func clearImageEnv(setup *ImageSetup, baseEnv []EnvVar, overmount string) []string {
+	if overmount == "" {
+		return nil
+	}
+	env := envMap(setup.Env)
+	var notices []string
+	clear := func(v EnvVar, why string) {
+		env[v.Name] = ""
+		setup.Cleared = append(setup.Cleared, v.Name)
+		notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+			"base image variable %s=%s %s and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace",
+			v.Name, v.Value, why)))
+	}
+	under := "points under the overmount home " + overmount
+	for _, v := range baseEnv {
+		if _, set := env[v.Name]; set || !component.ValidEnvName(v.Name) || slices.Contains(keptBaseEnv, v.Name) ||
+			slices.ContainsFunc(MiseEnv, func(m EnvVar) bool { return m.Name == v.Name }) {
+			continue
+		}
+		if slices.Contains(startupEnvVars, v.Name) {
+			// A shell expands and reads it at run time (checkOvermountGuard).
+			switch {
+			case UnderOvermount(overmount, path.Clean(v.Value)):
+				clear(v, under)
+			case !shell.SafeAbsPath(v.Value):
+				clear(v, "is not a plain absolute path, so a shell could read its startup file from the mounted workspace,")
+			}
+			continue
+		}
+		loader := slices.Contains(loaderPathEnv, v.Name)
+		if scheme, rest, ok := strings.Cut(v.Value, ":"); ok && !loader && uriScheme.MatchString(scheme) && strings.HasPrefix(rest, "/") {
+			if UnderOvermount(overmount, path.Clean(rest)) {
+				clear(v, under)
+			}
+			continue
+		}
+		// In a loaderPathEnv variable an empty or relative entry resolves
+		// from the working directory, the mounted workspace in a session, so
+		// it is dropped. Elsewhere it is kept: an empty MANPATH entry stands
+		// for the system default.
+		value := v.Value
+		if v.Name == "LD_LIBRARY_PATH" {
+			value = strings.ReplaceAll(value, ";", ":")
+		}
+		var kept []string
+		hidden, relative := false, false
+		for _, e := range strings.Split(value, ":") {
+			switch {
+			case e != "" && UnderOvermount(overmount, path.Clean(e)):
+				hidden = true
+			case loader && !strings.HasPrefix(e, "/"):
+				relative = true
+			default:
+				kept = append(kept, e)
+			}
+		}
+		if !hidden && !relative {
+			continue
+		}
+		dropped := ""
+		if hidden && relative {
+			dropped = " (the entries that are not absolute are dropped as well)"
+		}
+		value = strings.Join(kept, ":")
+		if strings.Trim(value, ":") == "" {
+			why := under + dropped
+			if !hidden {
+				why = "has only entries that are not absolute, which resolve in the mounted workspace,"
+			}
+			clear(v, why)
+			continue
+		}
+		env[v.Name] = value
+		if !hidden {
+			notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+				"base image variable %s=%s has entries that are not absolute, which resolve in the mounted workspace; the image environment and sessions keep %s",
+				v.Name, v.Value, value)))
+			continue
+		}
+		notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+			"base image variable %s=%s names entries under the overmount home %s; the image environment and sessions keep %s%s",
+			v.Name, v.Value, overmount, value, dropped)))
+	}
+	if len(notices) == 0 {
+		return nil
+	}
+	slices.Sort(setup.Cleared)
+	setup.Env = sortedEnv(env)
+	return notices
+}
+
 // imagePathEntries returns the entries of the PATH the image ends up with:
 // a component or harness PATH value (fromEnv), whose $PATH or ${PATH} entry
 // stands for the base image's PATH, as ENV expands it at build time, or the
@@ -592,7 +720,7 @@ func hiddenPathReason(entry, overmount string) string {
 	if !path.IsAbs(entry) {
 		return fmt.Sprintf("base image PATH entry %s is not absolute and would resolve from the working directory or the home, the mounted workspace in a session; it is left out of the image PATH and the session PATH", entry)
 	}
-	return fmt.Sprintf("base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)", entry, overmount)
+	return fmt.Sprintf("base image PATH directory %s lies under the overmount home %s and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated", entry, overmount)
 }
 
 // homeRCNotices reports the home-directory rc files of the base image that
@@ -927,7 +1055,16 @@ func factsOf(f probe.Facts) ImageFacts {
 		Shells:           shells,
 		HomeRCResetsPath: slices.Clone(f.HomeRCResetsPath),
 		Path:             slices.Clone(f.Path),
+		Env:              envOfFacts(f.Env),
 	}
+}
+
+func envOfFacts(in []probe.EnvVar) []EnvVar {
+	var out []EnvVar
+	for _, v := range in {
+		out = append(out, EnvVar{Name: v.Name, Value: v.Value})
+	}
+	return out
 }
 
 func shellOf(m *manifest.Manifest) Shell {

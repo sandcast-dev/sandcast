@@ -1249,7 +1249,7 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	in.Probe.Facts.Path = []string{"/sandbox/.venv/bin", "/usr/local/bin", "/usr/bin", "/bin", "/sandbox/.local/bin", "/usr/local/go/bin"}
 	p, err := Build(in)
 	require.NoError(t, err)
-	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated (a tool that reads VIRTUAL_ENV from the image environment may use it regardless)")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image PATH directory /sandbox/.venv/bin lies under the overmount home /sandbox and is left out of the image PATH and the session PATH; a tool there is hidden once the workspace is mounted, and a virtual environment there joins the PATH only when it is activated")
 	assert.Contains(t, strings.Join(p.Notices, "\n"), "/sandbox/.local/bin lies under the overmount home")
 	assert.Equal(t, 1, strings.Count(strings.Join(p.Notices, "\n"), "/sandbox/.venv/bin lies under"), "once per directory")
 	script := SessionEnvScriptFor(p)
@@ -1269,6 +1269,121 @@ func TestBuildHiddenSessionPathDirNotice(t *testing.T) {
 	for _, e := range cp.Image.Env {
 		assert.NotEqual(t, "PATH", e.Name, "the container target keeps the base image's PATH")
 	}
+}
+
+// TestBuildClearsBaseEnvUnderOvermount covers #18: a base image variable
+// that names only paths under the overmount home is set to the empty value
+// in the image environment and unset by the session script; a colon list
+// keeps its other entries; HOME, variables outside the home and variables a
+// component sets stay; the container target changes nothing.
+func TestBuildClearsBaseEnvUnderOvermount(t *testing.T) {
+	baseEnv := []probe.EnvVar{
+		{Name: "HOME", Value: "/sandbox"},
+		{Name: "PYTHONPATH", Value: "/sandbox/lib:/usr/lib/extra"},
+		{Name: "UV_PYTHON_INSTALL_DIR", Value: "/sandbox/.uv/python"},
+		{Name: "VIRTUAL_ENV", Value: "/sandbox/.venv"},
+		{Name: "JAVA_HOME", Value: "/usr/lib/jvm/default"},
+		{Name: "GOPATH", Value: "/sandbox/go"},
+		{Name: "SANDBOXED", Value: "/sandboxed/x"},
+	}
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Facts.Env = baseEnv
+	p, err := Build(in)
+	require.NoError(t, err)
+	env := envMap(p.Image.Env)
+	assert.Equal(t, []string{"UV_PYTHON_INSTALL_DIR", "VIRTUAL_ENV"}, p.Image.Cleared)
+	for _, name := range p.Image.Cleared {
+		v, ok := env[name]
+		assert.True(t, ok, name)
+		assert.Empty(t, v, name)
+	}
+	assert.Equal(t, "/usr/lib/extra", env["PYTHONPATH"])
+	assert.Equal(t, "/opt/go", env["GOPATH"], "the go component's GOPATH wins")
+	for _, name := range []string{"HOME", "JAVA_HOME", "SANDBOXED"} {
+		assert.NotContains(t, env, name)
+	}
+	notices := strings.Join(p.Notices, "\n")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable VIRTUAL_ENV=/sandbox/.venv points under the overmount home /sandbox and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable PYTHONPATH=/sandbox/lib:/usr/lib/extra names entries under the overmount home /sandbox; the image environment and sessions keep /usr/lib/extra")
+	assert.Contains(t, notices, "UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python points under")
+	assert.NotContains(t, notices, "GOPATH=/sandbox/go")
+	assert.NotContains(t, notices, "HOME=/sandbox")
+
+	script := SessionEnvScriptFor(p)
+	assert.Contains(t, script, "\tunset UV_PYTHON_INSTALL_DIR VIRTUAL_ENV\n")
+	assert.NotContains(t, script, "export VIRTUAL_ENV")
+	assert.Contains(t, script, "export PYTHONPATH='/usr/lib/extra'")
+
+	m := testManifest()
+	m.Targets = manifest.Targets{Container: &manifest.Target{Image: "localhost/demo"}}
+	cin := testInputs(t, m, nil)
+	cin.Target = manifest.TargetContainer
+	cin.Probe.Facts.Env = baseEnv
+	cp, err := Build(cin)
+	require.NoError(t, err)
+	assert.Empty(t, cp.Image.Cleared)
+	assert.NotContains(t, envMap(cp.Image.Env), "VIRTUAL_ENV")
+	assert.NotContains(t, strings.Join(cp.Notices, "\n"), "base image variable")
+	assert.NotContains(t, SessionEnvScriptFor(cp), "unset VIRTUAL_ENV")
+}
+
+// TestBuildClearsBaseEnvEdges pins the edges of the #18 rule: a cleared
+// BASH_ENV or ENV is not a plan error (it names no file), and a relative one
+// is cleared; a URI is judged as a whole; LD_LIBRARY_PATH also splits on ';'; a loader search
+// path drops its empty and relative entries, which resolve from the working
+// directory, the mounted workspace, while other variables keep them (an
+// empty MANPATH entry is the system default, a URL splits into relative
+// parts); an entry that only
+// path.Clean moves outside the home is kept; mise's own variables keep the
+// mise value; Cleared is sorted whatever order the probe gave.
+func TestBuildClearsBaseEnvEdges(t *testing.T) {
+	in := testInputs(t, testManifest(), nil)
+	in.Probe.Facts.Env = []probe.EnvVar{
+		{Name: "VIRTUAL_ENV", Value: "/sandbox/.venv::"},
+		{Name: "BASH_ENV", Value: "/sandbox/.bash_env"},
+		{Name: "ENV", Value: ".shrc"},
+		{Name: "ZDOTDIR", Value: "/sandbox/.zsh"},
+		{Name: "LD_LIBRARY_PATH", Value: "/sandbox/lib::/usr/lib;lib"},
+		{Name: "PYTHONPATH", Value: "/sandbox/lib:src:/opt/py"},
+		{Name: "CLEANED", Value: "/sandbox/../usr/lib:/sandbox/x"},
+		{Name: "MIRROR", Value: "https://mirror/simple"},
+		{Name: "DATABASE_URL", Value: "sqlite:/sandbox/app.db"},
+		{Name: "CACHE_URL", Value: "file:///sandbox/.cache"},
+		{Name: "LD_LIBRARY_PATH_X", Value: "/opt/lib;/sandbox/lib"},
+		{Name: "PERL5LIB", Value: "/opt/perl;lib"},
+		{Name: "CLASSPATH", Value: "/sandbox/lib:src"},
+		{Name: "MANPATH", Value: ":/sandbox/.local/share/man:/opt/man"},
+		{Name: "NODE_PATH", Value: "/usr/lib/node_modules:"},
+		{Name: "OTHER_LIST", Value: "src:/opt/x"},
+		{Name: "RUBYLIB", Value: "lib"},
+		{Name: "MISE_DATA_DIR", Value: "/sandbox/.mise"},
+	}
+	p, err := Build(in)
+	require.NoError(t, err, "a cleared startup variable does not fail the overmount guard")
+	assert.Equal(t, []string{"BASH_ENV", "CACHE_URL", "DATABASE_URL", "ENV", "RUBYLIB", "VIRTUAL_ENV"}, p.Image.Cleared)
+	assert.Equal(t, "/opt/sandcast/zdotdir", envMap(p.Image.Env)["ZDOTDIR"], "the zsh relocation sets ZDOTDIR, so the base value is not cleared")
+	env := envMap(p.Image.Env)
+	for _, name := range p.Image.Cleared {
+		assert.Empty(t, env[name], name)
+	}
+	assert.Equal(t, "/usr/lib", env["LD_LIBRARY_PATH"], "the empty and the ';'-separated relative entry would be the working directory")
+	assert.Equal(t, "/opt/py", env["PYTHONPATH"], "the relative entry would resolve in the workspace")
+	assert.Equal(t, "/sandbox/../usr/lib", env["CLEANED"], "an entry that resolves outside the home is kept as written")
+	assert.NotContains(t, env, "MIRROR", "a URL outside the home is left as it is")
+	assert.NotContains(t, env, "LD_LIBRARY_PATH_X", "only LD_LIBRARY_PATH splits on ';'")
+	assert.NotContains(t, env, "PERL5LIB", "PERL5LIB has one absolute entry: only LD_LIBRARY_PATH splits on ';'")
+	assert.Equal(t, "src", env["CLASSPATH"], "only loader search paths drop relative entries")
+	assert.Equal(t, ":/opt/man", env["MANPATH"], "an empty MANPATH entry stands for the system default")
+	assert.Equal(t, "/usr/lib/node_modules", env["NODE_PATH"], "a loader path drops its empty entry without any entry under the home")
+	assert.NotContains(t, env, "OTHER_LIST", "another variable without an entry under the home is left as it is")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable NODE_PATH=/usr/lib/node_modules: has entries that are not absolute, which resolve in the mounted workspace; the image environment and sessions keep /usr/lib/node_modules")
+	assert.NotContains(t, env, "MISE_DATA_DIR", "mise's own variables are set by the mise layer, never cleared here")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable LD_LIBRARY_PATH=/sandbox/lib::/usr/lib;lib names entries under the overmount home /sandbox; the image environment and sessions keep /usr/lib (the entries that are not absolute are dropped as well)")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable ENV=.shrc is not a plain absolute path, so a shell could read its startup file from the mounted workspace, and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable DATABASE_URL=sqlite:/sandbox/app.db points under the overmount home /sandbox and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace")
+	assert.NotContains(t, strings.Join(p.Notices, "\n"), "MISE_DATA_DIR")
+	assert.Contains(t, p.Notices, "workspace-path: image: base image variable RUBYLIB=lib has only entries that are not absolute, which resolve in the mounted workspace, and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace")
+	assert.Contains(t, SessionEnvScriptFor(p), "\tunset BASH_ENV CACHE_URL DATABASE_URL ENV RUBYLIB VIRTUAL_ENV\n")
 }
 
 // TestSetImagePath pins the image PATH rule: nothing without an overmount

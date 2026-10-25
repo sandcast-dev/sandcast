@@ -57,6 +57,7 @@ func TestCheckHashCoversCheck(t *testing.T) {
 		{"check command", func(c *Component) { c.Check.Command = "go env GOVERSION" }},
 		{"expected exit", func(c *Component) { c.Check.Expect.Exit = 1 }},
 		{"expected stdout", func(c *Component) { c.Check.Expect.StdoutContains = "go version" }},
+		{"binaries", func(c *Component) { c.Installer.Mise.Bins = []string{"go"} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -88,6 +89,11 @@ func TestParseRejects(t *testing.T) {
 		{"bad target", "key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\ntargets: [k8s]\n", "unknown target"},
 		{"host tool path", "key: x\nname: X\nmatch: {host_tools: [./.sandcast/x.sh]}\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\n", "bare command name"},
 		{"host tool absolute", "key: x\nname: X\nmatch: {host_tools: [/tmp/x]}\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\n", "bare command name"},
+		{"bin with a space", "key: x\nname: X\ninstaller: {mise: {tool: x, bins: [\"node npm\"]}}\ncheck: {command: x}\n", `installer.mise.bins: "node npm" must be a bare command name`},
+		{"empty bin", "key: x\nname: X\ninstaller: {package: {packages: {apt-get: [x]}, bins: [\"\", x]}}\ncheck: {command: x}\n", `installer.package.bins: "" must be a bare command name`},
+		{"dot dot bin", "key: x\nname: X\ninstaller: {script: {run: \"true\", bins: [\"..\"]}}\ncheck: {command: x}\n", `installer.script.bins: ".." must be a bare command name`},
+		{"dot provides", "key: x\nname: X\nprovides: [\".\"]\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\n", `provides: "." must be a bare command name`},
+		{"provides path", "key: x\nname: X\nprovides: [bin/x]\ninstaller: {script: {run: \"true\"}}\ncheck: {command: x}\n", `provides: "bin/x" must be a bare command name`},
 		{"bad owner", "key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\nimage: {dirs: [{path: /x, owner: nobody}]}\n", "root or user"},
 		{"emulation flag not a bool", "key: x\nname: X\ninstaller: {mise: {tool: x}}\ncheck: {command: x}\nemulation_unsafe: sometimes\n", "EmulationUnsafe"},
 	}

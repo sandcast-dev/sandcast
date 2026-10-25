@@ -65,6 +65,36 @@ func TestParse(t *testing.T) {
 			facts: func() *Facts { f := *debian; f.Path = []string{"/opt/x/bin", "/usr/bin"}; return &f }(),
 		},
 		{
+			name: "env facts",
+			out: factsOutput + `{"type":"env","vars":[{"name":"VIRTUAL_ENV","value":"/sandbox/.venv"},` +
+				`{"name":"UV_PYTHON_INSTALL_DIR","value":"/sandbox/.uv/python"},{"name":"VIRTUAL_ENV","value":"/other"},` +
+				`{"name":"","value":"/x"},{"name":"EMPTY","value":""}]}` + "\n",
+			facts: func() *Facts {
+				f := *debian
+				f.Env = []EnvVar{{Name: "UV_PYTHON_INSTALL_DIR", Value: "/sandbox/.uv/python"}, {Name: "VIRTUAL_ENV", Value: "/sandbox/.venv"}}
+				return &f
+			}(),
+		},
+		{
+			name:  "empty env facts",
+			out:   factsOutput + `{"type":"env","vars":[]}` + "\n",
+			facts: debian,
+		},
+		{
+			name: "binary hits",
+			out: `{"type":"check","key":"python","exit":0,"path":"/usr/local/bin/python","paths":["/usr/local/bin/python"],` +
+				`"bins":[{"name":"python","paths":["/usr/local/bin/python"],"real":["/sandbox/.uv/python/bin/python3.14"]},` +
+				`{"name":"pip","paths":["/usr/bin/pip","/opt/pip"],"real":["/usr/bin/pip"]},{"name":"uv","paths":[],"real":[]},{"name":"","paths":["/x"]}],"out":""}`,
+			checks: []rawCheck{{
+				Key: "python", Path: "/usr/local/bin/python", Paths: []string{"/usr/local/bin/python"},
+				Bins: []BinHits{
+					{Name: "python", Paths: []string{"/usr/local/bin/python"}, Real: []string{"/sandbox/.uv/python/bin/python3.14"}},
+					{Name: "pip", Paths: []string{"/usr/bin/pip", "/opt/pip"}},
+					{Name: "uv"},
+				},
+			}},
+		},
+		{
 			name: "noise and unknown types are ignored",
 			out: "WARNING: platform mismatch\r\n\n" + factsOutput +
 				`{"type":"future","x":1}` + "\n" + `{"type":"check","key":"go","exit":0,"path":"","out":""}` + "\r\n",
@@ -105,4 +135,25 @@ func TestParse(t *testing.T) {
 			assert.Equal(t, tt.checks, checks)
 		})
 	}
+}
+
+// TestEvaluateRawKeepsHits checks that a check line's PATH hits and the
+// per-binary hits with their resolved targets reach the CheckResult, which
+// the workspace rule judges, for a finished and a timed-out check.
+func TestEvaluateRawKeepsHits(t *testing.T) {
+	bins := []BinHits{
+		{Name: "python", Paths: []string{"/usr/local/bin/python"}, Real: []string{"/sandbox/.uv/python/bin/python3.14"}},
+		{Name: "pip", Paths: []string{"/usr/bin/pip", "/opt/pip"}},
+	}
+	r := req("python", "")
+	for _, timeout := range []bool{false, true} {
+		got := evaluateRaw(r, rawCheck{Key: "python", Path: "/usr/local/bin/python", Paths: []string{"/usr/local/bin/python"}, Bins: bins, Out: "Python 3.14.3", Timeout: timeout})
+		assert.Equal(t, []string{"/usr/local/bin/python"}, got.Paths, "timeout %v", timeout)
+		assert.Equal(t, bins, got.Bins, "timeout %v", timeout)
+	}
+	// A binary without hits stays in Bins, so the workspace rule sees it.
+	got := evaluateRaw(r, rawCheck{Key: "python", Exit: 127, Bins: []BinHits{{Name: "python"}}})
+	assert.Equal(t, StatusMissing, got.Status)
+	assert.Nil(t, got.Paths)
+	assert.Equal(t, []BinHits{{Name: "python"}}, got.Bins)
 }
