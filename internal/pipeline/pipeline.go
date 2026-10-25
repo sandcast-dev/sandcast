@@ -469,33 +469,64 @@ func readDotfile(env Env, p string) (fsutil.HostPathKind, string, error) {
 	case err != nil:
 		return 0, "", fmt.Errorf("could not be resolved (%w)", err)
 	}
-	if !fsutil.Within(realRoot, real) {
+	realRel, ok := fsutil.RelWithin(realRoot, real)
+	if !ok {
 		return 0, "", fmt.Errorf("resolves to %s outside the %s", real, rootKind)
 	}
 	// The path as written (cleaned by ResolveHostPath), relative to the
 	// directory it names, and the resolved path, relative to the resolved
-	// directory.
-	for _, c := range []struct{ base, p string }{{root, src}, {realRoot, real}} {
-		rel, rerr := filepath.Rel(c.base, c.p)
-		if rerr != nil {
-			continue
-		}
+	// directory. A written path that cannot be made relative is refused
+	// rather than left unchecked.
+	written, err := filepath.Rel(root, src)
+	if err != nil {
+		return 0, "", fmt.Errorf("could not be checked (%w)", err)
+	}
+	for _, rel := range []string{written, realRel} {
 		if why := manifest.DotfileDenied(filepath.ToSlash(rel)); why != "" {
 			return 0, "", fmt.Errorf("is refused because %s (credential and history files are never baked)", why)
 		}
 	}
-	content, err := readRegularFile(real)
+	// The checks above judged real by path. Open it component by component
+	// without following a symlink, so a leaf or a parent swapped for one
+	// after EvalSymlinks fails here instead of being read (#17).
+	dotfileResolvedHook(real)
+	f, err := fsutil.OpenBeneath(realRoot, realRel)
+	if err != nil {
+		return 0, "", dotfileOpenErr(err)
+	}
+	defer func() { _ = f.Close() }()
+	content, err := readRegularFile(f)
 	if err != nil {
 		return 0, "", err
 	}
 	return kind, content, nil
 }
 
-// readRegularFile reads a regular file of at most manifest.MaxDotfileSize bytes. It
-// checks the type before opening, so a FIFO cannot block the plan, and again
-// on the open file, so a swap in between is caught.
-func readRegularFile(name string) (string, error) {
-	fi, err := os.Stat(name)
+// dotfileResolvedHook runs between the path checks and the open in
+// readDotfile, so tests can swap the file or a parent for a symlink there.
+var dotfileResolvedHook = func(string) {}
+
+// dotfileOpenErr turns a failed fsutil.OpenBeneath into the text that
+// completes "dotfile <path> ...". A swapped component keeps the wrapped
+// error, so the notice names the path that changed.
+func dotfileOpenErr(err error) error {
+	switch {
+	case errors.Is(err, fsutil.ErrSymlinkInPath), errors.Is(err, fsutil.ErrLeafChanged):
+		return fmt.Errorf("changed while it was read (%w)", err)
+	case errors.Is(err, fsutil.ErrNotRegular):
+		return errors.New("is not a regular file")
+	default:
+		return fmt.Errorf("could not be read (%w)", err)
+	}
+}
+
+// readRegularFile reads an open file that must be a regular file of at most
+// manifest.MaxDotfileSize bytes. The type and size come from the descriptor,
+// so they describe the file that is read. The type check stays as the
+// backstop behind OpenBeneath's identity check, which cannot see a leaf
+// recreated on a reused inode number.
+func readRegularFile(f *os.File) (string, error) {
+	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("could not be read (%w)", err)
 	}
@@ -504,15 +535,6 @@ func readRegularFile(name string) (string, error) {
 	}
 	if fi.Size() > manifest.MaxDotfileSize {
 		return "", fmt.Errorf("is larger than %d KiB", manifest.MaxDotfileSize>>10)
-	}
-	f, err := os.Open(name)
-	if err != nil {
-		return "", fmt.Errorf("could not be read (%w)", err)
-	}
-	defer func() { _ = f.Close() }()
-	ofi, err := f.Stat()
-	if err != nil || !ofi.Mode().IsRegular() || !os.SameFile(fi, ofi) {
-		return "", errors.New("changed while it was read")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, manifest.MaxDotfileSize+1))
 	if err != nil {

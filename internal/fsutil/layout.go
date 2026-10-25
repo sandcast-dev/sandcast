@@ -127,7 +127,7 @@ func (l Layout) BuildDir(target string) string { return filepath.Join(l.BuildRoo
 // RelToRoot returns path relative to the project root with forward slashes,
 // or path unchanged when it is outside the root.
 func (l Layout) RelToRoot(path string) string {
-	rel, ok := relWithin(l.Root, path)
+	rel, ok := RelWithin(l.Root, path)
 	if !ok {
 		return filepath.ToSlash(path)
 	}
@@ -231,7 +231,7 @@ func (l Layout) EnsureGitignore() error {
 // delete and write files outside the project and send them as build
 // context.
 func (l Layout) CheckNoSymlinks(path string) error {
-	rel, ok := relWithin(l.Root, path)
+	rel, ok := RelWithin(l.Root, path)
 	if !ok {
 		return fmt.Errorf("%s is outside the project %s", path, l.Root)
 	}

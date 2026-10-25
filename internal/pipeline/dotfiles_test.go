@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,30 @@ func TestDotfileInputsProjectRelativeInsideKept(t *testing.T) {
 	assert.Equal(t, "sub/tool.conf", out[0].HostPath)
 	assert.False(t, out[0].FromAllowlist)
 	assert.Equal(t, "ok\n", out[0].Content)
+}
+
+// TestDotfileInputsSymlinkInsideKept checks a dotfile managed by symlinks
+// that stay inside the home (stow or chezmoi style, a linked file and a
+// linked directory) is still read, also when the home itself is reached
+// through a symlink, so the resolved root differs from the given one on
+// every platform and not only under the darwin /var link.
+func TestDotfileInputsSymlinkInsideKept(t *testing.T) {
+	realHome := t.TempDir()
+	writeFile(t, filepath.Join(realHome, "dotfiles", "git", "gitconfig"), "[user]\n\tname = stow\n")
+	writeFile(t, filepath.Join(realHome, "dotfiles", "nvim", "init.lua"), "set number\n")
+	require.NoError(t, os.Symlink(filepath.Join(realHome, "dotfiles", "git", "gitconfig"), filepath.Join(realHome, ".gitconfig")))
+	require.NoError(t, os.MkdirAll(filepath.Join(realHome, ".config"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(realHome, "dotfiles", "nvim"), filepath.Join(realHome, ".config", "nvim")))
+	linkedHome := filepath.Join(t.TempDir(), "home")
+	require.NoError(t, os.Symlink(realHome, linkedHome))
+
+	for _, home := range []string{realHome, linkedHome} {
+		out, notices := dotfileInputs(dotfileEnv(home, t.TempDir()), mdotfiles("~/.gitconfig", "~/.config/nvim/init.lua"))
+		require.Empty(t, notices, home)
+		require.Len(t, out, 2, home)
+		assert.Equal(t, "[user]\n\tname = stow\n", out[0].Content)
+		assert.Equal(t, "set number\n", out[1].Content)
+	}
 }
 
 // skippedWith asserts that dotfileInputs bakes nothing for paths and reports
@@ -247,4 +272,114 @@ func TestDotfileInputsResolveErrorsAreDistinct(t *testing.T) {
 	assert.NotContains(t, notices[0], "does not exist")
 
 	skippedWith(t, dotfileEnv(filepath.Join(t.TempDir(), "missing-home"), root), "home directory", "~/.gitconfig")
+}
+
+// swapAfterResolve runs swap in readDotfile between the path checks and the
+// open, the window a concurrent writer would use (#17).
+func swapAfterResolve(t *testing.T, swap func(real string)) {
+	t.Helper()
+	orig := dotfileResolvedHook
+	dotfileResolvedHook = func(real string) {
+		swap(real)
+		dotfileResolvedHook = orig
+	}
+	t.Cleanup(func() { dotfileResolvedHook = orig })
+}
+
+// TestDotfileInputsSwappedAfterResolveSkipped checks the file that is read
+// is the file that passed the checks: a leaf or a parent directory replaced
+// by a symlink after resolution is reported as changed and its target is
+// not read, whether the link leaves the root or stays inside it.
+func TestDotfileInputsSwappedAfterResolveSkipped(t *testing.T) {
+	const secret = "PRIVATE KEY MATERIAL"
+	for _, tc := range []struct {
+		name  string
+		entry string
+		home  bool
+		swap  func(t *testing.T, real, home, outside string)
+	}{
+		{"leaf to outside", "tool.conf", false, func(t *testing.T, real, _, outside string) {
+			require.NoError(t, os.Remove(real))
+			require.NoError(t, os.Symlink(filepath.Join(outside, "secret"), real))
+		}},
+		{"parent to outside", "sub/tool.conf", false, func(t *testing.T, real, _, outside string) {
+			dir := filepath.Dir(real)
+			require.NoError(t, os.Rename(dir, dir+".orig"))
+			writeFile(t, filepath.Join(outside, "tool.conf"), secret)
+			require.NoError(t, os.Symlink(outside, dir))
+		}},
+		{"home leaf to a key inside the home", "~/.config/nvim/init.lua", true, func(t *testing.T, real, home, _ string) {
+			writeFile(t, filepath.Join(home, ".ssh", "id_ed25519"), secret)
+			require.NoError(t, os.Remove(real))
+			require.NoError(t, os.Symlink(filepath.Join(home, ".ssh", "id_ed25519"), real))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, root, outside := t.TempDir(), t.TempDir(), t.TempDir()
+			writeFile(t, filepath.Join(outside, "secret"), secret)
+			if tc.home {
+				writeFile(t, filepath.Join(home, strings.TrimPrefix(tc.entry, "~/")), "set number\n")
+			} else {
+				writeFile(t, filepath.Join(root, tc.entry), "ok\n")
+			}
+			var resolved string
+			swapAfterResolve(t, func(real string) {
+				resolved = real
+				tc.swap(t, real, home, outside)
+			})
+
+			out, notices := dotfileInputs(dotfileEnv(home, root), mdotfiles(tc.entry))
+			assert.Empty(t, out)
+			require.Len(t, notices, 1)
+			assert.Contains(t, notices[0], "changed while it was read")
+			assert.NotContains(t, notices[0], secret)
+			// The notice names the component that changed: the leaf, or the
+			// parent directory, both of which start with the resolved parent.
+			assert.Contains(t, notices[0], filepath.Dir(resolved))
+		})
+	}
+}
+
+// TestDotfileOpenErr checks the notice for each OpenBeneath failure, and
+// that a changed component keeps its path and sentinel in the notice.
+func TestDotfileOpenErr(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		want     string
+		sentinel error
+	}{
+		{"symlink in path", fmt.Errorf("/r/x: %w", fsutil.ErrSymlinkInPath), "changed while it was read (/r/x: ", fsutil.ErrSymlinkInPath},
+		{"leaf changed", fmt.Errorf("/r/x: %w", fsutil.ErrLeafChanged), "changed while it was read (/r/x: ", fsutil.ErrLeafChanged},
+		{"not regular", fmt.Errorf("/r/x: %w", fsutil.ErrNotRegular), "is not a regular file", nil},
+		{"other", &os.PathError{Op: "open", Path: "/r/x", Err: os.ErrPermission}, "could not be read (open /r/x: ", os.ErrPermission},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := dotfileOpenErr(tc.err)
+			assert.True(t, strings.HasPrefix(err.Error(), tc.want), err.Error())
+			if tc.sentinel != nil {
+				assert.ErrorIs(t, err, tc.sentinel)
+			}
+		})
+	}
+}
+
+// TestReadRegularFileChecksDescriptor checks the type check on the open
+// descriptor, which catches a leaf swapped after OpenBeneath checked it: a
+// FIFO or a directory handed over open is refused.
+func TestReadRegularFileChecksDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o644))
+	f, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	_, err = readRegularFile(f)
+	assert.ErrorContains(t, err, "is not a regular file")
+
+	d, err := os.Open(dir)
+	require.NoError(t, err)
+	defer func() { _ = d.Close() }()
+	_, err = readRegularFile(d)
+	assert.ErrorContains(t, err, "is not a regular file")
 }
