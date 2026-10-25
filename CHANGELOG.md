@@ -5,6 +5,20 @@ Changing a pin below requires an entry in this file.
 
 ## Unreleased
 
+## 0.1.0 (2026-10-25)
+
+The first release, published as a pre-release for real-world use. It covers features 001 (standalone build), 002 (field feedback fixes) and 003 (runtime home model and shell initialization).
+
+### Known limitations
+
+- Claude Code is the only agent harness for the capture and build skills.
+- On the OpenShell target, a binary whose first `PATH` hit is a symlink into the overmount home still runs the workspace copy unless its component is a locked mise component ([#22](https://github.com/sandcast-dev/sandcast/issues/22)).
+- uv still looks for managed interpreters under `$HOME/.local/share/uv/python`, which lies in the workspace ([#23](https://github.com/sandcast-dev/sandcast/issues/23)).
+- A cleared base image variable is empty, not unset, for the OpenShell default agent, and the loader search path list is narrow ([#24](https://github.com/sandcast-dev/sandcast/issues/24)).
+- The remote component registry (`sandcast components refresh`) is not published yet, so a refresh fails. The shipped components and project recipes work without it.
+- `go install` does not work: the module path is `github.com/rhuss/sandcast`. Use the release binaries or build with `make build`.
+- The build guide lists further limitations of the shell hooks (`docs/guides/build.md`).
+
 ### Base image paths under the overmount home ([#18](https://github.com/sandcast-dev/sandcast/issues/18), T060)
 
 - For the OpenShell target, a base image variable with no entry left outside the overmount home is set to the empty value in the image `ENV`, which OpenShell's default agent inherits, and the session environment script unsets it once per session. A colon list keeps its entries outside the home. `LD_LIBRARY_PATH`, `NODE_PATH`, `PERL5LIB`, `PYTHONPATH` and `RUBYLIB` also drop their empty and relative entries, which resolve in the workspace, even without an entry under the home. `LD_LIBRARY_PATH` also splits on `;`. A URI value is judged as a whole, and a base image `BASH_ENV`, `ENV` or `ZDOTDIR` that lies under the home or is not a plain absolute path is cleared; a cleared one does not fail the overmount guard. A registry refresh no longer keeps a previous cached component that fails validation. On the community base image this clears `VIRTUAL_ENV=/sandbox/.venv` and `UV_PYTHON_INSTALL_DIR=/sandbox/.uv/python`, so uv no longer uses a virtual environment in the workspace without activation. Each change is a `workspace-path` notice, the plan records the cleared names as `image.cleared`, and the build guide's known limitation is replaced by two narrower ones: a cleared variable is empty rather than unset for the default agent, and uv still looks for managed interpreters in its default directory under `$HOME`, which is in the workspace. `HOME` and variables that a component, a harness or the relocation sets are not changed. The container target is unchanged.
