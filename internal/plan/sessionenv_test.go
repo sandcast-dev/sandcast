@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestSessionEnvScriptShells(t *testing.T) {
 		require.Len(t, lines, 3, "%s: %s", sh, out)
 		assert.Equal(t, MiseShimsDir+":/usr/bin:/bin", lines[0], sh)
 		assert.Equal(t, MiseDataDir, lines[1], sh)
-		assert.Equal(t, "6", strings.TrimSpace(lines[2]), sh)
+		assert.Equal(t, strconv.Itoa(len(MiseEnv)), strings.TrimSpace(lines[2]), sh)
 	}
 	require.Positive(t, ran)
 }
