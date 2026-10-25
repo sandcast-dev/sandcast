@@ -136,3 +136,24 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluateRawKeepsHits checks that a check line's PATH hits and the
+// per-binary hits with their resolved targets reach the CheckResult, which
+// the workspace rule judges, for a finished and a timed-out check.
+func TestEvaluateRawKeepsHits(t *testing.T) {
+	bins := []BinHits{
+		{Name: "python", Paths: []string{"/usr/local/bin/python"}, Real: []string{"/sandbox/.uv/python/bin/python3.14"}},
+		{Name: "pip", Paths: []string{"/usr/bin/pip", "/opt/pip"}},
+	}
+	r := req("python", "")
+	for _, timeout := range []bool{false, true} {
+		got := evaluateRaw(r, rawCheck{Key: "python", Path: "/usr/local/bin/python", Paths: []string{"/usr/local/bin/python"}, Bins: bins, Out: "Python 3.14.3", Timeout: timeout})
+		assert.Equal(t, []string{"/usr/local/bin/python"}, got.Paths, "timeout %v", timeout)
+		assert.Equal(t, bins, got.Bins, "timeout %v", timeout)
+	}
+	// A binary without hits stays in Bins, so the workspace rule sees it.
+	got := evaluateRaw(r, rawCheck{Key: "python", Exit: 127, Bins: []BinHits{{Name: "python"}}})
+	assert.Equal(t, StatusMissing, got.Status)
+	assert.Nil(t, got.Paths)
+	assert.Equal(t, []BinHits{{Name: "python"}}, got.Bins)
+}

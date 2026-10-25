@@ -244,15 +244,16 @@ while IFS= read -r _line; do
 	case $_n in PATH | PWD | OLDPWD | _) continue ;; esac
 	eval "_v=\${$_n-}"
 	case $_v in '' | *"$_nl"*) continue ;; esac
-	_abs=1
+	_abs=
 	_cifs=$IFS
 	IFS=:
 	set -f
 	for _d in $_v; do
-		case $_d in '' | /*) ;; *) _abs= ;; esac
+		case $_d in /*) _abs=1 ;; esac
 	done
 	set +f
 	IFS=$_cifs
+	case $_n in LD_LIBRARY_PATH | NODE_PATH | PERL5LIB | PYTHONPATH | RUBYLIB | BASH_ENV | ENV | ZDOTDIR) _abs=1 ;; esac
 	[ -n "$_abs" ] || continue
 	_evars="$_evars{\"name\":\"$_n\",\"value\":\"$(_jsafe "$_v")\"},"
 done <<_SANDCAST_ENV_

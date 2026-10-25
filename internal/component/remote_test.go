@@ -221,6 +221,44 @@ func TestRefreshRejectsInvalidComponentKeepsPrevious(t *testing.T) {
 	assert.Equal(t, "jq", comps[0].Key)
 }
 
+// TestRefreshDropsInvalidPreviousCopy covers a cached copy that a rule
+// added since it was cached rejects (bins must be bare command names): a
+// rejected download does not put it back, so the cache still loads.
+func TestRefreshDropsInvalidPreviousCopy(t *testing.T) {
+	jq := comp("jq", "jq")
+	srv := &registryServer{files: map[string]string{
+		"/v1/index.yaml": "schema_version: 1\nrelease: v1\nfiles:\n  - {path: jq.yaml, sha256: " + sum(jq) + "}\n",
+		"/v1/jq.yaml":    jq,
+	}}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	cache := t.TempDir()
+	_, err := Refresh(context.Background(), ts.Client(), ts.URL, "v1", cache)
+	require.NoError(t, err)
+	cached, err := filepath.Glob(filepath.Join(cache, "*", "*", "jq.yaml"))
+	require.NoError(t, err)
+	if len(cached) == 0 {
+		cached, err = filepath.Glob(filepath.Join(cache, "*", "jq.yaml"))
+		require.NoError(t, err)
+	}
+	require.Len(t, cached, 1)
+	require.NoError(t, os.WriteFile(cached[0], []byte("key: jq\nname: jq\nprovides: [\"j q\"]\ninstaller: {mise: {tool: jq}}\ncheck: {command: jq --version}\n"), 0o644))
+
+	bad := "key: Bad_Key\nname: x\n"
+	srv.files["/v1/index.yaml"] = "schema_version: 1\nrelease: v1\nfiles:\n  - {path: jq.yaml, sha256: " + sum(bad) + "}\n"
+	srv.files["/v1/jq.yaml"] = bad
+	rep, err := Refresh(context.Background(), ts.Client(), ts.URL, "v1", cache)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jq.yaml"}, rep.Rejected)
+	assert.Contains(t, rep.Reasons["jq.yaml"], "the cached copy is dropped as well")
+	assert.Empty(t, rep.Kept)
+	fsys, _, err := LoadCached(cache, "v1")
+	require.NoError(t, err)
+	comps, err := LoadDir(fsys, TierRegistry, CachePrefix("v1"))
+	require.NoError(t, err, "the cache still loads")
+	assert.Empty(t, comps)
+}
+
 func TestValidTag(t *testing.T) {
 	for tag, want := range map[string]bool{
 		"v0.1.0": true, "2026-10": true, "current": false, "..": false, "a/b": false, "#": false, "": false, "-x": false,

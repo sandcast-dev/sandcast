@@ -2,6 +2,7 @@ package probe
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -196,7 +197,8 @@ _check() {
 // scriptFacts prints the os, pkgmgr, user, shells, homerc, path and env
 // lines. The path line lists the directories of PATH in order. The env line
 // lists the exported variables other than PATH, PWD, OLDPWD and _ whose
-// value is an absolute path or a colon list of absolute paths, in the order
+// value has at least one absolute colon-separated entry, and the names of
+// LoaderPathEnv and StartupEnv with any value, in the order
 // export -p prints them. The names come from export -p (export NAME=... or
 // declare -x NAME=...) and each value from the variable itself, so a value
 // that spans lines is skipped and cannot fake an entry. The
@@ -315,15 +317,16 @@ while IFS= read -r _line; do
 	case $_n in PATH | PWD | OLDPWD | _) continue ;; esac
 	eval "_v=\${$_n-}"
 	case $_v in '' | *"$_nl"*) continue ;; esac
-	_abs=1
+	_abs=
 	_cifs=$IFS
 	IFS=:
 	set -f
 	for _d in $_v; do
-		case $_d in '' | /*) ;; *) _abs= ;; esac
+		case $_d in /*) _abs=1 ;; esac
 	done
 	set +f
 	IFS=$_cifs
+	case $_n in @RECORDED_ENV@) _abs=1 ;; esac
 	[ -n "$_abs" ] || continue
 	_evars="$_evars{\"name\":\"$_n\",\"value\":\"$(_jsafe "$_v")\"},"
 done <<_SANDCAST_ENV_
@@ -331,6 +334,18 @@ $(export -p)
 _SANDCAST_ENV_
 printf '{"type":"env","vars":[%s]}\n' "${_evars%,}"
 `
+
+// LoaderPathEnv are the search path variables of the dynamic loader and of
+// language runtimes, whose empty or relative entry loads code from the
+// working directory. The env fact records them whatever their value, so the
+// plan can clean them (#18).
+var LoaderPathEnv = []string{"LD_LIBRARY_PATH", "NODE_PATH", "PERL5LIB", "PYTHONPATH", "RUBYLIB"}
+
+// StartupEnv are the variables that name a file or directory a shell reads
+// its startup configuration from (BASH_ENV for every non-interactive bash,
+// ENV for interactive POSIX shells, ZDOTDIR for zsh). The env fact records
+// them whatever their value.
+var StartupEnv = []string{"BASH_ENV", "ENV", "ZDOTDIR"}
 
 // Script returns the POSIX sh probe script for reqs. It prints one JSON
 // object per line: with opts.Facts the os, pkgmgr, user and shells lines,
@@ -348,7 +363,7 @@ func Script(reqs []Request, opts ScriptOptions) string {
 	fmt.Fprintf(&b, "_tmax=%d\n", int(CheckTimeout/time.Second))
 	b.WriteString(scriptHelpers)
 	if opts.Facts {
-		b.WriteString(scriptFacts)
+		b.WriteString(strings.Replace(scriptFacts, "@RECORDED_ENV@", strings.Join(slices.Concat(LoaderPathEnv, StartupEnv), " | "), 1))
 	}
 	for _, r := range reqs {
 		fmt.Fprintf(&b, "_check %s %s %s\n", shell.Quote(r.Key), shell.Quote(strings.Join(r.Bins, " ")), shell.Quote(r.Command))

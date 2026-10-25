@@ -26,6 +26,10 @@ var (
 	// tools by name on the host, so a path would let a repository-supplied
 	// component execute a file from the checkout.
 	hostToolPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+	// binPattern is the binary name pattern of contracts/manifest-component.md,
+	// the same as manifest's, so a manifest entry promoted to a recipe keeps
+	// its binaries valid.
+	binPattern = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 	// The patterns below keep declarative fields declarative (FR-013): their
 	// values are rendered into Containerfile instructions and RUN lines, so
 	// they must not carry line breaks or shell syntax.
@@ -93,6 +97,13 @@ func Parse(data []byte, source string, tier Tier) (*Component, error) {
 	return &c, nil
 }
 
+// validBinName reports whether b is a bare command name that a component
+// may list as a binary. The probe passes the binaries as one
+// space-separated list, and verify runs command -v on each.
+func validBinName(b string) bool {
+	return binPattern.MatchString(b) && b != "." && b != ".."
+}
+
 // Validate checks the component against the schema rules.
 func (c *Component) Validate() error {
 	var problems []string
@@ -104,15 +115,25 @@ func (c *Component) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		add("name is required")
 	}
+	checkBins := func(field string, bins []string) {
+		for _, b := range bins {
+			if !validBinName(b) {
+				add("%s: %q must be a bare command name", field, b)
+			}
+		}
+	}
+	checkBins("provides", c.Provides)
 	n := 0
 	if c.Installer.Mise != nil {
 		n++
 		if strings.TrimSpace(c.Installer.Mise.Tool) == "" {
 			add("installer.mise.tool is required")
 		}
+		checkBins("installer.mise.bins", c.Installer.Mise.Bins)
 	}
 	if c.Installer.Package != nil {
 		n++
+		checkBins("installer.package.bins", c.Installer.Package.Bins)
 		if len(c.Installer.Package.Packages) == 0 {
 			add("installer.package.packages needs at least one package manager")
 		}
@@ -133,6 +154,7 @@ func (c *Component) Validate() error {
 	}
 	if c.Installer.Script != nil {
 		n++
+		checkBins("installer.script.bins", c.Installer.Script.Bins)
 		if strings.TrimSpace(c.Installer.Script.Run) == "" {
 			add("installer.script.run is required")
 		}

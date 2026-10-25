@@ -326,7 +326,8 @@ func TestScriptRecordsEveryBinary(t *testing.T) {
 
 // TestScriptEnvFact checks the env fact: exported variables whose value is
 // an absolute path or a colon list of absolute paths, without PATH, PWD,
-// relative values, multi-line values and unexported variables (#18).
+// relative values, multi-line values and unexported variables, and the
+// names it records whatever their value (#18).
 func TestScriptEnvFact(t *testing.T) {
 	script := "SANDCAST_LOCAL=/not/exported\n" + Script(nil, ScriptOptions{Facts: true})
 	env := []string{
@@ -338,8 +339,17 @@ func TestScriptEnvFact(t *testing.T) {
 		"SANDCAST_MULTI=/a\nexport SANDCAST_FAKE=/b",
 		"SANDCAST_QUOTE=/with \"quote\" and 'apostrophe'",
 		"SANDCAST_EMPTY=",
+		"PYTHONPATH=src",
+		"PERL5LIB=lib",
+		"BASH_ENV=.bashenv",
+		"SANDCAST_DSLASH=//sandbox/x",
 	}
-	for name, sh := range shells(t) {
+	all := shells(t)
+	// bash outside POSIX mode prints export -p as declare -x NAME=...
+	if p, err := exec.LookPath("bash"); err == nil {
+		all["bash (declare -x)"] = []string{p}
+	}
+	for name, sh := range all {
 		facts, _, err := Parse([]byte(runShell(t, sh, script, env...)))
 		require.NoError(t, err, name)
 		require.NotNil(t, facts, name)
@@ -349,8 +359,14 @@ func TestScriptEnvFact(t *testing.T) {
 		}
 		assert.Equal(t, "/sandbox/.venv", got["SANDCAST_VENV"], name)
 		assert.Equal(t, "/sandbox/lib:/usr/lib::", got["SANDCAST_LIST"], name)
+		assert.Equal(t, "/usr/lib:relative", got["SANDCAST_MIXED"], "%s: a relative entry next to an absolute one is recorded", name)
 		assert.Equal(t, `/with "quote" and 'apostrophe'`, got["SANDCAST_QUOTE"], name)
-		for _, absent := range []string{"PATH", "PWD", "OLDPWD", "SANDCAST_REL", "SANDCAST_MIXED", "SANDCAST_URL", "SANDCAST_MULTI", "SANDCAST_FAKE", "SANDCAST_EMPTY", "SANDCAST_LOCAL"} {
+		assert.Equal(t, "src", got["PYTHONPATH"], "%s: a loader search path is recorded whatever its value", name)
+		assert.Equal(t, "lib", got["PERL5LIB"], "%s: every name of LoaderPathEnv is recorded", name)
+		assert.Equal(t, ".bashenv", got["BASH_ENV"], "%s: a startup variable is recorded whatever its value", name)
+		assert.Equal(t, "//sandbox/x", got["SANDCAST_DSLASH"], "%s: a leading double slash is an absolute path", name)
+		assert.Equal(t, "https://example.com/x", got["SANDCAST_URL"], "%s: the plan judges a URL as a whole", name)
+		for _, absent := range []string{"PATH", "PWD", "OLDPWD", "SANDCAST_REL", "SANDCAST_MULTI", "SANDCAST_FAKE", "SANDCAST_EMPTY", "SANDCAST_LOCAL"} {
 			assert.NotContains(t, got, absent, "%s: %s", name, absent)
 		}
 		assert.True(t, slices.IsSortedFunc(facts.Env, func(a, b EnvVar) int { return strings.Compare(a.Name, b.Name) }), name)

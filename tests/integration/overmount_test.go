@@ -281,14 +281,12 @@ func assertOpenShellSpawns(t *testing.T, engine, image, ws, alias, zdotdir strin
 	// under the overmount home. The image ENV that the default agent
 	// inherits sets them empty, so uv, which uses a VIRTUAL_ENV without
 	// activation, does not run the planted interpreter; the positive control
-	// sets the variable and reaches it. Every shell unsets both.
+	// sets the variable and reaches it. Every shell unsets both. The
+	// community base image ships uv, so the uv cases must run.
 	has("image-venv", "VENV=[] UVPY=[]")
-	if _, ok := results["control-uv"]; ok {
-		assert.Contains(t, results["control-uv"], "pwned-planted-python", "positive control: uv runs the planted interpreter when VIRTUAL_ENV names it")
-		cases = append(cases, "agent-uv", "agent-lc-uv")
-	} else {
-		t.Log("the image has no uv; the uv cases did not run")
-	}
+	require.Contains(t, results, "control-uv", "the community base image has uv on its PATH")
+	assert.Contains(t, results["control-uv"], "pwned-planted-python", "positive control: uv runs the planted interpreter when VIRTUAL_ENV names it")
+	cases = append(cases, "agent-uv", "agent-lc-uv")
 	for _, c := range cases {
 		require.Contains(t, results, c, "case %s ran", c)
 		assert.Equal(t, "[]", results[c], "case %s: no workspace startup file may run", c)

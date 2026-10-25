@@ -50,9 +50,10 @@ type Facts struct {
 	// PATH (I-1).
 	Path []string `json:"path,omitempty" yaml:"path,omitempty"`
 	// Env lists the base image's exported variables other than PATH whose
-	// value is an absolute path or a colon list of absolute paths, sorted by
-	// name. The plan clears the ones under the overmount home for the
-	// OpenShell target (#18).
+	// value has at least one absolute colon-separated entry, and the names of
+	// LoaderPathEnv and StartupEnv with any value, sorted by name. The plan
+	// cleans the ones that resolve in the overmount home for the OpenShell
+	// target (#18).
 	Env []EnvVar `json:"env,omitempty" yaml:"env,omitempty"`
 	// ProbedAt is the RFC 3339 time of the probe run. It is kept out of YAML
 	// so that plans stay byte-identical.

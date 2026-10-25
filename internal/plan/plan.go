@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"github.com/rhuss/sandcast/internal/probe"
 	"github.com/rhuss/sandcast/internal/profile"
 	"github.com/rhuss/sandcast/internal/registry"
+	"github.com/rhuss/sandcast/internal/shell"
 	"github.com/rhuss/sandcast/internal/version"
 )
 
@@ -575,6 +577,18 @@ func setImagePath(setup *ImageSetup, basePath []string, overmount string) (notic
 // HOME is the overmount home itself by design.
 var keptBaseEnv = []string{"HOME", "PATH"}
 
+// loaderPathEnv are the base image search path variables whose empty or
+// relative entry loads code from the working directory, the mounted
+// workspace in a session (probe.LoaderPathEnv, which the probe records
+// whatever their value). clearImageEnv drops such entries from them even
+// when no entry lies under the overmount home, as setImagePath does for
+// PATH.
+var loaderPathEnv = probe.LoaderPathEnv
+
+// uriScheme matches the scheme of a value such as sqlite:/data/app.db or
+// https://host/x, which clearImageEnv judges as a whole, not as a colon list.
+var uriScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+
 // clearImageEnv drops the entries under the overmount home from the base
 // image variables that name paths (probe env fact), for the OpenShell
 // target: the OpenShell default agent inherits the image ENV, so an image
@@ -584,43 +598,94 @@ var keptBaseEnv = []string{"HOME", "PATH"}
 // VIRTUAL_ENV and UV_PYTHON_INSTALL_DIR as unset) and recorded in
 // setup.Cleared, which the session script unsets. A variable that a
 // component, harness or relocation sets, or that MiseEnv sets, keeps that
-// value. It returns one workspace-path notice per changed variable.
+// value. A loaderPathEnv variable also drops its empty and relative
+// entries, even when none lies under the home (LD_LIBRARY_PATH also splits
+// on ';', as ld.so does). A startup variable (BASH_ENV, ENV, ZDOTDIR) that
+// is not a plain absolute path outside the home, and a URI whose path lies
+// under it, are cleared as a whole. It returns one workspace-path notice
+// per changed variable.
 func clearImageEnv(setup *ImageSetup, baseEnv []EnvVar, overmount string) []string {
 	if overmount == "" {
 		return nil
 	}
 	env := envMap(setup.Env)
 	var notices []string
+	clear := func(v EnvVar, why string) {
+		env[v.Name] = ""
+		setup.Cleared = append(setup.Cleared, v.Name)
+		notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+			"base image variable %s=%s %s and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace",
+			v.Name, v.Value, why)))
+	}
+	under := "points under the overmount home " + overmount
 	for _, v := range baseEnv {
 		if _, set := env[v.Name]; set || !component.ValidEnvName(v.Name) || slices.Contains(keptBaseEnv, v.Name) ||
 			slices.ContainsFunc(MiseEnv, func(m EnvVar) bool { return m.Name == v.Name }) {
 			continue
 		}
-		var kept []string
-		hidden := false
-		for _, e := range strings.Split(v.Value, ":") {
-			if e != "" && UnderOvermount(overmount, path.Clean(e)) {
-				hidden = true
-				continue
+		if slices.Contains(startupEnvVars, v.Name) {
+			// A shell expands and reads it at run time (checkOvermountGuard).
+			switch {
+			case UnderOvermount(overmount, path.Clean(v.Value)):
+				clear(v, under)
+			case !shell.SafeAbsPath(v.Value):
+				clear(v, "is not a plain absolute path, so a shell could read its startup file from the mounted workspace,")
 			}
-			kept = append(kept, e)
-		}
-		if !hidden {
 			continue
 		}
-		value := strings.Join(kept, ":")
+		loader := slices.Contains(loaderPathEnv, v.Name)
+		if scheme, rest, ok := strings.Cut(v.Value, ":"); ok && !loader && uriScheme.MatchString(scheme) && strings.HasPrefix(rest, "/") {
+			if UnderOvermount(overmount, path.Clean(rest)) {
+				clear(v, under)
+			}
+			continue
+		}
+		// In a loaderPathEnv variable an empty or relative entry resolves
+		// from the working directory, the mounted workspace in a session, so
+		// it is dropped. Elsewhere it is kept: an empty MANPATH entry stands
+		// for the system default.
+		value := v.Value
+		if v.Name == "LD_LIBRARY_PATH" {
+			value = strings.ReplaceAll(value, ";", ":")
+		}
+		var kept []string
+		hidden, relative := false, false
+		for _, e := range strings.Split(value, ":") {
+			switch {
+			case e != "" && UnderOvermount(overmount, path.Clean(e)):
+				hidden = true
+			case loader && !strings.HasPrefix(e, "/"):
+				relative = true
+			default:
+				kept = append(kept, e)
+			}
+		}
+		if !hidden && !relative {
+			continue
+		}
+		dropped := ""
+		if hidden && relative {
+			dropped = " (the entries that are not absolute are dropped as well)"
+		}
+		value = strings.Join(kept, ":")
 		if strings.Trim(value, ":") == "" {
-			env[v.Name] = ""
-			setup.Cleared = append(setup.Cleared, v.Name)
-			notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
-				"base image variable %s=%s points under the overmount home %s and is cleared in the image environment and unset in sessions; a tool that reads it would use the mounted workspace",
-				v.Name, v.Value, overmount)))
+			why := under + dropped
+			if !hidden {
+				why = "has only entries that are not absolute, which resolve in the mounted workspace,"
+			}
+			clear(v, why)
 			continue
 		}
 		env[v.Name] = value
+		if !hidden {
+			notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
+				"base image variable %s=%s has entries that are not absolute, which resolve in the mounted workspace; the image environment and sessions keep %s",
+				v.Name, v.Value, value)))
+			continue
+		}
 		notices = append(notices, Notice(NoticeWorkspacePath, NoticeSubjectImage, fmt.Sprintf(
-			"base image variable %s=%s names entries under the overmount home %s; the image environment and sessions keep %s",
-			v.Name, v.Value, overmount, value)))
+			"base image variable %s=%s names entries under the overmount home %s; the image environment and sessions keep %s%s",
+			v.Name, v.Value, overmount, value, dropped)))
 	}
 	if len(notices) == 0 {
 		return nil

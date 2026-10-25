@@ -161,7 +161,14 @@ func Refresh(ctx context.Context, client *http.Client, baseURL, tag, cacheDir st
 			report.Reasons = map[string]string{}
 		}
 		report.Reasons[f.Path] = oneLine(reason)
+		// The previous copy is kept only while it still validates: a rule
+		// added since it was cached (bare bin names) would otherwise fail
+		// the whole registry tier on every load.
 		if prev, rerr := os.ReadFile(filepath.Join(dest, filepath.Base(f.Path))); rerr == nil {
+			if _, perr := Parse(prev, f.Path, TierRegistry); perr != nil {
+				report.Reasons[f.Path] += "; the cached copy is dropped as well: " + oneLine(perr.Error())
+				continue
+			}
 			if err := writeStaged(staging, f.Path, prev); err != nil {
 				return nil, err
 			}

@@ -38,14 +38,18 @@ type DeltaOptions struct {
 // missing result carry their notices in DeltaEntry.Notices (FR-002).
 //
 // The workspace rule (FR-003) runs first, for every binary of the component
-// and with each PATH hit judged by its path and by the file it resolves to
-// (T060): when every hit of one binary lies under the overmount home, the
-// component counts as missing; when only the first PATH hit of a binary
-// does, the probed version may have come from the hidden copy and counts as
+// and with each PATH hit judged by its path and by the file it resolves to:
+// when every hit of one binary lies under the overmount home, the component
+// counts as missing; when only the first PATH hit of a binary does, a notice
+// names the ignored copy, and for the primary binary, which the check runs,
+// the probed version may have come from the hidden copy and counts as
 // unknown. A binary without any hit changes nothing. Then, for a mise
-// component with a lock entry, a present version
-// equal to the locked one means skip, and a different or unknown one means
-// shadow with the locked version (FR-001).
+// component with a lock entry, a present version equal to the locked one
+// means skip, and a different or unknown one means shadow with the locked
+// version (FR-001). A secondary binary whose first PATH hit is a symlink from
+// outside the home into it stays first on the session PATH, so a locked
+// mise component is shadowed then even with an equal version, and its shims
+// come first; without a lock entry it is not (a known limitation).
 func DeltaFor(c *component.Component, selector string, check probe.CheckResult, o DeltaOptions) (DeltaEntry, string) {
 	e := DeltaEntry{
 		ComponentKey:     c.Key,
@@ -60,11 +64,18 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	kind := c.Kind()
 	found := check.Status == probe.StatusPresent || check.Status == probe.StatusIncompatible
 	unknownVersion := check.Version == ""
-	mixed := false
+	primaryMixed := false
+	// linkFirst is set when a secondary binary's first PATH hit is a
+	// symlink outside the overmount home into it: the session PATH keeps
+	// that directory, so the symlink still wins the lookup and only the
+	// mise shims, put first by a shadow, come before it.
+	linkFirst := false
 	if found && o.OvermountHome != "" {
 		// inside collects the hits under the overmount home; hiddenBins the
-		// hits of the binaries that have no copy outside it.
-		var inside, hiddenBins []string
+		// hits of the binaries that have no copy outside it; mixedNotices one
+		// notice per binary whose first PATH hit is hidden but has a copy
+		// outside.
+		var inside, hiddenBins, mixedNotices []string
 		for i, b := range binHitsOf(check) {
 			var in, out []string
 			for _, h := range b.hits {
@@ -86,10 +97,18 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 				if i > 0 {
 					first = "first PATH hit of " + b.name
 				}
-				e.Notices = append(e.Notices, Notice(NoticeWorkspacePath, c.Key, fmt.Sprintf(
-					"%s %s lies under the overmount home %s and is ignored; %s decides",
-					first, b.hits[0].String(o.OvermountHome), o.OvermountHome, out[0])))
-				mixed = true
+				link := !UnderOvermount(o.OvermountHome, b.hits[0].raw)
+				msg := fmt.Sprintf("%s %s lies under the overmount home %s and is ignored; %s decides",
+					first, b.hits[0].String(o.OvermountHome), o.OvermountHome, out[0])
+				if link {
+					msg = fmt.Sprintf("%s %s resolves under the overmount home %s and still comes first on PATH, so the mounted workspace provides it; %s is the next copy",
+						first, b.hits[0].String(o.OvermountHome), o.OvermountHome, out[0])
+				}
+				mixedNotices = append(mixedNotices, Notice(NoticeWorkspacePath, c.Key, msg))
+				// The check runs the primary binary, so only its hidden
+				// first hit makes the probed version unknown.
+				primaryMixed = primaryMixed || i == 0
+				linkFirst = linkFirst || (i > 0 && link)
 			}
 		}
 		switch {
@@ -97,14 +116,16 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 			// The plan reports the re-provisioning with its target
 			// (plan.Build, RelocationNotice), so no notice here.
 			e.IgnoredPaths = hiddenBins
-			e.Notices = nil
 			found = false
-			mixed = false
+			primaryMixed = false
 			e.InstalledVersion = ""
-		case mixed:
+		case len(mixedNotices) > 0:
+			e.Notices = append(e.Notices, mixedNotices...)
 			e.IgnoredPaths = inside
-			unknownVersion = true
-			e.InstalledVersion = ""
+			if primaryMixed {
+				unknownVersion = true
+				e.InstalledVersion = ""
+			}
 		}
 	}
 	if !found {
@@ -123,11 +144,15 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 		case unknownVersion:
 			e.Action = ActionShadow
 			why := "base image version could not be read"
-			if mixed {
+			if primaryMixed {
 				why = "the probed version came from the ignored copy under the overmount home"
 			}
 			e.Notices = append(e.Notices, Notice(NoticeUnknownVersion, c.Key, fmt.Sprintf(
 				"%s; installing locked %s", why, o.LockedVersion)))
+		case linkFirst && sameVersion(check.Version, o.LockedVersion):
+			e.Action = ActionShadow
+			e.Notices = append(e.Notices, Notice(NoticeWorkspacePath, c.Key, fmt.Sprintf(
+				"installing locked %s so that the mise shims come before the symlink into the overmount home", o.LockedVersion)))
 		case sameVersion(check.Version, o.LockedVersion):
 			e.Action = ActionSkip
 		default:
@@ -140,7 +165,7 @@ func DeltaFor(c *component.Component, selector string, check probe.CheckResult, 
 	}
 	// Without a lock entry, a copy outside the overmount home counts as
 	// present whatever version the hidden copy reported.
-	if check.Status == probe.StatusPresent || mixed {
+	if check.Status == probe.StatusPresent || primaryMixed {
 		e.Action = ActionSkip
 		return e, ""
 	}
